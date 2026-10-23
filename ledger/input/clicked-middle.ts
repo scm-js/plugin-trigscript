@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (click)
+// ledger: step 12, takes
 // A click of the middle mouse button: `clicked(P1, "middle")`.
 program(async () => {
   while (true) {

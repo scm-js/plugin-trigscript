@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (mouse)
+// ledger: step 12, takes
 // A location moved to where a player's mouse is: `centerLocation(spot, at.x, at.y)` after `const at = mouse(P1)`.
 const spot = reserveLocation("where the mouse is");
 program(async () => {

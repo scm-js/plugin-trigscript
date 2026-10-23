@@ -1,4 +1,4 @@
-// ledger: step 12, refused: a unit
+// ledger: step 12, takes
 // Whether this computer has a unit selected: `local.selected`, shown but not acted on.
 program(() => {
   if (local.selected) print("selected");

@@ -30,7 +30,7 @@
  * went on — a trigger of a few conditions and actions in a little over 200 bytes, not 2,408. A row a doubling trigger
  * walks (`Graph.rows`) is stacked as one, its triggers 2,408 bytes apart.
  */
-import { END, NOW, PASS_END, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
+import { AFTER_END, END, NOW, PASS_END, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { TRIGGER_LISTS, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 import type { ScriptString } from "../runtime";
 
@@ -283,11 +283,13 @@ export function layout(input: LayoutInput): OwnMap {
   const stop = "@stop", run = "@run", entry = (p: number) => `@entry${p}`, gate = (p: number) => `@gate${p}`;
   // (A run whose graph holds the map's events pass goes through it first.)
   const first = (i: number) => runs[i].graph.pass ?? wake(i);
-  const after = (i: number) => (i + 1 < runs.length ? first(i + 1) : stop);
+  // (A run whose graph holds the map's send pass: the walk goes through it after the last run, before it stops.)
+  const sendPass = runs.find((r) => r.graph.after)?.graph.after;
+  const after = (i: number) => (i + 1 < runs.length ? first(i + 1) : sendPass ?? stop);
   const list = (p: number) => TRIGGER_LISTS + 12 * p;
   const listEnd = (p: number) => u(~(list(p) + 4));
   // (Where each run's graph ends: the next run.)
-  const ends = new Map<string, string>(runs.flatMap((_, i): [string, string][] => [[i ? `${END}#${i}` : END, after(i)], [i ? `${PASS_END}#${i}` : PASS_END, wake(i)]]));
+  const ends = new Map<string, string>(runs.flatMap((_, i): [string, string][] => [[i ? `${END}#${i}` : END, after(i)], [i ? `${PASS_END}#${i}` : PASS_END, wake(i)], [i ? `${AFTER_END}#${i}` : AFTER_END, stop]]));
   const endOf = (l: string) => ends.get(l) ?? l;
   type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number; off?: boolean };
   const triggers: T[] = runs.flatMap(({ graph, owner }, i) => [

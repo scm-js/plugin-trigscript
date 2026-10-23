@@ -722,6 +722,11 @@ export interface Program {
    * an order or turned into another type since the pass before — run before the programs' turns, once for the map.
    */
   pass?: Stmt[];
+  /**
+   * A map of our own only (`compiler/backend/input.ts`): the frame's send pass — what this computer's player did,
+   * sent to every computer as game commands — run after the programs' turns, once for the map.
+   */
+  after?: Stmt[];
   body: Stmt[];
   at: At;
 }

@@ -57,6 +57,16 @@ export function msqcKey(key: string): string {
   return NAMED_KEYS[key] ?? key.toUpperCase();
 }
 
+/** The virtual key a key of `KEY_NAMES` is to the game (a byte of its key table, 0x596A18), or null for a name that is none. */
+export function virtualKey(key: string): number | null {
+  const k = msqcKey(key);
+  if (/^[A-Z0-9]$/.test(k)) return k.charCodeAt(0);
+  if (/^F([1-9]|1[0-2])$/.test(k)) return 0x6f + Number(k.slice(1));
+  if (/^NUMPAD[0-9]$/.test(k)) return 0x60 + Number(k.slice(6));
+  const named: Record<string, number> = { SPACE: 0x20, ENTER: 0x0d, ESC: 0x1b, TAB: 0x09, SHIFT: 0x10, LCTRL: 0x11, LALT: 0x12, LEFT: 0x25, UP: 0x26, RIGHT: 0x27, DOWN: 0x28, BACK: 0x08, DELETE: 0x2e, INSERT: 0x2d, HOME: 0x24, END: 0x23, PGUP: 0x21, PGDN: 0x22 };
+  return k in named ? named[k] : null;
+}
+
 /* ── Chat patterns ── */
 
 /** The most values a typed line can carry: each is one of MSQC's command units per player. */

@@ -4033,6 +4033,15 @@ the ledger is the list it can be written again from at 4.0.
   The handler reads a changed place's values a bit at a time, about 4 µs for a unit made: through the current player,
   pointed at the record once, instead of a copy of the record's EPD for every read. The 1,700 places are two triggers
   each (1.84 MB against eudplib's 1.27 for the probe without `on.order`): a stub of fewer actions packs tighter.
+- **Input on a map of our own (step 12), what is left:** typed lines (part 2: the line read from the text lines on the
+  typer's computer, matched there, sent as its number and captures). A carrier the map kills — a "Kill Unit for
+  Player 12" of a map's own triggers would — is not made again (MSQC's QCDebug respawns; ours should watch one
+  carrier a human a frame). The carriers stand at (64, 64): a `Bring` of the map's own triggers over a location at the
+  corner counts them for the human. The passes' cost a frame is not weighed. A sync() value is at most 2^20 − 2 on
+  any map of 64 by 64 or more, as before; on a smaller map the point carries fewer bits (18 on 32 by 32), and the
+  value is cut to that. The emitter folds a sum of bit-slices of one read with a negative constant wrongly (above,
+  "Found on the way"): to find in the emitter's sliced copies and fix, with a random-program test that mixes `&`,
+  `>>>` and a subtraction.
 - A variable set from a constant less itself (`j = 1 - j`) is copied a bit at a time — 32 triggers, about 0.5 µs, where
   eudplib's is two actions: the game's subtract stops at 0, so the emitter copies a variable read times −1 (found
   weighing the errors probe, 2026-10-22).
@@ -5103,6 +5112,104 @@ Played again as merged, the watch (2026-10-22, recording 22.58.21, `own-step11-e
 order at the same frames, to the video frame; the Marines made and killed as before; no hitch. (The lines would be the
 same if Remastered read past a condition of kind 0, only slower: what a dead unit's place costs there is not measured
 yet.)
+
+### Input on our own backend (2026-10-23)
+
+Step 12 (`compiler/backend/input.ts`, the emitter, the layout, `scripts/build-own.mts`): the keys, clicks, the mouse,
+typed lines and `sync()` carried between the players' computers by the map itself, in place of chatEvent and MSQC.
+
+**What the command dispatch says (the lifted game, 2026-10-23).** What a map can carry from one computer to all of
+them is a game command: the game sends each player's commands to every computer in turns and runs them in step, so
+whatever a command leaves in the game's memory is the same everywhere. Each command of the dispatch (0x05–0x5C,
+`ledger-tables.md` §7) was queued in the lifted game and the memory diffed a frame later, for the trace it leaves and
+what else it does:
+
+- A queued command runs two frames later (one turn of latency alone); several queued in one frame run in that one
+  turn, in order, before the frame's triggers — so a Select, an order and a Select putting the selection back all land
+  together, and nothing of the player's can come between them.
+- **Select** (0x09, up to 12 unit tags) writes the player's command selection (`0x6284E8 + 48 × player`, every
+  computer's, readable in Remastered). Of units the player does not own only the first is kept, and none of them beside
+  own units: a carrier has to be the sender's.
+- **Hotkey** (0x13, set group g) copies that selection into the player's group (`0x57FE60 + 480 × player + 48 × g`,
+  12 tags of 16 bits, readable and writable in Remastered). A carrier that clobbers a control group was weighed and
+  put aside: it would have to be saved and put back around every send.
+- **Right-click** (0x14) on a point does nothing to a unit whose dat entry has no right-click action — which is what
+  MSQC's carrier has; MSQC's "right-click" is a **targeted Move** (0x15, order 6): the handler writes the point into
+  each selected unit's order target (`+0x58`, read and write allowed in Remastered) that same frame, and the movement
+  code copies it into the waypoint (`+0x10`, MSQC's cell) the frame after. The point is clamped to the map: x in
+  `[1, W − 2]`, y in `[1, H − 34]` (W and H the map in pixels); a point outside the map is dropped. Two Moves to one
+  unit in one turn leave only the last.
+- **Minimap ping** (0x58) reaches only computers allied to the sender; **vision** (0x0D) and **alliance** (0x0E) are
+  4 and 8 bits of players who are not there, and a turn keeps only the last; **chat** (0x5C) is 78 bytes and a line on
+  everyone's screen. Nothing carries bits to every computer and does nothing else: the carrier is a unit, as MSQC's.
+
+**The channel.** For each human player, a ring of hidden units of theirs — the carriers — and a cursor at each end.
+A send is a Select of the next carrier and a Move to a point; the point is the value (`x − 1 + (W − 2) × (y − 1)`:
+`B = floor(log2((W − 2)(H − 34)))` bits, 21 on a 64×64 map, 23 on 128×128, 25 on 256×256; MSQC's `val` is 22 on
+128×128). A value arrives in the carrier's `+0x58`, 0 when nothing has (a sent x is never 0). Every computer, before
+the programs' turns, reads each human's ring from its read cursor, takes what arrived in order, writes 0 back and
+moves the cursor on; the sender keeps its write cursor and never has more in flight than the ring holds (its own
+computer reads its ring like any other, so it sees what has landed). A turn that brings several frames' sends keeps
+every one — MSQC's one carrier per value kept the last, which cost S2 its key presses and the Python side a bank of
+held keys and a grace. Two rings: **points** (the mouse, raw, one send a frame when it moved) and **messages**,
+each a header and then raw values the header counts: a **state** (one packet: a bit a key the programs read, then the
+three mouse buttons; sent when it changed, paid out one a frame on arrival, so a key is held for as many frames as it
+was down, and a press is the frame its bit came on), a **sync** (the slot, then the value), a **line** (the pattern, then
+its captures). After a frame's sends the player's own selection (`0x6284B8`, this computer's) goes out as a Select, as
+MSQC's `RestoreSelUnits` does, so their orders go on reaching their units.
+
+**The carriers** are made at the first frame, on every computer alike: the chosen type's dat entry patched as MSQC's
+(the Command Center's flingy so it cannot move, 1×1, no weapon, no sight, no right-click), the units created in
+transit — hidden, and selectable — through a unit-properties slot the build writes, given to Player 12 so they are in
+no human's list (no supply, score, Command or Bring of theirs), and their owner byte put back to the player's so a
+Select and an order of that player reach them. Their records' EPDs and tags are kept in cells of the map's. The type
+is the Valkyrie unless the map uses it, in which case the build takes the first type the map's units, triggers and
+script never name. A carrier the map kills is made again.
+
+**What the map gives up**, against MSQC's location, Valkyrie entry and Player 12 units: one unit-properties slot and
+one unit type's dat entry (chosen so the map does not use it), the scratch location the own backend already keeps for
+orders, and `ring × humans` hidden units of Player 12's (6 a human for messages, 6 more where the mouse is read) at
+the map's top left corner. No location for the mouse: `mouse(p)` is a value.
+
+**Reads on the sender's computer**, as MSQC's and chatEvent's: the key bytes (`0x596A18`) unless a line is being
+typed (`0x68C144`), the buttons (`0x6CDDC0`), the mouse on the screen (`0x6CDDC4`) and the screen on the map
+(`0x62848C`); a typed line from the text lines (`0x640B60`, the ring's position at `0x640B58`), the line beginning with
+this computer's player's name, matched against the programs' patterns there and sent as its number and values. The
+test harness (`GameSim`) already types through the game's chat command and writes keys and the mouse where the map
+reads them: nothing of it moves. The simulator keeps its model (a value arrives the frame after); a built map's trip
+is two frames in the lifted game where MSQC's was five.
+
+**The passes.** The receive pass joins the events pass before the programs' turns; the send pass is a block of its own
+after the last run's end (`Graph.after`, the layout's `@after`), so a `sync()` sent in a frame goes out that frame.
+`syncSend` puts its value in a pending cell the send pass takes; `input` reads are reads of the map's cells; `select()`
+and `local.selected` were step 12's too and are taken with it. `underMouse(p)` is the pick nearest to the point.
+
+**As built, part 1 (2026-10-23, branch `input`).** `compiler/backend/input.ts` (the plan, the reads rewritten, the
+receive and send passes, the carriers' first frame), the emitter's and the layout's `after` block (`Graph.after`,
+`AFTER_END`), `units.ts` (`local.selected`; `underMouse()` as the pick nearest the kept mouse; every walk of the
+table passing the carrier type over), `own.ts` (`OwnMap` from the build: the humans, the map in pixels, the slot, the
+type), `scripts/build-own.mts` (the slot written in transit through the editor's own code; the type the Valkyrie
+unless the map's units or triggers name it). Not yet: typed lines (part 2), so the 5 chat rows and `on.chat` stay
+refused by name; a carrier the map kills is not made again.
+
+- **Tests** (`tests/emitter.test.ts`, "a map of our own, input"): the harness plays the game's side — Give Units puts
+  a human's carriers at the head of Player 12's list, the key bytes and the mouse are written where the map reads them,
+  and what the send pass queued is read back as the game would run it two frames on. Keys go out the frame they
+  change and arrive two frames on; a key held 3 frames is held 3 frames; the mouse goes out when it moves, on its own
+  ring; a click is the frame the button came down; `sync()` resolves two frames on, two values together; a program
+  for every player reads each player's own keys.
+- **The lifted game** (`probes/own-input.ts`, keys, the mouse and clicks written at set frames by a runner): every
+  line as the script says — `sync 0 1048574 12345 67890 ok` (the smallest and the largest value a point carries, exact),
+  a press 2 frames after the key, "held 5 frames" for a key down 5 frames, the click at the pixel, a right-click on a
+  Marine found and one on bare ground not, two 1-frame taps two presses. The same script through eudplib and MSQC: the
+  sync 6 frames later than ours, "held 7 frames" for the 5 (the bank's grace), the click at 320,2864 for 300,2600 and
+  "moved 2 times" for 4 (MSQC's mouse through its location), the two taps one press (the grace again).
+- **Sizes and costs:** 12 carriers a human with the mouse read, 6 without; the probe's payload 2.14 MB (eudplib's
+  0.8: the own build's size is step 14's business). The passes are not weighed yet.
+- **Found on the way:** the emitter folds a sum whose terms are bit-slices of one read and a negative constant wrongly
+  (`(v & 0xffff) − 1 + ((v >>> 16) − 1) × 1024` came out as `v_low − 65536 + …`: the constant's high half went into
+  the sliced copy); the decode is written as separate steps, and the fault is in the Open list below.
+
 
 ### Triggers stacked (2026-10-20)
 

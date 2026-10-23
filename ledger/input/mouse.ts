@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (mouse)
+// ledger: step 12, takes
 // Where a player's mouse is on the map, the same on every computer: `mouse(P1).x`, `mouse(P1).y`.
 program(async () => {
   while (true) {

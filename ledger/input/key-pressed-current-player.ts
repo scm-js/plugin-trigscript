@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (key)
+// ledger: step 12, takes
 // A key pressed by the player the program runs as: `keyPressed(CurrentPlayer, "Space")`.
 program(async () => {
   while (true) {

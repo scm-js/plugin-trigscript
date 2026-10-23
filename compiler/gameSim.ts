@@ -14,7 +14,7 @@
  */
 import { ActionType } from "../vendor/triggers";
 import type { At } from "./ir";
-import { msqcKey } from "./input";
+import { virtualKey } from "./input";
 import { programVariables, type VariableMap } from "./gameVariables";
 import type { CostLines, GameCostTap, TestCost } from "./gameCost";
 import { ExpectError, WORLD, type TestEvent, type TestWorldLike } from "./testing";
@@ -152,17 +152,6 @@ export function readUnitStats(game: GameHandle): Record<number, { hp: number; sh
   const out: Record<number, { hp: number; shields: number }> = {};
   for (let t = 0; t < 228; t++) out[t] = { hp: Math.floor(game.m.getInt32(MAX_HP + 4 * t, true) / 256), shields: game.m.getUint16(MAX_SHIELDS + 2 * t, true) };
   return out;
-}
-
-/** The virtual key MSQC's name for a key stands for. */
-function virtualKey(key: string): number {
-  const k = msqcKey(key);
-  if (/^[A-Z0-9]$/.test(k)) return k.charCodeAt(0);
-  if (/^F([1-9]|1[0-2])$/.test(k)) return 0x6f + Number(k.slice(1));
-  if (/^NUMPAD[0-9]$/.test(k)) return 0x60 + Number(k.slice(6));
-  const named: Record<string, number> = { SPACE: 0x20, ENTER: 0x0d, ESC: 0x1b, TAB: 0x09, SHIFT: 0x10, LCTRL: 0x11, LALT: 0x12, LEFT: 0x25, UP: 0x26, RIGHT: 0x27, DOWN: 0x28, BACK: 0x08, DELETE: 0x2e, INSERT: 0x2d, HOME: 0x24, END: 0x23, PGUP: 0x21, PGDN: 0x22 };
-  if (k in named) return named[k];
-  throw new ExpectError(`press: "${key}" is not a key the game reports`);
 }
 
 /** A line as a player reads it: the game's colour codes and eudplib's padding (carriage returns) taken out. */
@@ -378,7 +367,7 @@ export class GameSim implements TestWorldLike {
     return who === this.game.localPlayer;
   }
   /** A key down for one frame, as a press is (MSQC sees it down, then up). */
-  press(key: string, player?: number): this { const k = virtualKey(key); if (!this.local(player, "press")) return this; this.game.u8[KEYS + k] = 1; this.game.wrote?.(KEYS + k, 1); this.held.push(k); return this; }
+  press(key: string, player?: number): this { const k = virtualKey(key); if (k === null) throw new ExpectError(`press: "${key}" is not a key the game reports`); if (!this.local(player, "press")) return this; this.game.u8[KEYS + k] = 1; this.game.wrote?.(KEYS + k, 1); this.held.push(k); return this; }
   click(button: "left" | "right" | "middle" = "left", player?: number): this {
     if (!this.local(player, "click")) return this;
     const m = this.game.m;

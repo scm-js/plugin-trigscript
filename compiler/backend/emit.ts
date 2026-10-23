@@ -24,7 +24,7 @@ import type { Range } from "../ranges";
 import { PlayerGroup, type ActionRecord, type ConditionRecord } from "../../vendor/triggers";
 import { actionDef } from "../../vendor/triggerDefs";
 import { OVERFLOW_FN, errorLine } from "./errors";
-import { END, MOST_ACTS, MOST_CONDS, NOW, PASS_END, STACK, SWITCHES, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, checkGraph, nextOf, type Act, type ActPart, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
+import { AFTER_END, END, MOST_ACTS, MOST_CONDS, NOW, PASS_END, STACK, SWITCHES, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, checkGraph, nextOf, type Act, type ActPart, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
 export const GAME_TICK = 0x57f23c;
@@ -6166,7 +6166,7 @@ export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0, products: 0
  * call of a function of the Python side's, and nothing read that the body did not write first (there is no one to
  * copy it in; a copy within the body is made of triggers by the layout). Returns the graph, or why it cannot be.
  */
-export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number, players: MapPlayers = ANY_PLAYERS, errors?: ProgramErrors, pass?: Stmt[]): Graph | string {
+export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number, players: MapPlayers = ANY_PLAYERS, errors?: ProgramErrors, pass?: Stmt[], after?: Stmt[]): Graph | string {
   // (Every statement must be the emitter's here, so a rewriting it would not take is refused whichever way it goes:
   // no trial is needed.)
   const take = () => true;
@@ -6217,11 +6217,15 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   // (The map's events pass, its statements as the program's: laid out apart, before the run's `@wake`.)
   const passed = pass?.length ? rw.stmt({ kind: "block", body: pass, at: pass[0].at } as Stmt) : [];
   const passStmt: Stmt | undefined = passed.length ? { kind: "block", body: passed, at: pass![0].at } : undefined;
+  // (The map's send pass, the input's: laid out apart too, after the last run's end.)
+  const aftered = after?.length ? rw.stmt({ kind: "block", body: after, at: after[0].at } as Stmt) : [];
+  const afterStmt: Stmt | undefined = aftered.length ? { kind: "block", body: aftered, at: after![0].at } : undefined;
   const scope = new Scope(known);
   rules(scope);
   scope.slots = planned.slots;
   scope.once = planned.once;
   if (passStmt && !scope.stmt(passStmt, false)) return scope.why || "the events pass";
+  if (afterStmt && !scope.stmt(afterStmt, false)) return scope.why || "the send pass";
   // (The map's own variables, which no program declares and no run's start sets: 0 as the map starts, one cell each.)
   for (const d of known.values()) if (d.global) scope.declared.add(d.id);
   if (!scope.stmt(s, false)) return scope.why || "?";
@@ -6272,6 +6276,12 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
       e.stmt(passStmt);
       e.goto(PASS_END);
     }
+    const afterAt = `${key}:after`;
+    if (afterStmt) {
+      e.push({ label: afterAt, conds: [], items: [], keep: true });
+      e.stmt(afterStmt);
+      e.goto(AFTER_END);
+    }
     e.settleThrown();
     e.emitDigits();
     if (start) {
@@ -6289,6 +6299,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     if (typeof g !== "string" && e.templates.length) g.templates = e.templates;
     if (typeof g !== "string" && tasks) g.tasks = tasks;
     if (typeof g !== "string" && passStmt) g.pass = passAt;
+    if (typeof g !== "string" && afterStmt) g.after = afterAt;
     if (typeof g !== "string" && e.regions.size) g.cells = [...e.regions.values(), ...(g.cells ?? [])];
     const cells = typeof g === "string" ? 0 : (g.cells ?? []).reduce((n, r) => n + r.cells, 0);
     if (cells > STACK_CELLS_MOST) return { e, g: `arrays and stacks of ${cells} cells, past the ${STACK_CELLS_MOST} a map of our own lays out (72 bytes a cell)` };

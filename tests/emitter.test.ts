@@ -17,6 +17,7 @@ import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { emitOwn } from "../compiler/backend/own";
+import { virtualKey } from "../compiler/input";
 import { simulatePrograms } from "../compiler/simulateIr";
 import { Simulation } from "../compiler/simulate";
 import type { SimBounds, SimUnitInit } from "../compiler/world";
@@ -149,6 +150,8 @@ const CALLS = { whole: false };
  */
 /** `frames`: the frame each of `got` was shown in, by a walk of several (`runOwn`'s `frames`). */
 const PRINTED: { want: string[]; got: string[]; frames: number[] } = { want: [], got: [], frames: [] };
+/** The game's actions the harness does not model (Create Unit with Properties, Give Units): a test's world plays them. */
+const GAME: { action?: (kind: number, field: (offset: number) => number, read: (addr: number) => number, write: (addr: number, value: number) => void) => void } = {};
 const shown = (bytes: number[]) => bytes.filter((b) => b !== 0x0d).map((b) => b.toString(16).padStart(2, "0")).join("");
 /**
  * The statements the evaluator may still run for the program in hand (a hundred thousand), its calls' bodies included: a program whose
@@ -1072,7 +1075,7 @@ const laidOut = new WeakMap<Graph, { arrays: Map<string, number[]>; own: ReturnT
  * one more) when more than one, the memory kept from one to the next; each text shown noted with its frame.
  */
 /** `between`: what the game does before each frame — memory written, as units come and go. */
-function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[], frames = 1, between?: (frame: number, write: (addr: number, value: number) => void) => void): Env {
+function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[], frames = 1, between?: (frame: number, write: (addr: number, value: number) => void, read: (addr: number) => number) => void): Env {
   // (Laid out once a graph: a test may walk one many times.)
   let done = laidOut.get(g);
   if (!done || (done.arrays !== arrays && (done.arrays.size || arrays.size))) {
@@ -1098,7 +1101,7 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
   const at = (epd: number) => u(DEATHS + 4 * (epd === 13 ? rd(0x6509b0) : epd));
   PRINTED.frames = [];
   for (let frame = 1; frame <= frames; frame++) {
-  between?.(frame, wr);
+  between?.(frame, wr, rd);
   let pc = frames > 1 ? own.triggers.get("@run")! : own.address;
   const shownBefore = PRINTED.got.length;
   for (let steps = 0; !(pc & 0x80000000); steps++) {
@@ -1137,6 +1140,8 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
       }
       // (Play WAV: noted as a sound played, which sound aside.)
       if (kind === 8) { PRINTED.got.push("wav"); continue; }
+      // (Create Unit with Properties and Give Units: the game's, which a test's world plays — the units are its.)
+      if (kind === 11 || kind === 48) { GAME.action?.(kind, (off) => (off === 27 ? byte(o + 27) : rd(o + off)), rd, wr); continue; }
       if (kind !== 45) throw new Error(`action kind ${kind}`);
       const dest = at(rd(o + 16)), value = rd(o + 20), modifier = byte(o + 27), old = rd(dest);
       if (dv.getUint16(o + 30 - base, true) === 0x4353) {
@@ -2178,5 +2183,241 @@ describe("a map of our own, unit events", () => {
       if (f === 3) for (const [kk, uid] of [[1698, 7], [1697, 6]]) { w(place(kk) + 0x0c, 0x700001); w(place(kk) + 0x4c, 0x0300); w(place(kk) + 0x64, 5); w(place(kk) + 0xa4, uid * 256); }
     });
     expect(got).toEqual(["5 late 5", "5 late 5"]);
+  });
+});
+
+describe("a map of our own, input", () => {
+  /**
+   * The game's side of the channel, played by the test: Player 12's list holds the carriers the start-up finds (six a
+   * ring), the local player's keys and mouse are its memory, and what the send pass queues is read back as the game
+   * would run it two frames on — a Select names the carrier, a Move writes its order target.
+   */
+  const TABLE = 0x59cca8, place = (k: number) => TABLE + 336 * k;
+  const LOCAL = 0x512684, QUEUE = 0x654880, QUEUED = 0x654aa0, QUEUE_MOST = 0x57f0d8, FIRST_UNIT = 0x6283f8, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4, SCREEN_X = 0x62848c, SCREEN_Y = 0x6284a8, SELECTION = 0x6284b8;
+  type World = { keys: Map<number, number>; buttons: number; mouse: [number, number]; screen: [number, number]; selection: number[]; pokes: [number, number][] };
+  const run = (script: string, frames: number, then: (frame: number, world: World) => void, mouse = false): { lines: string[]; sent: string[] } => {
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, 1, { humans: [0, 1], width: 64 * 32, height: 64 * 32, cuwp: 64 });
+    if (typeof o === "string") throw new Error(o);
+    const memory = new Map<number, number>();
+    memory.set(LOCAL, 0);
+    memory.set(QUEUE_MOST, 496);
+    // The units the game hands each human's Create Unit (a pool a human, from place 1600 on): Give Units puts the
+    // count asked at the head of Player 12's list, the newest first, as the game does.
+    const perHuman = (mouse ? 12 : 6);
+    const pools = new Map<number, number[]>([[0, []], [1, []]]);
+    let next = 1600;
+    for (const h of [0, 1]) for (let i = 0; i < perHuman; i++) {
+      const k = next++;
+      memory.set(place(k) + 0x0c, 0x700000 + k);
+      memory.set(place(k) + 0x4c, 3 * 256 + h);
+      memory.set(place(k) + 0x64, 58);
+      memory.set(place(k) + 0xa4, (i + 1) * 256);
+      pools.get(h)!.push(k);
+    }
+    GAME.action = (kind, field, rd, w) => {
+      if (kind !== 48) return;
+      const h = field(16), count = field(27);
+      for (let i = 0; i < count; i++) {
+        const k = pools.get(h)!.shift()!;
+        w(place(k) + 0x6c, rd(FIRST_UNIT + 11 * 4));
+        w(place(k) + 0x4c, 3 * 256 + 11);
+        w(FIRST_UNIT + 11 * 4, place(k));
+      }
+    };
+    const world: World = { keys: new Map(), buttons: 0, mouse: [0, 0], screen: [0, 0], selection: [], pokes: [] };
+    const sent: string[] = [];
+    // (What the queue holds at the end of a frame, applied two frames on.)
+    const due = new Map<number, { slot: number; x: number; y: number }[]>();
+    PRINTED.got = [];
+    const env = runOwn(o.runs[0].graph, memory, o.values, undefined, frames, (f, w, rd) => {
+      // The commands of the frame before, as the game sends them: each Select names units, a Move gives the selection a target.
+      const n = rd(QUEUED);
+      const bytes: number[] = [];
+      for (let a = QUEUE; a < QUEUE + n; a += 4) { const d = rd(a); bytes.push(d & 0xff, (d >> 8) & 0xff, (d >> 16) & 0xff, (d >>> 24) & 0xff); }
+      bytes.length = n;
+      let selected: number[] = [];
+      for (let i = 0; i < bytes.length;) {
+        const c = bytes[i];
+        if (c === 0x05) { i++; continue; }
+        if (c === 0x09) { const count = bytes[i + 1]; selected = []; for (let t = 0; t < count; t++) selected.push((bytes[i + 2 + 2 * t] | (bytes[i + 3 + 2 * t] << 8)) & 0x7ff); sent.push(`${f - 1} select ${selected.map((t) => t - 1).join(",")}`); i += 2 + 2 * count; continue; }
+        if (c === 0x15) { const x = bytes[i + 1] | (bytes[i + 2] << 8), y = bytes[i + 3] | (bytes[i + 4] << 8); sent.push(`${f - 1} move ${x},${y}`); for (const t of selected) due.set(f + 1, [...(due.get(f + 1) ?? []), { slot: t - 1, x, y }]); i += 12; continue; }
+        throw new Error(`a command the test does not know: 0x${c.toString(16)} at ${i} of ${bytes.length}`);
+      }
+      w(QUEUED, 0);
+      for (const d of due.get(f) ?? []) w(place(d.slot) + 0x58, (d.x | (d.y << 16)) >>> 0);
+      if (process.env.IN_DEBUG) console.log(`frame ${f}: made ${rd(0x58a364 + 4 * 0)} c0+58 ${rd(place(1600) + 0x58)} c1+58 ${rd(place(1601) + 0x58)} first12 ${rd(FIRST_UNIT + 44).toString(16)}`);
+      then(f, world);
+      for (const [a, v] of world.pokes.splice(0)) w(a, v);
+      // The local machine's memory as the world says.
+      const keyWords = new Map<number, number>();
+      for (const [vk, down] of world.keys) if (down) keyWords.set((KEYS + vk) & ~3, (keyWords.get((KEYS + vk) & ~3) ?? 0) | (1 << (8 * ((KEYS + vk) & 3))));
+      for (let a = KEYS; a < KEYS + 256; a += 4) w(a, keyWords.get(a) ?? 0);
+      w(BUTTONS, world.buttons);
+      w(MOUSE, world.mouse[0]); w(MOUSE + 4, world.mouse[1]); w(SCREEN_X, world.screen[0]); w(SCREEN_Y, world.screen[1]);
+      for (let i = 0; i < 12; i++) w(SELECTION + 4 * i, world.selection[i] !== undefined ? place(world.selection[i]) : 0);
+    });
+    if (process.env.IN_DEBUG) console.log([...env].filter(([id]) => id.startsWith("@in")).map(([id, v]) => `${id}=${v}`).join(" "));
+    return { lines: PRINTED.got.map((t, i) => `${PRINTED.frames[i]} ${Buffer.from(t, "hex").toString()}`), sent };
+  };
+  const vk = (key: string) => virtualKey(key)!;
+
+  it("makes the carriers at the first frame: Player 12's units, the owner byte the player's, nothing sent", () => {
+    const owners: number[] = [];
+    const got = run("program(async () => { while (true) { if (keyPressed(P1, \"F7\")) print(\"help\"); await nextFrame(); } });", 3, (f, world) => {
+      if (f === 3) world.pokes.push([0, 0]);
+    });
+    void owners;
+    expect(got.lines).toEqual([]);
+    expect(got.sent).toEqual([]);
+  });
+
+  it("sends a key the frame it goes down and the frame it comes up, and the press arrives two frames on", () => {
+    const got = run([
+      "program(async () => {",
+      "  let held = 0;",
+      "  while (true) {",
+      "    if (keyPressed(P1, \"F7\")) print(\"pressed\");",
+      "    if (keyHeld(P1, \"F7\")) held += 1;",
+      "    if (keyPressed(P1, \"Space\")) print(`space ${held}`);",
+      "    await nextFrame();",
+      "  }",
+      "});",
+    ].join("\n"), 14, (f, world) => {
+      if (f === 3) world.keys.set(vk("F7"), 1);
+      if (f === 6) world.keys.set(vk("F7"), 0);
+      if (f === 9) world.keys.set(vk("Space"), 1);
+      if (f === 10) world.keys.set(vk("Space"), 0);
+    });
+    // (The ring's carriers in the order Player 12's list holds them: the last given first.)
+    expect(got.sent).toEqual(["3 select 1605", "3 move 5,1", "3 select ", "6 select 1604", "6 move 1,1", "6 select ", "9 select 1603", "9 move 9,1", "9 select ", "10 select 1602", "10 move 1,1", "10 select "]);
+    expect(got.lines).toEqual(["5 pressed", "11 space 3"]);
+  });
+});
+
+describe("a map of our own, input: the mouse, clicks, sync() and a program for every player", () => {
+  // (The world and the game's side as in the describe above.)
+  const TABLE = 0x59cca8, place = (k: number) => TABLE + 336 * k;
+  const LOCAL = 0x512684, QUEUE = 0x654880, QUEUED = 0x654aa0, QUEUE_MOST = 0x57f0d8, FIRST_UNIT = 0x6283f8, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4, SCREEN_X = 0x62848c, SCREEN_Y = 0x6284a8, SELECTION = 0x6284b8;
+  type World = { keys: Map<number, number>; buttons: number; mouse: [number, number]; screen: [number, number]; selection: number[]; camera: [number, number] };
+  const run = (script: string, frames: number, then: (frame: number, world: World) => void, mouse = false, runIndex = 0): { lines: string[]; sent: string[] } => {
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, 1, { humans: [0, 1], width: 64 * 32, height: 64 * 32, cuwp: 64 });
+    if (typeof o === "string") throw new Error(o);
+    const memory = new Map<number, number>();
+    memory.set(LOCAL, 0);
+    memory.set(QUEUE_MOST, 496);
+    // (Players 1 and 2 people in the game: the game's player type 2, a trigger list that is not empty.)
+    memory.set(0x57f1b4, 2 | (2 << 8));
+    for (const p of [0, 1]) memory.set(0x51a280 + 12 * p + 8, 1);
+    const perHuman = (mouse ? 12 : 6);
+    const pools = new Map<number, number[]>([[0, []], [1, []]]);
+    let next = 1600;
+    for (const h of [0, 1]) for (let i = 0; i < perHuman; i++) {
+      const k = next++;
+      memory.set(place(k) + 0x0c, 0x700000 + k); memory.set(place(k) + 0x4c, 3 * 256 + h); memory.set(place(k) + 0x64, 58); memory.set(place(k) + 0xa4, (i + 1) * 256);
+      pools.get(h)!.push(k);
+    }
+    GAME.action = (kind, field, rd, w) => {
+      if (kind !== 48) return;
+      const h = field(16), count = field(27);
+      for (let i = 0; i < count; i++) { const k = pools.get(h)!.shift()!; w(place(k) + 0x6c, rd(FIRST_UNIT + 11 * 4)); w(place(k) + 0x4c, 3 * 256 + 11); w(FIRST_UNIT + 11 * 4, place(k)); }
+    };
+    const world: World = { keys: new Map(), buttons: 0, mouse: [0, 0], screen: [0, 0], selection: [], camera: [0, 0] };
+    const sent: string[] = [];
+    const due = new Map<number, { slot: number; x: number; y: number }[]>();
+    PRINTED.got = [];
+    const runs = o.runs.map((run) => ({ graph: run.graph, owner: run.player }));
+    runOwn(o.runs[runIndex].graph, memory, o.values, runs.length > 1 ? runs : undefined, frames, (f, w, rd) => {
+      const n = rd(QUEUED);
+      const bytes: number[] = [];
+      for (let a = QUEUE; a < QUEUE + n; a += 4) { const d = rd(a); bytes.push(d & 0xff, (d >> 8) & 0xff, (d >> 16) & 0xff, (d >>> 24) & 0xff); }
+      bytes.length = n;
+      let selected: number[] = [];
+      for (let i = 0; i < bytes.length;) {
+        const c = bytes[i];
+        if (c === 0x05) { i++; continue; }
+        if (c === 0x09) { const count = bytes[i + 1]; selected = []; for (let t = 0; t < count; t++) selected.push((bytes[i + 2 + 2 * t] | (bytes[i + 3 + 2 * t] << 8)) & 0x7ff); sent.push(`${f - 1} select ${selected.map((t) => t - 1).join(",")}`); i += 2 + 2 * count; continue; }
+        if (c === 0x15) { const x = bytes[i + 1] | (bytes[i + 2] << 8), y = bytes[i + 3] | (bytes[i + 4] << 8); sent.push(`${f - 1} move ${x},${y}`); for (const t of selected) due.set(f + 1, [...(due.get(f + 1) ?? []), { slot: t - 1, x, y }]); i += 12; continue; }
+        throw new Error(`a command the test does not know: 0x${c.toString(16)} at ${i} of ${bytes.length}`);
+      }
+      w(QUEUED, 0);
+      w(0x57f23c, f);
+      for (const d of due.get(f) ?? []) w(place(d.slot) + 0x58, (d.x | (d.y << 16)) >>> 0);
+      then(f, world);
+      const keyWords = new Map<number, number>();
+      for (const [vk, down] of world.keys) if (down) keyWords.set((KEYS + vk) & ~3, (keyWords.get((KEYS + vk) & ~3) ?? 0) | (1 << (8 * ((KEYS + vk) & 3))));
+      for (let a = KEYS; a < KEYS + 256; a += 4) w(a, keyWords.get(a) ?? 0);
+      w(BUTTONS, world.buttons);
+      w(MOUSE, world.mouse[0]); w(MOUSE + 4, world.mouse[1]); w(SCREEN_X, world.screen[0]); w(SCREEN_Y, world.screen[1]);
+      for (let i = 0; i < 12; i++) w(SELECTION + 4 * i, world.selection[i] !== undefined ? place(world.selection[i]) : 0);
+    });
+    return { lines: PRINTED.got.map((t, i) => `${PRINTED.frames[i]} ${Buffer.from(t, "hex").toString()}`), sent };
+  };
+
+  it("sends the mouse when it moves, on its own ring, and mouse() reads it two frames on", () => {
+    const got = run([
+      "program(async () => {",
+      "  while (true) {",
+      "    const at = mouse(P1);",
+      "    if (at.x || at.y) print(`${at.x},${at.y}`);",
+      "    await nextFrame();",
+      "  }",
+      "});",
+    ].join("\n"), 9, (f, world) => {
+      if (f === 2) { world.screen = [100, 200]; world.mouse = [30, 40]; }
+      if (f === 4) world.mouse = [31, 40];
+      if (f === 6) world.screen = [100, 2100];
+    }, true);
+    expect(got.sent.map((s) => s.replace(/select .*/, "select"))).toEqual(["2 select", "2 move 130,240", "2 select", "4 select", "4 move 131,240", "4 select", "6 select", "6 move 131,2014", "6 select"]);
+    expect(got.lines).toEqual(["4 130,240", "5 130,240", "6 131,240", "7 131,240", "8 131,2014", "9 131,2014"]);
+  });
+
+  it("a click is the frame the button went down", () => {
+    const got = run([
+      "program(async () => {",
+      "  while (true) {",
+      "    if (clicked(P1)) print(\"left\");",
+      "    if (clicked(P1, \"right\")) print(\"right\");",
+      "    await nextFrame();",
+      "  }",
+      "});",
+    ].join("\n"), 10, (f, world) => {
+      if (f === 2) world.buttons = 2;
+      if (f === 5) world.buttons = 0;
+      if (f === 6) world.buttons = 8;
+      if (f === 7) world.buttons = 0;
+    });
+    expect(got.lines).toEqual(["4 left", "8 right"]);
+  });
+
+  it("sync() sends the value from the player's computer and resolves two frames on, everywhere", () => {
+    const got = run([
+      "program(async () => {",
+      "  const before = memory.game.frame;",
+      "  const x = await sync(P1, local.camera.x + 7);",
+      "  print(`got ${x} after ${memory.game.frame - before}`);",
+      "  const [a, b] = await sync(P1, 1000000, 5);",
+      "  print(`${a} ${b}`);",
+      "});",
+    ].join("\n"), 12, (f, world) => { if (f === 1) world.screen = [300, 0]; });
+    expect(got.lines).toEqual(["3 got 307 after 2", "5 1000000 5"]);
+  });
+
+  it("a program for every player reads each player's own keys", () => {
+    const got = run([
+      "program(async () => {",
+      "  while (true) {",
+      "    if (keyPressed(CurrentPlayer, \"Space\")) print(\"jump\");",
+      "    await nextFrame();",
+      "  }",
+      "}, { owner: AllPlayers });",
+    ].join("\n"), 8, (f, world) => {
+      if (f === 2) world.keys.set(virtualKey("Space")!, 1);
+      if (f === 3) world.keys.set(virtualKey("Space")!, 0);
+    });
+    expect(got.lines).toEqual(["4 jump"]);
   });
 });
