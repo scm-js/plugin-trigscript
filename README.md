@@ -435,7 +435,7 @@ with a message, never passed over in silence.
 | `try` / `catch` / `throw` | Missing | The game has no exceptions. What is always a mistake — an index past the end, a full heap, a stack overflow — is said in the game in red, or listed by Simulate. |
 | `async` / `await`, promises, generators, timers | Missing | `sleep()` is how a program waits: it gives the frame back and carries on later, and may stand anywhere but in a function that calls itself or a loop over units. Something on its own clock is another `program()`. |
 | Modules | Same | `import` between the script's files and from `"trigscript"`; nothing from npm. A function another file's program calls is made with `game()`. |
-| The standard library | A little | `Math.min`, `Math.max`, `Math.abs` (and the rounding ones, which change nothing), `String(n)`, `n.toString()`, `Array.from`, `new Array(n).fill(v)`. For `console.log` there is `print()`, for `Math.random()` there is `random(n)`. Inside a program `Math.random()`, `Date.now()` and `new Date()` are refused, since they would be worked out once when the map is built; game time is `elapsed()` or `memory.game.frame`. No `JSON`, `Date`, `RegExp`, `Object.*`, and no `Math.sqrt` or `**` on a variable. |
+| The standard library | A little | `Math.min`, `Math.max`, `Math.abs` (and the rounding ones, which change nothing), `String(n)`, `n.toString()`, `Array.from`, `new Array(n).fill(v)`; `Math.sqrt`, `Math.sign`, `Math.log2` (of a whole number: rounded down), `~`, and `**` / `Math.pow` by a power known when the script is built. For `console.log` there is `print()`, for `Math.random()` there is `random(n)`. Inside a program `Math.random()`, `Date.now()` and `new Date()` are refused, since they would be worked out once when the map is built; game time is `elapsed()` or `memory.game.frame`. No `JSON`, `Date`, `RegExp`, `Object.*`, and no `**` by a variable. |
 | — | Added | What TypeScript has no word for: `sleep`, `rose` and `once`, reads of the game (`minerals(p)`), `Unit` objects and loops over units, `stats()`, `keyPressed` / `clicked` / `mouse` / `chatted`, `shared()`, per-player programs. |
 
 The sections below say each of these in full, and [What a program does not
@@ -553,8 +553,11 @@ program(() => {
 Everything inside the arrow runs in the game. **A program is a coroutine the game
 resumes every frame.** Its body runs from where it left off until it reaches a `sleep()`
 or its end, all within that frame; the next frame it goes on from there. A body that ends
-stops for good. `while (true) { …; sleep(frames(1)); }` is therefore a game loop running
-once per frame, and `sleep(seconds(2))` at its end makes it one every two seconds.
+stops for good, and a `return` at the top of the body ends it there (`if (!hero) return;`).
+`while (true) { …; sleep(frames(1)); }` is therefore a game loop running once per frame,
+and `sleep(seconds(2))` at its end makes it one every two seconds. A trigger's `preserve()`
+does nothing in a program, which is said as a remark; `disabled(…)` is refused, since a
+program tests its conditions and runs its actions rather than skipping them.
 
 #### Variables and records
 
@@ -571,7 +574,7 @@ played and cost the map nothing: no death counters, no switches, no triggers in 
 arrays; each kind has its paragraph below. `let hp = [10, 20, 30]`, `let xs = [a, a * 2, 0]`,
 `let lives: u8[] = new Array(12).fill(3)`; an index is a constant or a variable
 (`hp[i] += 7`, `hp[i + 1]++`), `.length`, `for (const x of xs)` with `break` and `continue`
-(`x` is a copy of the cell, as in TypeScript), `fill(v)`, `includes(v)` and `indexOf(v)`
+(`x` is a copy of the cell, as in TypeScript), `fill(v, start?, end?)`, `includes(v)` and `indexOf(v)`
 (−1 when there is none) all run within the frame. A `const` array the body stores into is an
 array of the program like a `let` one. Cells keep their type: a `u8[]` stops at both ends, a
 `number[]` goes below zero. An array handed to a function is the same array. In a program of
@@ -1199,8 +1202,9 @@ if (target) target.order("move", locations.Exit);
 
 `unitsAt(location, filter?)`, `unitsOf(player, filter?)` and `allUnits(filter?)` are what a
 `for…of` runs over; `first(filter?)`, `nearest(type, location, filter?)` and
-`randomUnit(filter?)` pick one unit or `null`, and TypeScript wants the `if (target)` before
-the unit is used (or `target?.kill()`). A filter is `{ type, owner, at }`, every part known
+`randomUnit(filter?)` pick one unit or `null` — `first` and `randomUnit` take a set too,
+`first(unitsAt(locations.Base, { owner: P1 }))` — and TypeScript wants the `if (target)`
+before the unit is used (or `target?.kill()`, `target?.hp ?? 0`). A filter is `{ type, owner, at }`, every part known
 when you build; `units.Men`, `units.Buildings` and `units.Factories` work as a type, and
 `CurrentPlayer` as an owner. Units come oldest first: the game's unit table in the order the
 game hands its places out (slot 0, then 1699 downwards), the walk stopping once it has met

@@ -1125,7 +1125,8 @@ class Scope {
         }
         return true;
       }
-      case "return": return (this.native && this.returning.length > 0 && this.returned(s)) || this.island(s);
+      // (A `return` at the top of a program ends it: nothing to give back.)
+      case "return": return (this.native && (this.returning.length > 0 ? this.returned(s) : s.value === undefined)) || this.island(s);
       // (A map of our own: the slots `planTasks` made — a listener's, `on.*`'s, as any other's.)
       case "start": {
         const slots = this.native ? this.slots.get(s) : undefined;
@@ -2680,6 +2681,8 @@ class Emitter {
   /** A `return`: the value into the result of the function or inlined call around it, and on to its end. */
   ret(s: Extract<Stmt, { kind: "return" }>): void {
     const frame = this.frames[this.frames.length - 1];
+    // At the top of the program: its end, for good.
+    if (!frame) { this.goto(END); return; }
     const r = frame.result;
     if (r && r.kind === "boolean" && s.value !== undefined) this.setBool(r.id, s.value as BoolExpr);
     else if (r) this.write(r.id, s.value === undefined ? { c: 0, terms: [] } : linear(s.value as NumExpr)!);
@@ -4757,8 +4760,11 @@ class Emitter {
       // product of the target — and stays one of its own.)
       // (Or a field that holds it plus a constant — a store of `xs[i] + 1` — when nothing tests the scratch cell or
       // routes into it: the scratch's 0 to start from is that constant.)
-      // (A map of our own only: a cell trigger of its own adds its number in, where the Python side's reads may set it.)
-      const fromConst = (p: Place) => this.scope.native && p.scale === 1 && !p.base && !tested.get(t.copy!.from.slice(1))?.length && !routedInto.get(t.copy!.from.slice(1))?.length;
+      // (A map of our own only: a cell trigger of its own adds its number in, where the Python side's reads may set it.
+      // Not when a masked write works the scratch cell — `&`, `|`, `^` by a constant: a `set 0` under a mask would
+      // become a set of the constant under it, and put the constant's bits there: `(v & 0xffff) − 1025` came out as
+      // v's low half under −1025's high half, step 12's Open list.)
+      const fromConst = (p: Place) => this.scope.native && p.scale === 1 && !p.base && !tested.get(t.copy!.from.slice(1))?.length && !routedInto.get(t.copy!.from.slice(1))?.length && !(scratch.get(t.copy!.from.slice(1)) ?? []).some((a) => a.mask !== undefined);
       const lonePlace = !apart && ps.length === 1 && ps[0].dword && plainPlace(ps[0]) ? ps[0]
         : !apart && ps.length === 2 && (this.own.has(target) || !!this.scope.decls.get(target)?.scoped) && (plainPlace(ps[1]) || fromConst(ps[1])) && ps[0].dword && !cellsRead.has(JSON.stringify(ps[0].dword)) ? ps[1]
         : undefined;

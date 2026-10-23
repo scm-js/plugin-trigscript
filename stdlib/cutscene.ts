@@ -6,7 +6,7 @@
  *   async function intro(raider: Unit) {
  *     const cam = new Camera(raider.x, raider.y);
  *     await line(units.JimRaynorMarine, "Something's moving out there.", 3 * SECOND);
- *     const there = walk(raider, 1200, 640);
+ *     const there = start(walk(raider, 1200, 640));   // the walk goes on while the camera follows
  *     await cam.follow(raider, 2 * SECOND);
  *     await there;
  *     await cam.pan(1600, 400, 2 * SECOND);

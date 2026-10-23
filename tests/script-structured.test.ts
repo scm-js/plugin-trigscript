@@ -524,7 +524,7 @@ describe("structured: diagnostics", () => {
     });`);
     // Dividing by a variable is fine now.
     expect(msgs.some((m) => m.startsWith("4:"))).toBe(false);
-    expect(msgs).toContain("5:Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>.");
+    expect(msgs).toContain("5:The power is known when the script is built: a ** 2, Math.pow(a, 3). For one the game works out, multiply in a loop.");
     expect(msgs).toContain("6:wait's milliseconds must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.");
     expect(msgs.some((m) => m.startsWith("7:Variables hold numbers, booleans, texts, units of the game or records of them ({ lives: 3 }); s is symbol"))).toBe(true);
     expect(msgs.some((m) => m.startsWith("8:f calls itself on every path through it"))).toBe(true);

@@ -16,6 +16,7 @@ import { Sections, readFacts, writeChunks } from "../compiler/backend/chk";
 import { firstFault, MAGENTA_MEMBER, positionIn, ScriptService, type Compiler } from "../service";
 import { readFiles, readManifest, scriptState } from "../script";
 import type { EudplibBuildEvent, EudplibContribution, EudplibService } from "../vendor/eudplib";
+import type { OwnBuildEvent } from "../service";
 import { defaultLib } from "../bundle/lib.mjs";
 
 const LIB = defaultLib();
@@ -252,7 +253,7 @@ describe("service: saving applies the script and builds its programs", () => {
     expect(manifest?.programs).toBe(1);
     expect(manifest?.ownRefusal).toBeUndefined();
     // The step: the scenario in, the built one out — no second compile, the apply's is fresh.
-    const heard: EudplibBuildEvent[] = [];
+    const heard: OwnBuildEvent[] = [];
     svc.onBuild((e) => heard.push(e));
     const before = compiles;
     const out = await step.run({ map: chk(), fileName: "x.scx", purpose: "save", signal: new AbortController().signal });
@@ -293,7 +294,7 @@ describe("service: saving applies the script and builds its programs", () => {
     expect(h.steps[0].applies()).toBe(false);
     expect(lib.contributions[0].applies()).toBe(true);
     // Asked to build all the same (an older manifest, say): the refusal is the error, said to the listeners too.
-    const heard: EudplibBuildEvent[] = [];
+    const heard: OwnBuildEvent[] = [];
     svc.onBuild((e) => heard.push(e));
     await expect(h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "test", signal: new AbortController().signal })).rejects.toThrow(/^TrigScript's own build does not take the script: the action Wait .*\. Apply the script again to build it through eudplib\.$/);
     expect(heard.at(-1)).toMatchObject({ kind: "failed", purpose: "test", from: "trigscript" });

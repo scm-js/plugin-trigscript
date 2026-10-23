@@ -23,6 +23,7 @@ export const KO: Record<string, string> = {
   "Beside the map: open the script as a panel, so the map stays in reach": "맵 옆에: 스크립트를 패널로 열어 맵을 계속 다룰 수 있게 합니다",
   "Build failed": "빌드 실패",
   "Build failed: {message}": "빌드 실패: {message}",
+  "Build warning: {message}": "빌드 경고: {message}",
   "Building for Save…": "저장용으로 빌드 중…",
   "Building for Test Map…": "맵 테스트용으로 빌드 중…",
   "Building for an export…": "내보내기용으로 빌드 중…",

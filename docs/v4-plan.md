@@ -3984,8 +3984,9 @@ the ledger is the list it can be written again from at 4.0.
   *A probe through eudplib* (`EUDPLIB=1`) still needs the plugin-eudplib checkout and the Python: step 16's gate is
   the last use of it.
 - Step 14's leftovers (2026-10-23). *Magenta.* A map with Magenta's member goes through eudplib with TrigScript's
-  programs in its build; Magenta on the own layout, or two payloads behind each other, is for later. *Protection.*
-  The own build scrambles nothing (eudplib's MRGN, shuffle and fake ISOM): the user's call. *The fixes' lines.*
+  programs in its build. Decided 2026-10-23: Magenta's build rows go on our backend too — a slice of its own after
+  step 17 (*Magenta on our backend*, under *Open decisions*). *Protection.* Decided 2026-10-23: none. The own build
+  scrambles nothing (eudplib's MRGN, shuffle and fake ISOM), and will not. *The fixes' lines.*
   "227 rows of UNIx at the defaults with settings left in: zeroed" is true of nearly every map StarEdit wrote (it
   fills the defaults in); the line could be quieter. *A refusal found at build only.* The apply's compile answers for
   the map as it was; a map whose players change after the apply (a slot made a computer, say) is built with the
@@ -3993,23 +3994,16 @@ the ledger is the list it can be written again from at 4.0.
   *The step's purpose.* `document.export` from a plugin builds too (the host runs the steps); nothing says which plugin
   asked. *Sounds.* A clip the apply wrote as a member is in the archive; a build after `withSounds` refused one is not
   reached (the apply throws first).
-- `new P(4).x` written in a program's expression is "A value must be known when the script is built"; the same through
-  a function (`function made(x) { return new P(x).x; }`) is taken.
-- `displayText(text, always)` made a print loses its flag — to check against the flags a print gives Display Text.
-- `disabled(…)` inside a program is neither refused nor said: a disabled condition in an `if` holds, as in a trigger.
-  `preserve()` and `preserveTrigger()` there are dropped (every program is preserved), also without a word.
-- False errors: `n++` used as a value in a loop's body ("This loop's condition never changes" — `checkSleeps` does not
-  see writes inside expressions or calls); a comparison passed as a boolean argument (`step(n, turns < 2)`); a `switch`
-  on a text known when built; `?:` between two closures; an arrow using `this` inside a method (a JavaScript exception
-  as the message); `first(…)?.order(…)` on a pick; `u?.hp ?? 0`; `await sleep(…).then(() => 7)`.
-- `return` at the top of a program is "return outside a function", and `trigscript/cutscene`'s own example uses it (and
-  `first(unitsAt(…))`, which `first` does not take).
-- Not in a program, against JavaScript: `~a`, `**`, `Math.pow`, `Math.sign`, `Math.log2`, `fill(v, start, end)`,
-  `reduce` with no first value. A `const HALF = 7 / 2` worked out when built is 3.5, a fixed number; the same `7 / 2` in
-  the game is 3.
-- A condition kept in a variable: `const both = command(…) && bring(…)` is "Variables hold numbers, booleans, … before
-  is Condition", where `switchIs(…) && !switchIs(…)` is taken as a boolean, and either in an `if` is taken
-  (found writing `probes/own-game.ts`, 2026-10-20).
+- Taken by the bug pass of 2026-10-23 (*The Open list's bug pass*, below): `new P(4).x`; `disabled()` and `preserve()`
+  in a program; the false errors (`n++` as an index, a comparison as a boolean argument, a `switch` on a known text, an
+  arrow's `this` in a method, `first(…)?.order(…)`, `u?.hp ?? 0`, `sleep(…).then(() => 7)`); `return` at the top of a
+  program and the cutscene example; `~`, `**`, `Math.pow`, `Math.sign`, `Math.log2`, `fill(v, start, end)`; a
+  condition kept in a `const` with `&&`; a build-time throw inside a `try`; `rows[i].pop() ?? -1`; the emitter's
+  fold of a masked scratch cell into a constant; `memory()` of the deaths table's cells 12 to 26.
+- `displayText(text, false)` with `name()` or `color()` in the text is a print, and a print is always displayed: said
+  as a remark since 2026-10-23 (a flag on the print IR would be the way to keep the `false`, in both backends).
+- A `const HALF = 7 / 2` worked out when built is 3.5, a fixed number; the same `7 / 2` in the game is 3. (JavaScript's
+  arithmetic when the script is built, the game's in the game: as documented, not a bug.)
 - `command()` straight after `killUnit()` or `removeUnit()` still counts the units (the game counts them until the next
   frame) where the simulator does not; and two Transmissions, the second while the first one's time runs, hold the
   second until the program reaches it again (both builds; found writing `probes/own-fields.ts`, 2026-10-20).
@@ -4064,16 +4058,16 @@ the ledger is the list it can be written again from at 4.0.
   colon keeps it right either way) — the probe settles it. Two lines typed in one frame keep the later one. The carriers stand at (64, 64): a `Bring` of the map's own triggers over a location at the
   corner counts them for the human. The passes' cost a frame is not weighed. A sync() value is at most 2^20 − 2 on
   any map of 64 by 64 or more, as before; on a smaller map the point carries fewer bits (18 on 32 by 32), and the
-  value is cut to that. The emitter folds a sum of bit-slices of one read with a negative constant wrongly (above,
-  "Found on the way"): to find in the emitter's sliced copies and fix, with a random-program test that mixes `&`,
-  `>>>` and a subtraction.
+  value is cut to that. The emitter's fold of a sum of bit-slices of one read with a negative constant (above, "Found
+  on the way") was the lone-place fold of a masked scratch cell, fixed 2026-10-23 (*The Open list's bug pass*).
 - **The map's own triggers on a map of our own (step 13), what is left:** the order is eudplib's — every player's
   triggers, then the programs — and no other can be said yet (a program before the triggers would run from the first
   player's list, before their entry's chain: a word in `program()`'s options). A trigger for a player group the game
   gives no list (Players 9 to 12, Foes, Allies, Neutral, Non-Allied Victory Players) is in no list, as in the game,
-  without a word. The map's own triggers' Comments are kept as the game keeps them (a Comment action in the payload: 32
-  bytes each). A map maker's own hyper triggers in the map's TRIG section are left out as the script's are, found by
-  their shape (preserved, 32 or more `Wait(0)`s) — said in the build's line, nowhere else yet. The chain's nodes are
+  said as a build warning since 2026-10-23 (a notice in the editor and a line of the log). The map's own triggers'
+  Comments are kept as the game keeps them (a Comment action in the payload: 32 bytes each). A map maker's own hyper
+  triggers in the map's TRIG section are left out as the script's are, found by their shape (preserved, 32 or more
+  `Wait(0)`s) — said in the build's line, and as a build warning since 2026-10-23. The chain's nodes are
   stacked as the graph's triggers are, 2,408 bytes a node only when full. Open in eudplib's build, found by the probe:
   it runs a trigger whose Disabled flag is set (the game does not), and with `hyperTriggers()` in the map it goes
   through the triggers every second frame (the game's own doing under eudTurbo, measured: a list with hyper triggers in
@@ -4081,14 +4075,12 @@ the ledger is the list it can be written again from at 4.0.
 - A `deaths(p, u)` read whose cell is 12 to 26 dwords into the deaths table (Player 2's Ghosts, Player 1's Vultures)
   cannot be asked by its EPD — the game reads the player group of that number instead (13 the current player, 17 all
   players, 18 to 21 the forces) — so a map of our own asks the game's own Deaths condition of that player and unit, the
-  mask in its record (fixed in step 13, found by its probe: the read gave the current player's Marines). The same holds
-  for `memory(0x58A394 … 0x58A3CC)` in both builds, which still read the group: in the Open list for the Python side.
+  mask in its record (fixed in step 13, found by its probe: the read gave the current player's Marines). `memory()` and
+  `setMemory()` of those fifteen dwords name the cell as the deaths of player e mod 12 of unit e div 12 since
+  2026-10-23 — the front end's doing, so both builds and the simulator have it.
 - A variable set from a constant less itself (`j = 1 - j`) is copied a bit at a time — 32 triggers, about 0.5 µs, where
   eudplib's is two actions: the game's subtract stops at 0, so the emitter copies a variable read times −1 (found
   weighing the errors probe, 2026-10-22).
-- A call worked out when the script is built that throws is a compile error even inside a `try` (both builds):
-  `try { total += check(9); } catch { … }` says "too big: 9 — this expression is computed when the script is built";
-  JavaScript would catch it. Found writing `tests/emitter.test.ts` ("a map of our own, errors").
 - A map of our own: JSX inside a program was "made while the game runs" even when it held nothing of the program's —
   taken since step 8's part 3;
   (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
@@ -5518,6 +5510,46 @@ every probe is built our way by default.
 - **Tests:** `tests/own-build.test.ts` +2 (the maps' rows and the lines read back; the walk), `tests/service.test.ts`
   (the maps logged under `withVariableMap`), `tests/game-variables.test.ts` as before.
 
+### The Open list's bug pass (2026-10-23)
+
+Between step 15 and step 16, the Open list's bugs (above, *The ledger* → *Open*), taken on branch `open-bugs`. Each
+has a row in `tests/open-list.test.ts` (the bodies run in JavaScript too, and compared), and a ledger script where it
+is a thing a script can say.
+
+- **The emitter's fold.** `(v & 0xffff) − 1025` came out as v's low half under −1025's high half (0xFFFF0003 for
+  v = 3): the plan's *lone place* fold puts a scratch cell straight into the one dword that takes it, and when that
+  dword starts from a constant it turns every `set 0` act of the scratch cell into a set of the constant — the `&`'s
+  own `set 0 under ~mask` among them, which then wrote the constant's bits under the mask. The fold is not made when a
+  masked write works the scratch cell (`&`, `|`, `^` by a constant); the copy with the constant added is right. The
+  test (`tests/emitter.test.ts`, "a sum of bit-slices of one read") has eight shapes of it.
+- **`return` at the top of a program** ends it: the front end emits a `return` with no function around it, the emitter
+  goes to the run's END (`Emitter.ret` with no frame), the Python side jumps to a label after the body (its top
+  coroutine's `end`), and the simulator already ended the run. A value is refused: a program gives nothing back.
+- **The deaths table's cells 12 to 26.** `memory()` and `setMemory()` of a dword 12 to 26 dwords into the table name it
+  as the deaths of player e mod 12 of unit e div 12 — the same cell — in the front end (`runtime.ts`, `deathsAt`), so
+  both builds and the simulator have it; the game would have read the player group of that number.
+- **Said now.** `disabled(…)` in a program is refused (a condition or an action); `preserve()` is a remark;
+  `displayText(…, false)` with `name()` or `color()` in it is a remark (a print is always displayed). The build warns,
+  as a notice in the editor and a line of the log, of hyper triggers of the map's own left out and of triggers for a
+  player group the game runs no list for (`OwnBuild.warnings`, the service's `warning` event).
+- **False errors.** `n++` as an index in a loop (`checkSleeps`'s `assigned` now follows calls inside expressions; the
+  index is worked out before the value, as JavaScript has it); a comparison as a boolean argument; a `switch` on a text
+  known when built (matched then); an arrow's `this` inside a method (the hoister leaves a function value with `this`
+  in it to the program); `first(…)?.order(…)` (`libraryName` no longer takes a member of one of the library's
+  interfaces — the unit's `order()` — for the library's `order()` action); `u?.hp ?? 0`; `sleep(…).then(() => 7)` as
+  a value; `new P(4).x`; `const both = command(…) && bring(…)` (kept as the conditions, asked where tested);
+  `rows[i].pop() ?? -1`; a build-time throw inside a `try` (the program's error, which the catch takes).
+- **Against JavaScript.** `~a` (a ^ −1), `a ** n` and `Math.pow(a, n)` by a power known when built (products),
+  `Math.sign` (two signed comparisons), `Math.log2` of a whole number (rounded down: five comparisons with powers of
+  two, by halving; 0 for 0), `fill(v, start, end)` (`sliceEnd`'s bounds).
+- **The library.** `first()` and `randomUnit()` take a set of units — `first(unitsAt(locations.Base, { owner: P1 }))`.
+  The cutscene module's header example compiles as written (a test reads it): the walk the camera follows is
+  `start(walk(…))`, a task, since a promise kept in a const and awaited later is not the language's.
+
+Still open from the list: the step 10 to 15 leftovers (sizes and speeds), `j = 1 - j` copied a bit at a time, the
+texts' 1,023-byte count, `shared(0)` set again by each run, `let total = shared(0)`, and P9 to P12 owners confirmed in
+the game.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
@@ -6187,6 +6219,12 @@ build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
   routines reached by pointer, only in a run that asks for EUD.
 - **The version number.** 4.0.0 for A1 + A2 because *Run in the game* is a new mode, or
   3.13 until the language changes in B1. Proposed: 4.0.0 at A1 + A2.
+- ~~Map protection on the own build.~~ Decided 2026-10-23 (the user): none. eudplib scrambles MRGN, shuffles its
+  payload and adds a fake ISOM; the own build does nothing of the kind, and will not.
+- **Magenta on our backend.** Decided 2026-10-23 (the user): a map with Magenta's triggers in it goes on our backend
+  too, not through eudplib. Magenta's build rows (text, maths, unit passes, checks, chat, keys, clicks) are expanded
+  today by its euddraft plugins in Python; the slice lays them out as TrigScript programs on the own layout, after
+  step 17. Until then a map with Magenta's member is built through eudplib (`whyNotOwn`).
 
 ## Facts this plan leans on
 

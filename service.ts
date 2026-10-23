@@ -122,8 +122,11 @@ export type OwnBuilder = (input: OwnBuildInput, dist: string) => Promise<OwnBuil
 /** The member the Magenta plugin keeps its triggers in: a map with it is built through eudplib, with Magenta's, until Magenta builds on the own layout too. */
 export const MAGENTA_MEMBER = "magenta\\magenta.json";
 
-/** A build of the programs by TrigScript itself, said the way the library says its own (`EudplibBuildEvent`), so the editor hears both alike. */
-export type OwnBuildEvent = EudplibBuildEvent;
+/**
+ * A build of the programs by TrigScript itself, said the way the library says its own (`EudplibBuildEvent`), so the
+ * editor hears both alike — and a warning of its own: a trigger of the map's own left out or never run (`OwnBuild.warnings`).
+ */
+export type OwnBuildEvent = EudplibBuildEvent | { kind: "warning"; message: string };
 
 /** The script's members as the map holds them, by their stored names, and the WAVs its last build wrote for its clips. */
 export function snapshotExtras(api: PluginApi): Map<string, Uint8Array> {
@@ -311,6 +314,7 @@ export class ScriptService {
       if (isRefused(out)) throw new Error(this.t("TrigScript's own build does not take the script: {reason}. Apply the script again to build it through eudplib.", { reason: out.refused }));
       for (const line of out.lines) log(line);
       for (const line of out.maps?.lines ?? []) log(line);
+      for (const message of out.warnings) say({ kind: "warning", message });
       say({ kind: "done", purpose: input.purpose, contributors, log: lines.join("\n"), chkBytes: out.chk.length, ms: Date.now() - started });
       return out.chk;
     } catch (err) {
@@ -417,7 +421,7 @@ export class ScriptService {
   }
 
   /** Hear about the builds of the programs — TrigScript's own, and the library's (both run on Save, Test Map and export): the log, and where a failure points. */
-  onBuild(listener: (event: EudplibBuildEvent) => void): { dispose(): void } {
+  onBuild(listener: (event: OwnBuildEvent) => void): { dispose(): void } {
     this.ownListeners.add(listener);
     let mine: { dispose(): void } | null = null;
     const watch = this.watchLibrary((library) => { mine?.dispose(); mine = library?.onBuild?.(listener) ?? null; });
