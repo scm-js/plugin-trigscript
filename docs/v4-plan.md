@@ -3415,9 +3415,10 @@ No relocation, no scrambling, no flags to flip (the map has no triggers of its o
 - **Played in Remastered (2026-10-19):** `trigscript-own-loader.scx` printed all eight lines, every one "ok" — the
   first TrigScript map Remastered has run with no eudplib in it. Quitting was clean: the recording ends on the Single
   Player menu, no error — the end of a game, when the owner's list still holds nodes outside the game's heap, is fine.
-- Not yet: anything the emitter leaves to the Python side (texts with values, units, arrays it does not read, calls,
-  tasks, per-player programs, `trigger()` records of the map's own), and the map's own triggers alongside (eudplib's
-  stage 3 keeps them; ours drops them). The probe map is `trigscript-own-loader.scx` in the Maps folder: played in
+- Not yet (as of 2026-10-19; every one of these has since landed, the map's own triggers as step 13): anything the
+  emitter leaves to the Python side (texts with values, units, arrays it does not read, calls, tasks, per-player
+  programs, `trigger()` records of the map's own), and the map's own triggers alongside (eudplib's stage 3 keeps them;
+  ours drops them). The probe map is `trigscript-own-loader.scx` in the Maps folder: played in
   Remastered, it says whether the start-up holds there — and whether the end of a game does, the one moment where a
   list holding nodes outside the game's heap could matter (eudplib's lists hold them too).
 
@@ -3573,8 +3574,10 @@ found what they left out; where a step moved, its old number is given.
 12. **Input** (was 7; idea 13). Keys, clicks, the mouse, typed lines, sync channels, the `local.*` reads and the user's
     player id. The test harness types and presses through chatEvent's and MSQC's addresses (`GameSim`): it moves with
     them, and the map stops needing what MSQC takes (a location, the Valkyrie's entry, Player 12's units).
-13. **The map's own triggers** (was 8). Kept beside the program, in eudplib's order (programs after every player's
-    triggers) or another one said; `trigger()` and `hyperTriggers()` records.
+13. **The map's own triggers** (was 8) ✓ — "The map's own triggers on our own backend" (all 13 of the ledger's rows).
+    The map's TRIG section and the script's `trigger()` records laid out as the game's own nodes in the payload, a copy
+    a player, each player's run in turn before the programs, as eudplib's build runs them; `hyperTriggers()` records
+    left out, the map's triggers running every frame as it is.
 14. **The build in the editor** (new). A build step of the plugin's own for Save, Test Map and export; the CHK and the
     archive written in the plugin (mopaq bundled, or an addition to the plugin API); eudplib's fixes to the map
     (MTXM's null tiles, a desync by its source's account; UNIT flags; UNIx/UPGx/TECx defaults); the script's settings
@@ -4023,13 +4026,15 @@ the ledger is the list it can be written again from at 4.0.
   is a condition that fails each frame (13 ns), one with nothing in it a trigger passed by as done: a timer wheel
   (idea 2) would make a sleeper cost nothing until its frame. "did not start" is said in red by the game, as the Python
   side's build says it, where the simulator notes a fault (both builds).
-- **Unit events on a map of our own (step 11, part 3), what is left:** the watch costs every place the game has handed
-  out 48–60 ns a frame, so a frame where nothing comes on and nothing is dying grows with the map's units, where
-  eudplib's build without `on.order` looks at its lists' heads alone: 9.3 µs against 5.2 with 128 places, and at the
-  full table about 90 against 5. The way out is a gate that passes the watch by when nothing can have changed: the head
-  of the game's list of free places (it moves when a unit is handed a place or one is freed) and a count that moves
-  when a unit starts to die (a player's losses), a dozen conditions — to be read in both games first, since Remastered
-  links its lists otherwise. Without `on.order` or `on.morphed` only.
+- **Unit events on a map of our own (step 11, part 3), what is left:** the watch is gated since 2026-10-23 ("The
+  watch's gate", below) when neither orders nor types are watched; with `on.order` or `on.morphed` every place is still
+  walked every frame (48–60 ns a place: 9.3 µs at 128 places, about 90 at the full table), and no cheap sign of an
+  order or a type changed is known. The gate's holes, each a unit whose change the game's counts do not show (reported
+  at the next frame the gate opens, or lost if its place is handed out again before that): a Zerg Egg, Cocoon or Lurker
+  Egg dying while another unit's death is in progress (the counts leave the three out, and the dying list's head moves
+  only when it was empty); a unit removed while hidden in a transport or a bunker (not counted). A frame on which a
+  place is freed costs the watch and three reads (about 15 µs at 80 places): the place behind the head moves, and
+  nothing else says so. The gate's numbers hold in Remastered (played 2026-10-23: the probe's events came on the frame).
   The handler reads a changed place's values a bit at a time, about 4 µs for a unit made: through the current player,
   pointed at the record once, instead of a copy of the record's EPD for every read. The 1,700 places are two triggers
   each (1.84 MB against eudplib's 1.27 for the probe without `on.order`): a stub of fewer actions packs tighter.
@@ -4043,6 +4048,22 @@ the ledger is the list it can be written again from at 4.0.
   value is cut to that. The emitter folds a sum of bit-slices of one read with a negative constant wrongly (above,
   "Found on the way"): to find in the emitter's sliced copies and fix, with a random-program test that mixes `&`,
   `>>>` and a subtraction.
+- **The map's own triggers on a map of our own (step 13), what is left:** the order is eudplib's — every player's
+  triggers, then the programs — and no other can be said yet (a program before the triggers would run from the first
+  player's list, before their entry's chain: a word in `program()`'s options). A trigger for a player group the game
+  gives no list (Players 9 to 12, Foes, Allies, Neutral, Non-Allied Victory Players) is in no list, as in the game,
+  without a word. The map's own triggers' Comments are kept as the game keeps them (a Comment action in the payload: 32
+  bytes each). A map maker's own hyper triggers in the map's TRIG section are left out as the script's are, found by
+  their shape (preserved, 32 or more `Wait(0)`s) — said in the build's line, nowhere else yet. The chain's nodes are
+  stacked as the graph's triggers are, 2,408 bytes a node only when full. Open in eudplib's build, found by the probe:
+  it runs a trigger whose Disabled flag is set (the game does not), and with `hyperTriggers()` in the map it goes
+  through the triggers every second frame (the game's own doing under eudTurbo, measured: a list with hyper triggers in
+  it is held to every second frame).
+- A `deaths(p, u)` read whose cell is 12 to 26 dwords into the deaths table (Player 2's Ghosts, Player 1's Vultures)
+  cannot be asked by its EPD — the game reads the player group of that number instead (13 the current player, 17 all
+  players, 18 to 21 the forces) — so a map of our own asks the game's own Deaths condition of that player and unit, the
+  mask in its record (fixed in step 13, found by its probe: the read gave the current player's Marines). The same holds
+  for `memory(0x58A394 … 0x58A3CC)` in both builds, which still read the group: in the Open list for the Python side.
 - A variable set from a constant less itself (`j = 1 - j`) is copied a bit at a time — 32 triggers, about 0.5 µs, where
   eudplib's is two actions: the game's subtract stops at 0, so the emitter copies a variable read times −1 (found
   weighing the errors probe, 2026-10-22).
@@ -5253,6 +5274,100 @@ seconds is the re-test. A chat line stays on screen longer than a printed line i
 stood alone while their answers had faded). **Re-test played (recording 10.44.13):** a hold of F7 one press and
 "held 56 frames", two quick taps two presses, `-help` answered. Step 12 played out.
 
+
+### The map's own triggers on our own backend (2026-10-23)
+
+Step 13 (`compiler/backend/own.ts`: `OwnTrigger`, the records with the players whose lists hold a copy;
+`compiler/backend/layout.ts`: the chains after each player's entry, the gate turned around; `scripts/build-own.mts`;
+the start-up's current player). The ledger's 13 rows of `trigger()`, its options and `hyperTriggers()` are taken: step
+13 is done, 13 of 13.
+
+- **The map's own triggers are the game's own nodes in the payload.** The map's TRIG section (as the editor holds it
+  before the script's records go in) and then the script's `trigger()` records, in order, each copied once for every
+  player whose list the game would copy it into — the slots named, All Players, a force, among the players the map
+  gives a human or a computer (a trigger for a player not in the game runs for nobody, as in the game). A copy is laid
+  out as a node of the game's — its conditions and actions byte for byte as the TRIG section would hold them, its
+  texts and sound files put among the map's strings, its execution flags as written — stacked as the graph's triggers
+  are, and chained: the player's entry sends the walk to the first copy, each goes on to the next, the last to the
+  player's gate. The game runs them as it runs a TRIG section's: a trigger that is not preserved is switched off once it
+  has run, a Wait holds it in the player's wait slot and the walk goes on, a disabled trigger, condition or action is
+  passed over. The TRIG section holds the start-up alone, as before.
+- **In eudplib's order.** The gate is turned around: it lets the walk into the programs when every player *after* this
+  one has an empty list, so the programs run from the last player's list still there — after every player's own
+  triggers, as eudplib's build runs them (its RunTrigTrigger at the top of each frame, the programs after). Each
+  player's copies run in their list's walk, so the current player is theirs; a copy of Player 2's that reads what
+  Player 1's set in the same frame sees it.
+- **Hyper triggers are left out.** A map of our own goes through its triggers every frame as it is (`@stop` sets the
+  game's wait between passes to 0), and under that pass the game holds a list with hyper triggers in it to every second
+  frame (measured in the lifted game with the probe's triggers as a plain classic map: passes on the odd frames, `Wait`
+  counting 84 ms a pass; eudplib's build with `hyperTriggers()` in the map is held so too). The build's line says how
+  many it left out.
+- **Found on the way.** (1) The start-up left the current player at the EPD it wrote through, and the first frame's
+  chain ran with it: the `Wait` took a wait slot that was nobody's and ended at the next pass. The start-up's last
+  trigger now puts the current player back to the player whose list it is. (2) A `deaths(P2, units.TerranGhost)`
+  read gave the current player's Marines: a deaths cell 12 to 26 dwords in is a player group's number as a player
+  field (Open, above); such a cell is now asked as the game's own Deaths condition of that player and unit. (3)
+  eudplib's build runs a trigger whose Disabled flag is set; the game does not (the classic map, the lifted game):
+  ours follows the game.
+
+| Lifted game, Remastered's weights (`probes/own-triggers.ts`: eight triggers of the map's own beside a program) | Ours | eudplib |
+| --- | ---: | ---: |
+| a quiet frame (the triggers walked, the program asleep) | **0.4 µs, 10 triggers** | 3.3 µs, 111 triggers |
+| the first frame | **6 µs** | 1,082 µs |
+| the map | 60 KB | **54 KB** |
+
+Checked: `tests/ownGame.test.ts` ("a map of our own, the map's own triggers": the players a record is copied for;
+each copy's bytes against `encodeTriggers` of the record, its flags, the chain's next pointers, the gate's conditions);
+`tests/emitter.test.ts` (the same, walked from each player's entry frame after frame as the game walks the lists — a
+trigger not preserved switched off after its run, Player 2's copy of an All Players trigger seeing the switch Player
+1's set the same frame, the program after every player's triggers; a player not in the game left out); the ledger;
+`probes/own-triggers.ts` both ways in the lifted game: every line "ok" and at the same frame as eudplib's build without
+`hyperTriggers()` — but E, where eudplib runs the disabled trigger — and as the same triggers in a plain classic map.
+Played in Remastered (2026-10-23, recording 12.37.25, `own-step13-triggers.scx`): all ten lines in order, each "ok";
+the first two groups on screen as the view fades in, D 10 game frames after them, G one after D, A2 31 after D — the
+lifted game's spacing to the frame; a clean quit. Remastered runs the payload's nodes as its TRIG section's: a Wait in
+the player's slot, a trigger switched off after its run, a disabled condition passed over, a disabled trigger not run.
+
+### The watch's gate (2026-10-23)
+
+Step 11's one loss to eudplib closed (`compiler/backend/units.ts`: the handler marks what it found; `compiler/backend/emit.ts`,
+`watch`: the gate and its numbers read again). When a program's events are `created`, `died` and `killed` alone — no
+orders, no types, which change with nothing else of the game's to show for it — the watch of the unit places is passed
+by on a frame when nothing can have come on or gone.
+
+- **What the game shows, read first** (`~/trigscript-audit-2026-10-19/tools/step13/gate-research.mts`: a quiet map
+  in the lifted game, units made, killed and removed through the engine's own actions, the game's data diffed frame by
+  frame). A unit handed a place pops the head of the free list (0x628438); a place freed goes in *behind* the head, so
+  the head does not move for it, and a pop after it can bring the head back — but not the place behind the head as
+  well. A unit that starts to die or is removed is taken off its owner's count at once — 0x581DE4 + 4p units (men and
+  every other unit but an Egg, a Cocoon and a Lurker Egg; incomplete ones too), 0x581F34 + 4p buildings (0x488CF6 in
+  1.16.1, the score screen's "Units" and "Buildings"), 12 players each, Player 12's included — where the deaths table
+  moves only for a death in a fight (not Kill Unit), the dying list's head (0x62842C) only from empty, the unit
+  finder's count (0x66FF74) is not Remastered's to read, and the free count (0x6283F0) moves a frame late.
+- **The gate**: four triggers before the walk, each a group of the numbers compared with what the watch last read —
+  the head and the place behind it (two conditions, the second's player field the EPD of the head's next pointer); the
+  units of players 1 to 6; of 7 to 12; the buildings — each holding going on to the next, the last to past the watch;
+  one failing says which group and goes into the watch. About 0.25 µs when quiet.
+- **Read again** after the walk, as far as the frame's changes reach: the head and the place behind it when a unit came
+  on (`@ev.madeN`); the counts of each player the handler marked as having a unit come on or gone (`@ev.own`, a bit
+  a player); when the gate opened and the handler found nothing (a place freed, a unit given to another player, a
+  morph: `@ev.touch` 0), the group that failed alone. A number wrong only costs the next frames the watch — the gate
+  holds only when every number is right — so the handler need not mirror the game's books; it marks owners and the
+  reads do the rest. The handler watches whether a unit is alive whenever gated, listed or not.
+
+| Lifted game, Remastered's weights, µs a frame (`probes/own-events.ts` without `on.order`, 80 places handed out) | Ours | eudplib | Ours before |
+| --- | ---: | ---: | ---: |
+| nothing coming or going (the whole frame, the listeners' tasks included) | **1.9** | 5.1 | 6.7 |
+| of it the gate | **0.25** | | |
+| a dead unit's place freed (the place behind the head moved: the watch and three reads) | 15 | 5.1 | 6.7 |
+| the first frame (the listeners started, the gate's 27 numbers read) | 389 | 1,272 | 331 |
+
+Every line of the probe at the same frame as before, both ways. Checked: `tests/emitter.test.ts` ("a map of our
+own, unit events": a unit put in a place with neither the head nor a count moved is not seen until one moves; the head
+and Player 1's count move as the game moves them and the unit is handed on). Played in Remastered (2026-10-23,
+recording 12.42.11, `own-step11-events-gated.scx`): all six lines "ok", each group at the lifted game's frame spacing
+(B two frames after A, C six after B, W fourteen after Weighed) — Remastered moves the free list's head and the counts
+as 1.16.1 does, and the gate opens on the frame a unit comes on or dies.
 
 ### Triggers stacked (2026-10-20)
 

@@ -10,7 +10,7 @@ import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarD
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
 import type { ConditionRecord } from "../vendor/triggers";
 import { END, SWITCHES, TRIGGER_BYTES, type Dword, type Graph, type Num } from "../compiler/backend/graph";
-import { layout } from "../compiler/backend/layout";
+import { layout, type OwnTriggerInput } from "../compiler/backend/layout";
 import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "../compiler/fixedMath";
 import { SIN_SCALE, atanTable, sinTable } from "../compiler/numbers";
 import ts from "typescript";
@@ -1075,14 +1075,19 @@ const laidOut = new WeakMap<Graph, { arrays: Map<string, number[]>; own: ReturnT
  * one more) when more than one, the memory kept from one to the next; each text shown noted with its frame.
  */
 /** `between`: what the game does before each frame — memory written, as units come and go. */
-function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[], frames = 1, between?: (frame: number, write: (addr: number, value: number) => void, read: (addr: number) => number) => void): Env {
+/**
+ * `lists`: the map's own triggers and the players whose lists the payload is linked into (TrigScript 4, step 13): each
+ * frame is then walked as the game walks it, from each player's entry in turn with the current player theirs, instead
+ * of from `@run`.
+ */
+function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[], frames = 1, between?: (frame: number, write: (addr: number, value: number) => void, read: (addr: number) => number) => void, lists?: { triggers: OwnTriggerInput[]; players: number[] }): Env {
   // (Laid out once a graph: a test may walk one many times.)
   let done = laidOut.get(g);
   if (!done || (done.arrays !== arrays && (done.arrays.size || arrays.size))) {
     // (Strings by number: a printed text's template 1000 on, a text known when built 5000 on.)
     const templates = (runs ? runs.flatMap((r) => r.graph.templates ?? []) : g.templates ?? []).map((t) => t.id), texts: string[] = [];
     // (Every dword no trigger or data holds all ones: nothing reads them.)
-    const own = layout({ ...(runs ? { runs } : { graph: g, owner: 0 }), strings: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays, template: (id) => 1000 + templates.indexOf(id), free: 0xffffffff });
+    const own = layout({ ...(runs ? { runs } : { graph: g, owner: 0 }), ...(lists ? { triggers: lists.triggers, players: lists.players } : {}), strings: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays, template: (id) => 1000 + templates.indexOf(id), free: 0xffffffff });
     done = { arrays, own, texts, templates };
     laidOut.set(g, done);
   }
@@ -1100,10 +1105,16 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
   // (A player field of 13 is the current player: the dword whose EPD the game's current player is.)
   const at = (epd: number) => u(DEATHS + 4 * (epd === 13 ? rd(0x6509b0) : epd));
   PRINTED.frames = [];
+  // (A switch's bit where the game keeps it.)
+  const switchAt = (sw: number): [number, number] => [SWITCHES + 4 * (sw >> 5), 2 ** (sw & 31)];
   for (let frame = 1; frame <= frames; frame++) {
   between?.(frame, wr, rd);
-  let pc = frames > 1 ? own.triggers.get("@run")! : own.address;
+  // (With the lists: each player's list in turn, from their entry, the current player theirs, as the game walks them.)
+  const starts: number[] = lists ? lists.players.map((p) => own.triggers.get(`@entry${p}`)!) : [frames > 1 ? own.triggers.get("@run")! : own.address];
   const shownBefore = PRINTED.got.length;
+  starts.forEach((start, w) => {
+  if (lists) wr(0x6509b0, lists.players[w]);
+  let pc = start;
   for (let steps = 0; !(pc & 0x80000000); steps++) {
     if (steps > Number(process.env.OWN_STEPS ?? 200_000_000)) throw new Error("the payload does not end");
     if (!inside(pc)) throw new Error(`the walk left the payload: 0x${pc.toString(16)}`);
@@ -1113,9 +1124,19 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
       // (As the game: one switched off is passed over before the kind is asked.)
       if (byte(o + 17) & 2) continue;
       if (kind === 0) break;
+      // (The game's own conditions a trigger of the map's own may have: Always, Never, Switch.)
+      if (kind === 22) continue;
+      if (kind === 23) { holds = false; continue; }
+      if (kind === 11) {
+        const [addr, bit] = switchAt(byte(o + 16));
+        holds = byte(o + 14) === 2 ? (rd(addr) & bit) !== 0 : (rd(addr) & bit) === 0;
+        continue;
+      }
       if (kind !== 15) throw new Error(`condition kind ${kind}`);
+      // (Deaths: the player's dword of the unit's row — an EPD's with unit 0, as the graph's are.)
+      const d = at(rd(o + 4)) + 48 * dv.getUint16(o + 12 - base, true);
       const masked = dv.getUint16(o + 18 - base, true) === 0x4353;
-      const x = masked ? (rd(at(rd(o + 4))) & rd(o)) >>> 0 : rd(at(rd(o + 4))), y = rd(o + 8), compare = byte(o + 14);
+      const x = masked ? (rd(d) & rd(o)) >>> 0 : rd(d), y = rd(o + 8), compare = byte(o + 14);
       holds = compare === 0 ? x >= y : compare === 1 ? x <= y : x === y;
     }
     for (let k = 0; holds && k < 64; k++) {
@@ -1126,24 +1147,30 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
         // Display Text: the string's bytes as they are now, to the first 0.
         const index = rd(o + 4);
         if (index >= 5000) { PRINTED.got.push(shown([...new TextEncoder().encode(texts[index - 5000])])); continue; }
+        // (A string of the map's own, by its number.)
+        if (index < 1000) { PRINTED.got.push(shown([...new TextEncoder().encode(`string ${index}`)])); continue; }
         const out: number[] = [];
         for (let a = own.templates.get(templates[index - 1000])!; byte(a) !== 0; a++) out.push(byte(a));
         PRINTED.got.push(shown(out));
         continue;
       }
       if (kind === 13) {
-        // Set Switch: to a random state (11), its bit where the game keeps it.
-        const sw = rd(o + 20), addr = SWITCHES + 4 * (sw >> 5), bit = 2 ** (sw & 31);
-        if (byte(o + 27) !== 11) throw new Error(`Set Switch ${byte(o + 27)}`);
-        wr(addr, randomBit() ? (rd(addr) | bit) >>> 0 : (rd(addr) & ~bit) >>> 0);
+        // Set Switch: set (4), clear (5), toggle (6), or to a random state (11), its bit where the game keeps it.
+        const [addr, bit] = switchAt(rd(o + 20)), modifier = byte(o + 27);
+        const on = modifier === 4 ? true : modifier === 5 ? false : modifier === 6 ? (rd(addr) & bit) === 0 : modifier === 11 ? randomBit() !== 0 : null;
+        if (on === null) throw new Error(`Set Switch ${modifier}`);
+        wr(addr, on ? (rd(addr) | bit) >>> 0 : (rd(addr) & ~bit) >>> 0);
         continue;
       }
+      // (Preserve Trigger and Comment, a trigger of the map's own: the trigger kept, and nothing.)
+      if (kind === 3) { wr(pc + 2376, rd(pc + 2376) | 4); continue; }
+      if (kind === 47) continue;
       // (Play WAV: noted as a sound played, which sound aside.)
       if (kind === 8) { PRINTED.got.push("wav"); continue; }
       // (Create Unit with Properties and Give Units: the game's, which a test's world plays — the units are its.)
       if (kind === 11 || kind === 48) { GAME.action?.(kind, (off) => (off === 27 ? byte(o + 27) : rd(o + off)), rd, wr); continue; }
       if (kind !== 45) throw new Error(`action kind ${kind}`);
-      const dest = at(rd(o + 16)), value = rd(o + 20), modifier = byte(o + 27), old = rd(dest);
+      const dest = at(rd(o + 16)) + 48 * dv.getUint16(o + 24 - base, true), value = rd(o + 20), modifier = byte(o + 27), old = rd(dest);
       if (dv.getUint16(o + 30 - base, true) === 0x4353) {
         // (A masked write as the game has it: the bits under the mask of both worked, a carry past them lost.)
         const m = rd(o), f = (old & m) >>> 0, w = (value & m) >>> 0;
@@ -1153,8 +1180,11 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
       }
       wr(dest, modifier === 7 ? value : modifier === 8 ? u(old + value) : Math.max(0, old - value));
     }
+    // (As the game: a trigger that ran and is not preserved is switched off.)
+    if (holds && !(rd(pc + 2376) & 4)) wr(pc + 2376, rd(pc + 2376) | 8);
     pc = rd(pc + 4);
   }
+  });
   for (let i = shownBefore; i < PRINTED.got.length; i++) PRINTED.frames.push(frame);
   }
   const out: Env = new Map([...own.vars].map(([id, a]) => [id, rd(a)]));
@@ -2145,6 +2175,10 @@ describe("a map of our own, unit events", () => {
     };
     unit(0, 0, 9);
     unit(1699, 37, 8);
+    // (The game's head of free places — the place it hands out next — and Player 1's count of units, which the watch's
+    // gate reads: both units are Player 1's.)
+    memory.set(0x628438, place(1698));
+    memory.set(0x581de4, 2);
     PRINTED.got = [];
     runOwn(o.runs[0].graph, memory, o.values, undefined, frames, then);
     return PRINTED.got.map((t, i) => `${PRINTED.frames[i]} ${Buffer.from(t, "hex").toString()}`);
@@ -2174,15 +2208,66 @@ describe("a map of our own, unit events", () => {
     expect(got).toEqual(["3 made 0", "5 order 0 6 3", "7 morphed 38 from 37", "9 died 0", "9 killed 0 by 0", "11 made 32"]);
   });
 
-  it("starts a task for each unit a handler that waits is handed", () => {
+  it("starts a task for each unit a handler that waits is handed, and passes the watch by while the game's free list and counts stand still", () => {
+    // (No orders or types watched: the watch is gated. The game's head of free places (0x628438) and Player 1's count
+    // of units (0x581DE4) move as the game moves them when a unit is made; a unit put in a place with neither moved is
+    // not seen until one does.)
+    const FREE_HEAD = 0x628438, UNITS_P1 = 0x581de4;
     const got = run([
       "program(async () => {",
       "  on.created(async (u) => { await sleep(frames(2)); print(`late ${u.type}`); });",
       "});",
-    ].join("\n"), 8, (f, w) => {
-      if (f === 3) for (const [kk, uid] of [[1698, 7], [1697, 6]]) { w(place(kk) + 0x0c, 0x700001); w(place(kk) + 0x4c, 0x0300); w(place(kk) + 0x64, 5); w(place(kk) + 0xa4, uid * 256); }
+    ].join("\n"), 12, (f, w) => {
+      const unit = (kk: number, uid: number) => { w(place(kk) + 0x0c, 0x700001); w(place(kk) + 0x4c, 0x0300); w(place(kk) + 0x64, 5); w(place(kk) + 0xa4, uid * 256); };
+      if (f === 3) { for (const [kk, uid] of [[1698, 7], [1697, 6]]) unit(kk, uid); w(FREE_HEAD, place(1696)); w(UNITS_P1, 4); }
+      if (f === 6) unit(1696, 5);
+      if (f === 8) w(UNITS_P1, 5);
     });
-    expect(got).toEqual(["5 late 5", "5 late 5"]);
+    expect(got).toEqual(["5 late 5", "5 late 5", "10 late 5"]);
+  });
+});
+
+describe("a map of our own, the map's own triggers", () => {
+  /**
+   * The lists as the game keeps them: a player not in the game has an empty one (its last pointer the list's own end),
+   * and each frame is walked from each player's entry in turn.
+   */
+  const LISTS = 0x51a280;
+  const run = (script: string, frames: number, slots: number[]): string[] => {
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r, { slots, forces: [0, 1, 1, 0, 0, 0, 0, 0] });
+    if (typeof o === "string") throw new Error(o);
+    const memory = new Map<number, number>();
+    for (let q = 0; q < 8; q++) if (!slots.includes(q)) memory.set(LISTS + 12 * q + 8, u(~(LISTS + 12 * q + 4)));
+    PRINTED.got = [];
+    runOwn(o.runs[0].graph, memory, o.values, o.runs.map((x) => ({ graph: x.graph, owner: x.player })), frames, undefined, { triggers: o.triggers, players: slots });
+    return PRINTED.got.map((t, i) => `${PRINTED.frames[i]} ${Buffer.from(t, "hex").toString()}`);
+  };
+
+  it("runs each player's own triggers in turn before the programs, every frame, and switches one that is not preserved off once it has run", () => {
+    const got = run([
+      `trigger(P1, [always()], [setDeaths(P1, units.TerranMarine, "add", 1), preserve()]);`,
+      `trigger(P2, [always()], [displayText("P2 once")]);`,
+      `trigger(AllPlayers, [switchIs(switches.Switch1, "set")], [displayText("switched"), comment("a name"), preserve()]);`,
+      `trigger(P1, [deaths(P1, units.TerranMarine, ">=", 3)], [displayText("three"), setSwitch(switches.Switch1, "set")]);`,
+      "program(async () => {",
+      "  for (let i = 0; i < 4; i++) { print(`d ${deaths(P1, units.TerranMarine)}`); await sleep(frames(1)); }",
+      "});",
+    ].join("\n"), 4, [0, 1]);
+    // Frame 3: Player 1's third trigger fires once and sets the switch; Player 2's copy of the All Players trigger,
+    // walked after Player 1's list, sees it the same frame; the program, after every player's triggers, reads the count
+    // the first trigger added to that frame.
+    expect(got).toEqual(["1 P2 once", "1 d 1", "2 d 2", "3 three", "3 switched", "3 d 3", "4 switched", "4 switched", "4 d 4"]);
+  });
+
+  it("runs the programs from the last player's list that is there, after every player's triggers, and leaves a player not in the game out", () => {
+    const got = run([
+      `trigger(P3, [always()], [displayText("P3"), preserve()]);`,
+      `trigger([P1, P2, P4], [always()], [displayText("P1 P2 P4"), preserve()]);`,
+      `program(() => { print("program"); });`,
+    ].join("\n"), 2, [0, 2, 3]);
+    expect(got).toEqual(["1 P1 P2 P4", "1 P3", "1 P1 P2 P4", "1 program", "2 P1 P2 P4", "2 P3", "2 P1 P2 P4"]);
   });
 });
 

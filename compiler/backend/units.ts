@@ -96,9 +96,14 @@ const MADE_N = "@ev.madeN", GONE_N = "@ev.goneN", TURNED_N = "@ev.turnedN", CHAN
  * ones five dwords on); the distance from place 0 of the place the game hands out next.
  */
 const EV_RECORD = "@ev.e", EV_FIELDS = "@ev.wf", EV_BOUNDARY = "@ev.be";
+/**
+ * For the watch's gate (`emit.ts`): whether the handler found a unit come on or gone this frame, and a bit for each
+ * player (0 to 11) that had one — whose counts the gate reads again.
+ */
+const EV_TOUCHED = "@ev.touch", EV_OWNERS = "@ev.own";
 const AT0 = { file: "", line: 0, column: 0 };
 /** The pass's variables, one each for the map, which no program declares; and its lists, the map's (a program's events read them). */
-export const EVENT_GLOBALS: readonly VarDecl[] = [MADE_N, GONE_N, TURNED_N, CHANGED_N, EV_RECORD, EV_BOUNDARY, EV_FIELDS].map((id) => ({ id, name: "(events)", kind: "number", shared: true, ...(id === EV_FIELDS ? {} : { routed: true }), global: true, at: AT0 }));
+export const EVENT_GLOBALS: readonly VarDecl[] = [MADE_N, GONE_N, TURNED_N, CHANGED_N, EV_RECORD, EV_BOUNDARY, EV_FIELDS, EV_TOUCHED, EV_OWNERS].map((id) => ({ id, name: "(events)", kind: "number", shared: true, ...(id === EV_FIELDS ? {} : { routed: true }), global: true, at: AT0 }));
 export const isEventGlobal = (id: string): boolean => id.startsWith("@ev.");
 /** A unit's hit points (256ths, 0 when it died in a fight) and the last player whose attack hurt it. */
 const HP_DWORD = 0x08 >> 2, LAST_ATTACKER = word(0x90, 1);
@@ -195,11 +200,11 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
 
   // ── the IR's own pieces ──
   const at = () => ({ at: here, label: "" });
-  const bin = (op: "+" | "-" | "*" | "&" | ">>>", a: NumExpr, b: NumExpr): NumExpr => {
+  const bin = (op: "+" | "-" | "*" | "&" | "|" | ">>>", a: NumExpr, b: NumExpr): NumExpr => {
     // (Of two constants, the constant: a field takes it as it is.)
     if (a.kind === "const" && b.kind === "const") {
       const [x, y] = [a.value >>> 0, b.value >>> 0];
-      return k((op === "+" ? x + y : op === "-" ? x - y : op === "*" ? Number((BigInt(x) * BigInt(y)) & 0xffffffffn) : op === "&" ? x & y : x >>> y) >>> 0);
+      return k((op === "+" ? x + y : op === "-" ? x - y : op === "*" ? Number((BigInt(x) * BigInt(y)) & 0xffffffffn) : op === "&" ? x & y : op === "|" ? x | y : x >>> y) >>> 0);
     }
     return { kind: "binary", op, left: a, right: b, ...at() } as NumExpr;
   };
@@ -481,17 +486,22 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
   const pass = (sources: Set<EventSource>): Stmt[] => {
     here = AT0;
     const died = sources.has("died") || sources.has("killed"), ordered = sources.has("ordered"), morphed = sources.has("morphed");
+    // The gate (`emit.ts`): the watch passed by on a frame when no unit can have come on or gone — only when neither
+    // orders nor types are watched, which change with nothing else of the game's to show for it.
+    const gate = !ordered && !morphed;
     type Field = { name: string; dword: number; mask?: number; compare: "atLeast" | "exactly"; read: number };
     // (The uniqueness byte first: the watch of a place whose unit is not alive ends there. The game hands a place's
     // first unit a byte above 0, and every unit dies through the order Die, its sprite still there.)
     const fields: Field[] = [{ name: "uid", dword: UID.dword, mask: 0xff00, compare: "exactly", read: 0xff00 }];
     if (ordered) fields.push({ name: "order", dword: ORDER.dword, mask: 0xff00, compare: "exactly", read: 0xff00 });
-    else if (died) fields.push({ name: "alive", dword: ORDER.dword, mask: 0xff00, compare: "atLeast", read: 0x100 });
+    // (Whether it is alive is watched for the gate too: a unit gone marks its owner, listed or not.)
+    else if (died || gate) fields.push({ name: "alive", dword: ORDER.dword, mask: 0xff00, compare: "atLeast", read: 0x100 });
     if (morphed) fields.push({ name: "type", dword: TYPE.dword, mask: 0xffff, compare: "exactly", read: 0xffff });
     const old = (name: string) => `@ev.was.${name}`, now = (name: string) => `@ev.now.${name}`;
     const e = V(EV_RECORD);
     const step = (by: number): Stmt => ({ kind: "action", record: { location: 0, text: 0, wav: 0, time: 0, player: 0, target: by, unitId: 0, type: 45, modifier: 8, flags: 0, padding: 0, mask: 0 }, variables: [{ field: "player", bits: 32, name: "at", expr: k(CURRENT) }], ...at() } as Stmt);
     const out: Stmt[] = [set(MADE_N, k(0))];
+    if (gate) out.push(set(EV_TOUCHED, k(0)), set(EV_OWNERS, k(0)));
     if (died) out.push(set(GONE_N, k(0)));
     if (ordered) out.push(set(TURNED_N, k(0)));
     if (morphed) out.push(set(CHANGED_N, k(0)));
@@ -505,14 +515,18 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
     h.push(dec(now("uid"), peek(of(e, UID.dword), 0xff00)));
     if (ordered) h.push(dec(now("order"), peek(of(e, ORDER.dword), 0xff00)));
     if (morphed) h.push(dec(now("type"), peek(of(e, TYPE.dword), 0xffff)));
-    const ALIVE = "@ev.alive";
+    const ALIVE = "@ev.alive", OWNERV = "@ev.owner";
+    if (gate) h.push(dec(OWNERV, k(0), 255));
     h.push(dec(ALIVE, k(0), 1), ...when(all([cmp(">=", peek(of(e, SPRITE)), k(1)), cmp(">=", ordered ? V(now("order")) : peek(of(e, ORDER.dword), 0xff00), k(0x100))]), [set(ALIVE, k(1))]));
     const listed = (list: string, n: string, extra: Stmt[] = []): Stmt[] => when(cmp("<", V(n), k(EVENT_CAP)), [store(list, V(n), e), ...extra, set(n, bin("+", V(n), k(1)))]);
+    // (Gated: a unit come on or gone marks the frame and its owner's bit, for the gate to read that player's counts again.)
+    const marked: Stmt[] = gate ? [set(EV_TOUCHED, k(1)), set(OWNERV, peek(of(e, OWNER.dword), OWNER.mask)), ...Array.from({ length: 12 }, (_, p) => when(cmp("==", V(OWNERV), k(p)), [set(EV_OWNERS, bin("|", V(EV_OWNERS), k(2 ** p)))])).flat()] : [];
     const same: Stmt[] = [];
-    if (died) same.push(...when(all([cmp(">=", V(old(ordered ? "order" : "alive")), k(0x100)), cmp("==", V(ALIVE), k(0))]), listed(GONE, GONE_N)));
+    if (died) same.push(...when(all([cmp(">=", V(old(ordered ? "order" : "alive")), k(0x100)), cmp("==", V(ALIVE), k(0))]), [...listed(GONE, GONE_N), ...marked]));
+    else if (gate) same.push(...when(all([cmp(">=", V(old("alive")), k(0x100)), cmp("==", V(ALIVE), k(0))]), marked));
     if (ordered) same.push(...when(all([cmp("==", V(ALIVE), k(1)), cmp("!=", V(now("order")), V(old("order")))]), listed(TURNED, TURNED_N, [store(TURNED_WAS, V(TURNED_N), bin(">>>", V(old("order")), k(8)))])));
     if (morphed) same.push(...when(all([cmp("==", V(ALIVE), k(1)), cmp("!=", V(now("type")), V(old("type")))]), listed(CHANGED, CHANGED_N, [store(CHANGED_WAS, V(CHANGED_N), V(old("type")))])));
-    h.push(...when(cmp("!=", V(now("uid")), V(old("uid"))), when(cmp("==", V(ALIVE), k(1)), listed(MADE, MADE_N)), same));
+    h.push(...when(cmp("!=", V(now("uid")), V(old("uid"))), when(cmp("==", V(ALIVE), k(1)), [...listed(MADE, MADE_N), ...marked]), same));
     // What it sees now, into the watch's numbers: whether it is alive, or its order. For a unit not alive, only another
     // in its place is news: the second condition's kind (the top byte of its dword after the number) is 0 then, and
     // the game reads no further.
@@ -524,7 +538,7 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
       if (i === 1) h.push(step(1), poke(k(CURRENT_PLAYER), bin("*", V(ALIVE), k(0x0f000000)), 0xff000000));
     });
     h.push(back());
-    out.push({ kind: "watch", fields: fields.map(({ dword, mask, compare }) => ({ dword, ...(mask !== undefined ? { mask } : {}), compare })), handler: h, ...at() } as Stmt);
+    out.push({ kind: "watch", fields: fields.map(({ dword, mask, compare }) => ({ dword, ...(mask !== undefined ? { mask } : {}), compare })), handler: h, ...(gate ? { gate } : {}), ...at() } as Stmt);
     return out;
   };
 

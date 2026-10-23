@@ -11,6 +11,8 @@
  */
 import type { CompileResult } from "../compiler";
 import type { ArrayDecl, FuncDecl, Program, VarDecl } from "../ir";
+import type { ScriptString } from "../runtime";
+import { ActionType, PlayerGroup, TriggerFlag, type TriggerRecord } from "../../vendor/triggers";
 import { ANY_PLAYERS, emitBody, groupSlots, type MapPlayers } from "./emit";
 import { NOW, type Act, type Cond, type Dword, type Graph, type Num, type Trigger, type Value } from "./graph";
 import { TextPool, knownTexts } from "./texts";
@@ -39,6 +41,50 @@ export interface Own {
   texts: string[];
   /** The players' input the map carries itself (`input.ts`): what the build makes the carriers from; absent when no program reads the players. */
   input?: OwnInputPlan;
+  /**
+   * The map's own triggers (TrigScript 4, step 13): the map's before the script's `trigger()` and `hyperTriggers()`
+   * records, in order, each with the players whose lists it runs in. The layout lays them out as the game's nodes, a
+   * copy a player, before the player's gate — so that each player's run them in turn, before the programs, as
+   * eudplib's build runs them.
+   */
+  triggers: OwnTrigger[];
+  /** How many hyper triggers (`hyperTriggers()`, or the map's own) were left out of them. */
+  hyperTriggersLeftOut: number;
+}
+
+/** A hyper trigger: preserved, most of its actions Wait(0) (`compiler/lower.ts`'s, or a map maker's own). */
+export function isHyperTrigger(t: TriggerRecord): boolean {
+  return (t.flags & TriggerFlag.Preserve) !== 0 && t.actions.filter((a) => a.type === ActionType.Wait && a.time === 0).length >= 32;
+}
+
+/**
+ * A trigger of the map's own as a map of our own lays it out: its record as written, its conditions and actions as
+ * the graph's (`game` / `record`, with the strings a text or a sound file is), and the players whose lists hold a copy —
+ * the slots this map gives a human or a computer among those the record names, All Players and the forces resolved as
+ * the game resolves them when it loads the map. A record naming no such player is in no list, as in the game.
+ */
+export interface OwnTrigger {
+  record: TriggerRecord;
+  conds: Cond[];
+  acts: Act[];
+  slots: number[];
+}
+
+/** A trigger record as the layout takes it; `string` names a text or a sound file by the record's index. */
+function ownTrigger(record: TriggerRecord, players: MapPlayers, string: (i: number) => ScriptString | undefined): OwnTrigger {
+  const slots: number[] = [];
+  for (const [group, on] of record.players.entries()) {
+    if (!on || group > PlayerGroup.Force4) continue;
+    // (A player not in the game has no list: a trigger for them alone never runs, as in the game.)
+    for (const p of groupSlots(group, players) ?? []) if (players.slots.includes(p) && !slots.includes(p)) slots.push(p);
+  }
+  slots.sort((a, b) => a - b);
+  return {
+    record,
+    conds: record.conditions.map((c): Cond => ({ dword: { game: 0 }, compare: "atLeast", value: 0, game: c })),
+    acts: record.actions.map((a): Act => ({ dword: { game: 0 }, modifier: "set", value: 0, record: a, ...(a.text || a.wav ? { strings: { text: string(a.text), wav: string(a.wav) } } : {}) })),
+    slots,
+  };
 }
 
 /** What `emitOwn` takes the map for when the build gave none: the players' slots all human, a 128 by 128 map, the last unit-properties slot. */
@@ -61,8 +107,13 @@ function ownerSlots(program: Program, players: MapPlayers): number[] | string {
  * no map).
  */
 export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & Partial<Pick<CompileResult, "input">>, players: MapPlayers = ANY_PLAYERS, textBase = 1, map: OwnMap = { ...ANY_MAP, humans: players === ANY_PLAYERS ? ANY_MAP.humans : players.slots }): Own | string {
-  // (A map of our own is built without the map's triggers, so `trigger()` records would be lost without a word.)
-  if (r.triggers.length) return `a map of our own keeps no trigger() or hyperTriggers() records yet; this script has ${r.triggers.length}`;
+  // The map's own triggers, then the script's records (step 13): a record's text or sound file is the script's string
+  // it names, the map's the map's own string already. Hyper triggers are left out: a map of our own goes through its
+  // triggers every frame as it is, and under that pass the game holds a list with hyper triggers in it to every second
+  // frame (measured in the lifted game; eudplib's build is held so too).
+  const kept = [...(map.triggers ?? []).map((t) => [t, true] as const), ...r.triggers.map((t) => [t, false] as const)].filter(([t]) => !isHyperTrigger(t));
+  const hyperTriggersLeftOut = (map.triggers?.length ?? 0) + r.triggers.length - kept.length;
+  const triggers = kept.map(([t, ofMap]) => ownTrigger(t, players, ofMap ? (i) => (i ? { index: i } : undefined) : (i) => (i ? r.strings[i - 1] : undefined)));
   const runs: OwnRun[] = [];
   const values = new Map<string, number[]>();
   // Every program's texts known when built first: the pool is numbered once they are all in, before any is lowered.
@@ -120,7 +171,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & 
     }
   }
   if (!runs.length) return "a script with no program";
-  return { programs, runs, values, texts, ...(input ? { input } : {}) };
+  return { programs, runs, values, texts, triggers, hyperTriggersLeftOut, ...(input ? { input } : {}) };
 }
 
 /**

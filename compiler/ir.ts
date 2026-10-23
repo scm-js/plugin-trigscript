@@ -701,7 +701,7 @@ export type Stmt =
    * trigger saw there last, its own numbers. A place as it was goes on to the next; one that changed runs `handler`,
    * with `@ev.e` the record's EPD and the current player at the trigger's first condition's number (`emit.ts`).
    */
-  | { kind: "watch"; fields: { dword: number; mask?: number; compare: "atLeast" | "exactly" }[]; handler: Stmt[]; at: At; label: string }
+  | { kind: "watch"; fields: { dword: number; mask?: number; compare: "atLeast" | "exactly" }[]; handler: Stmt[]; gate?: boolean; at: At; label: string }
   /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */
   | { kind: "graph"; graph: Graph; original: Stmt[]; at: At; label: string };
 

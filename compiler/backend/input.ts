@@ -36,11 +36,16 @@
  * frame and its values are in cells.
  */
 import type { ArrayDecl, At, BoolExpr, NumExpr, Program, Stmt, VarDecl } from "../ir";
-import type { ActionRecord } from "../../vendor/triggers";
+import type { ActionRecord, TriggerRecord } from "../../vendor/triggers";
 import { MAX_CHAT_BYTES, MAX_CHAT_NUMBER, MOUSE_BUTTONS, inputsOf, parseChatPattern, virtualKey, type ChatPattern, type InputSource, type MouseButton } from "../input";
 
-/** What the build says of the map: the human players' slots, the map in pixels, the unit-properties slot (1-based) it wrote as "in transit", and the carrier type. */
-export interface OwnMap { humans: number[]; width: number; height: number; cuwp: number; carrier?: number }
+/**
+ * What the build says of the map: the human players' slots, the map in pixels, the unit-properties slot (1-based) it
+ * wrote as "in transit", and the carrier type. `triggers`: the map's own triggers as its TRIG section holds them before
+ * the script's records (TrigScript 4, step 13) — laid out with the records, before them; their texts and sound files
+ * are the map's strings already.
+ */
+export interface OwnMap { humans: number[]; width: number; height: number; cuwp: number; carrier?: number; triggers?: TriggerRecord[] }
 
 export interface OwnInputPlan {
   humans: number[];
