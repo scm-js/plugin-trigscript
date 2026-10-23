@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A generator walked inside a task started beside the program.
 function* steps() {
   yield 1;

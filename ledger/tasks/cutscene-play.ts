@@ -1,4 +1,4 @@
-// ledger: step 12, refused: a task started
+// ledger: step 12, refused: the players' input (key)
 // trigscript/cutscene: a scene started as a task, which the player may skip with Escape: `await play(P1, start(scene()))`.
 import { play } from "trigscript/cutscene";
 async function scene() {

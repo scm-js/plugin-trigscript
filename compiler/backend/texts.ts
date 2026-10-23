@@ -900,7 +900,8 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
    * of them the first time a text is stored there — its EPD then in the first array, 0 before — and gives it back
    * when the cell's text is let go of (popped, cut off, declared again).
    */
-  interface TextArray { addr: string; block: string; chars: string; cells: Made[]; grows?: boolean }
+  /** `length`: of one that does not grow but is too long for a block a cell (`MOST_TEXT_CELLS`), which takes its blocks as one that grows does. */
+  interface TextArray { addr: string; block: string; chars: string; cells: Made[]; grows?: boolean; length?: number }
   const textArrays = new Map<string, TextArray>();
   const findTextArrays = (x: unknown): void => {
     if (Array.isArray(x)) { x.forEach(findTextArrays); return; }
@@ -912,6 +913,9 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
         textArrays.set(o.addr!, { addr: o.addr!, block: o.block!, chars: o.chars!, cells: Array.from({ length: a.length }, (_, i) => ({ e: `${o.addr}.${i}@e`, n: `${o.addr}.${i}@n`, c: `${o.addr}.${i}@c`, block: `${o.addr}.${i}@block` })) });
       }
       else if (a && a.dynamic && !a.slice && !a.through && a.task === undefined) textArrays.set(o.addr!, { addr: o.addr!, block: o.block!, chars: o.chars!, cells: [], grows: true });
+      // (Longer: its cells' blocks from the pool, the first time a text is stored in each — the messages of the errors
+      // a program's tasks end on, a cell a slot, which few of them ever hold.)
+      else if (a && !a.dynamic && !a.slice && !a.through) textArrays.set(o.addr!, { addr: o.addr!, block: o.block!, chars: o.chars!, cells: [], grows: true, length: a.length });
     }
     for (const v of Object.values(o)) if (v && typeof v === "object") findTextArrays(v);
   };
@@ -1239,7 +1243,7 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
           const reads = readsArray(s.value, a.addr);
           const made = reads ? [...blockOf(SCRATCH), ...w.pre, ...begin(V(SCRATCH.e)), ...w.body, ...finish(SCRATCH)] : w.pre;
           const fill = reads ? copyBlock(SCRATCH, into) : [...begin(V(into.e)), ...w.body, ...finish(into)];
-          return [dec(at, num(s.index)), ...made, when(cmp("<", V(at), { kind: "length", array: a.addr, at: here } as NumExpr, true), [
+          return [dec(at, num(s.index)), ...made, when(cmp("<", V(at), a.length !== undefined ? k(a.length) : ({ kind: "length", array: a.addr, at: here } as NumExpr), true), [
             dec(into.e, element(a.addr, V(at))), dec(into.n, k(0)), dec(into.c, k(0)),
             when(cmp("==", V(into.e), k(0)), [...takeBlock(into.e), store(a.addr, V(at), V(into.e))]),
             when(cmp("!=", V(into.e), k(0)), fill),

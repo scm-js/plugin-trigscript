@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // trigscript/timers: an `every` stopped by the task it gives back: `const t = every(…); t.cancel()`.
 import { every, SECOND } from "trigscript/timers";
 program(async () => {

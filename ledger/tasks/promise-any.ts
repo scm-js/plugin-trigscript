@@ -1,4 +1,4 @@
-// ledger: step 11, refused: Promise.race
+// ledger: step 11, takes
 // `Promise.any`, the same as a race (nothing in a program fails): `await Promise.any([…])`.
 program(async () => {
   let n = 0;

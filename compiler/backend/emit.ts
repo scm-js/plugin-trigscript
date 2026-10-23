@@ -24,7 +24,7 @@ import type { Range } from "../ranges";
 import { PlayerGroup, type ActionRecord, type ConditionRecord } from "../../vendor/triggers";
 import { actionDef } from "../../vendor/triggerDefs";
 import { OVERFLOW_FN, errorLine } from "./errors";
-import { END, MOST_ACTS, MOST_CONDS, STACK, SWITCHES, TRIGGER_BYTES, checkGraph, nextOf, type Act, type ActPart, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
+import { END, MOST_ACTS, MOST_CONDS, NOW, STACK, SWITCHES, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, checkGraph, nextOf, type Act, type ActPart, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
 export const GAME_TICK = 0x57f23c;
@@ -167,7 +167,6 @@ function side(e: NumExpr): Side | null {
 function arrayWhy(a: ArrayDecl): string | undefined {
   if (a.texts) return "an array of texts";
   if (a.dynamic || a.through) return "an array that grows";
-  if (a.task !== undefined) return "an array of a task's";
   if (a.kind !== "number" && a.kind !== "boolean") return `an array of ${a.kind}s`;
   return undefined;
 }
@@ -583,7 +582,8 @@ class Scope {
     const d = this.decls.get(id);
     // (A boolean is a cell holding 1 or 0, as a number is.)
     // (A `u8` / `u16` in a map of our own: every store into it stopped at its top first, `Rewriter.top`.)
-    return !!d && (d.kind === "number" || d.kind === "boolean") && (!d.bits || this.native) && d.task === undefined && !d.held;
+    // (A task's variable in a map of our own: each slot's own, `planTasks`.)
+    return !!d && (d.kind === "number" || d.kind === "boolean") && (!d.bits || this.native) && (d.task === undefined || this.native) && !d.held;
   }
 
   stmts(list: Stmt[], inLoop: boolean): boolean {
@@ -671,6 +671,9 @@ class Scope {
   recursion = false;
   /** A map of our own whose program throws or catches: where the error in flight is kept (`ownErrors`). */
   errors?: ProgramErrors;
+  /** A map of our own: each `start`'s slots (`planTasks`), and the starts that run once — one slot, never busy. */
+  slots = new Map<Stmt, TaskSlot[]>();
+  once = new Set<Stmt>();
 
   /**
    * A call in a map of our own: its arguments written into the function's parameters, which are variables like any
@@ -719,6 +722,8 @@ class Scope {
     if (state !== undefined) return state || this.no(`a call of ${f?.name ?? id}`);
     const body = this.bodyOf?.(id);
     if (!f || !body) return this.no(`a call of ${id}`);
+    // (A called function is laid out once, outside every coroutine: one that waits could not say whose turn it gives back.)
+    if (this.slots.size && holdsKind(body, "sleep")) return this.no(`a call of ${f.name}, which waits, in a program with tasks`);
     this.taken.set(id, "walking");
     let ok = true;
     if (f.result) {
@@ -731,6 +736,25 @@ class Scope {
     this.returning.pop();
     this.taken.set(id, ok);
     return ok;
+  }
+
+  /** A task's call (a map of our own): its parameters, the slot's own variables, which the start writes; its body. */
+  taskCall(c: Call): boolean {
+    for (const p of c.params) {
+      const d = p.decl;
+      if (!this.ok(d.id)) return this.no(`the parameter ${d.name}, a ${d.kind}`);
+      if (d.kind === "boolean" ? !this.test(p.init as BoolExpr) : !this.lowers(p.init as NumExpr)) return this.no(`the value given to ${d.name}`);
+      if (d.kind !== "boolean") this.num(p.init as NumExpr);
+      this.declared.add(d.id);
+      this.written.add(d.id);
+    }
+    // (What a task gives back nothing reads: its `return` only ends it.)
+    this.returning.push("void");
+    try {
+      return this.stmts(c.body, false);
+    } finally {
+      this.returning.pop();
+    }
   }
 
   /**
@@ -1087,6 +1111,13 @@ class Scope {
         return true;
       }
       case "return": return (this.native && this.returning.length > 0 && this.returned(s)) || this.island(s);
+      // (A map of our own: the slots `planTasks` made; listening — `on.*` — is part 3's.)
+      case "start": {
+        const slots = this.native && !s.listen ? this.slots.get(s) : undefined;
+        return (!!slots && slots.every((slot) => this.taskCall(slot.call))) || this.island(s);
+      }
+      case "cancel": return (this.native && this.lowers(s.task) && (this.num(s.task), true)) || this.island(s);
+      case "parallel": return (this.native && s.branches.every((b) => this.stmts(b, false))) || this.island(s);
       // (Where a `throw` goes is the emitter's, `Emitter.handler`: the program keeps the error in flight.)
       case "try": return (this.native && !!this.errors && this.stmts(s.body, inLoop) && this.stmts(s.catch, inLoop)) || this.island(s);
       case "throw": return (this.native && !!this.errors) || this.island(s);
@@ -1168,13 +1199,30 @@ interface Store { array: ArrayDecl; index: Linear; reads: CellRead[]; value: Lin
 /** (`at` on a copy or a call: the statement it is for, when its trigger is another's.) */
 /** (`label`: every place of `target` set to where `to` is — where a function that calls itself goes back to.) */
 /** (`route`: a variable's cell into these dwords, and nothing else of its places.) */
-type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string; apart?: boolean; top?: number } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At } | { label: { target: string; to: string } } | { route: { from: string; into: Dword[] } };
+type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string; apart?: boolean; top?: number } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At } | { label: { target: string; to: string } } | { route: { from: string; into: Dword[]; add?: number } };
 /**
  * `keep`: an empty trigger that stays (a jump whose next pointer a place sets). `guarded`: an `if` in one trigger (its
  * conditions, its statements' actions), which may be followed by the copies of what it writes — a copy whether or not
  * the conditions held, which writes back what the places hold when they did not.
  */
-interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean; guarded?: boolean; guardOf?: Stmt; cold?: boolean }
+/** `off`: a trigger laid out done (`Trigger.off`): a task's slot or a branch's, switched on by what starts it. */
+interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean; guarded?: boolean; guardOf?: Stmt; cold?: boolean; off?: boolean }
+
+/**
+ * A coroutine (TrigScript 4, step 11): where its wake keeps the frame it sleeps until and where it goes on from — the
+ * fields a sleep writes — the action a resume puts its wake back with, where its turn goes when it sleeps, and what its
+ * end lays out. The program's wake is its run's `@wake` (`layout.ts`); a task's slot and a branch of a `Promise.all` or
+ * `race` have a trigger of their own, "the count of frames has reached W: go to R", passed by while done.
+ */
+interface Co { tick: Dword; at: Dword; reset: Act; yieldTo: string; end: () => void }
+
+/**
+ * One of a `start`'s slots, as `emitBody` plans them: the task's call as the slot runs it (variables of its own but in
+ * the first slot), its trigger in the tasks' turn, where its body starts, its generation and the number it is known by
+ * while it runs (`slot | task << 8 | generation << 16`; 0 when nothing is in it).
+ */
+interface TaskSlot { call: Call; check: string; entry: string; gen: string; handle: string }
+type StartStmt = Extract<Stmt, { kind: "start" }>;
 
 /**
  * A place of a variable: a dword that holds it times `scale` plus `add` (wrapping) — known (its cell, a home, a
@@ -1231,7 +1279,8 @@ function inRegion(arrays: Map<string, ArrayDecl>, id: string): boolean {
  * top first (`Rewriter.top`).
  */
 function nativeArray(a: ArrayDecl): boolean {
-  return (a.kind === "number" || a.kind === "boolean") && !a.dynamic && !a.texts && !a.through && a.task === undefined;
+  // (A task's: in place, its start having one slot — `planTasks`.)
+  return (a.kind === "number" || a.kind === "boolean") && !a.dynamic && !a.texts && !a.through;
 }
 
 /** The fixed-point functions the emitter makes as its own triggers rather than calling the Python side's. */
@@ -1313,6 +1362,17 @@ class Emitter {
    * action and a copy, for an error that seldom comes.
    */
   cold = 0;
+  /** The coroutine being laid out: the program's (`emitBody`), a task's slot (`tasks()`), a branch (`parallel()`). */
+  co!: Co;
+  /** The starts laid out, by task number, and those whose slots' bodies are still to lay out; inside a task's body, how deep. */
+  pools = new Map<number, { start: StartStmt; slots: TaskSlot[] }>();
+  pendingTasks: number[] = [];
+  inTask = 0;
+  /** Whether a task starts one (`again`): the tasks' turn goes round again, for it to have its first turn in this frame too. */
+  again = false;
+  /** Where the program's turn goes when it sleeps or ends: the tasks' turn (or the run's end, with no task). */
+  get tasksLabel(): string { return `${this.key}:tasks`; }
+  get againVar(): string { return `${this.key}.again`; }
   /**
    * Of each function an error comes out of from a trigger of its own (`thrown`), the actions of the calls that point
    * that trigger's next pointer at where the error goes from each: where every call names the same place, the
@@ -1386,7 +1446,7 @@ class Emitter {
   }
 
   push(p: Omit<Proto, "label"> & { label?: string }): Proto {
-    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}), ...(p.guarded ? { guarded: true } : {}), ...(p.guardOf ? { guardOf: p.guardOf } : {}), ...(this.cold ? { cold: true } : {}) };
+    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}), ...(p.guarded ? { guarded: true } : {}), ...(p.guardOf ? { guardOf: p.guardOf } : {}), ...(this.cold ? { cold: true } : {}), ...(p.off ? { off: true } : {}) };
     this.protos.push(t);
     return t;
   }
@@ -1761,7 +1821,9 @@ class Emitter {
         // What of the test nothing in the loop changes is tested once, on the way in (a u32 counter against a signed
         // bound is the bound's sign and the counter's place: the sign does not change).
         // (Everything the loop may write: a boolean set from a test, what a call in it writes, all the way down.)
-        const { once, every } = s.cond ? split(s.cond, writes({ kind: "block", body: [...s.body, ...(s.kind === "for" ? s.update : [])], at: s.at }, this.scope.functions)) : { once: null, every: null };
+        // (Not in a loop that sleeps: while it sleeps, a task or a branch may write anything it reads.)
+        const sleeps = holdsKind(s.body, "sleep") || (s.kind === "for" && holdsKind(s.update, "sleep"));
+        const { once, every } = !s.cond ? { once: null, every: null } : sleeps ? { once: null, every: s.cond } : split(s.cond, writes({ kind: "block", body: [...s.body, ...(s.kind === "for" ? s.update : [])], at: s.at }, this.scope.functions));
         if (once) this.jump(once, false, exit, s.at);
         this.land(head);
         if (every) this.jump(every, false, exit, s.at);
@@ -1822,22 +1884,16 @@ class Emitter {
       }
       case "sleep": {
         if (!this.scope.native) return this.left(s);
-        // A map of our own (layout.ts): the tick the program wakes at (the game's tick now, a bit at a time, plus the
-        // frames) and where it goes on, written into the trigger that heads the owner's list every pass; then this
-        // pass ends. Where it goes on puts that trigger back to ending the pass.
-        const frames = s.cycles ?? Math.max(1, Math.round(((s.ms ?? 0) * FRAMES_PER_SECOND) / 1000));
-        const resume = this.label("wake");
-        this.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: frames } }, { act: { dword: { data: WAKE_AT }, modifier: "set", value: { label: resume } } });
-        for (let bit = 0; bit < 32; bit++) this.push({ conds: [{ dword: { game: GAME_TICK }, compare: "atLeast", value: 1, mask: 2 ** bit }], items: [{ act: { dword: { data: WAKE_TICK }, modifier: "add", value: 2 ** bit } }] });
-        this.goto(END);
-        this.push({ label: resume, conds: [], items: [{ act: { dword: { data: WAKE_NEXT }, modifier: "set", value: { label: END } } }] });
-        return;
+        return this.sleepIn(this.co, s.cycles ?? Math.max(1, Math.round(((s.ms ?? 0) * FRAMES_PER_SECOND) / 1000)));
       }
       case "print":
         if (this.scope.native && !this.scope.islands.has(s)) return this.print(s);
         return this.left(s);
       case "break": return this.goto(this.loops[this.loops.length - 1].exit);
       case "continue": return this.goto(this.loops[this.loops.length - 1].cont);
+      case "start": return this.scope.islands.has(s) ? this.left(s) : this.start(s);
+      case "cancel": return this.scope.islands.has(s) ? this.left(s) : this.cancel(s);
+      case "parallel": return this.scope.islands.has(s) ? this.left(s) : this.parallel(s);
       case "try": {
         // The body, with its `catch` as where an error thrown in it goes; the `catch` after it, reached only that way.
         // (Nothing of it is done while the game runs until an error is thrown.)
@@ -2262,11 +2318,8 @@ class Emitter {
       this.write(errorLine(this.scope.errors), { c: this.at?.line ?? 0, terms: [] });
       this.goto(this.handler());
     } else {
-      this.open().items.push(
-        { act: { dword: { game: 0 }, modifier: "set", value: 0, display: `\x06TrigScript: stack overflow in ${c.saves!.within}, line ${line} - ${this.stackDepth} calls deep. The program has stopped.` } },
-        { act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } },
-      );
-      this.goto(END);
+      this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, display: `\x06TrigScript: stack overflow in ${c.saves!.within}, line ${line} - ${this.stackDepth} calls deep. The program has stopped.` } });
+      this.co.end();
     }
     this.land(room);
     // (Each variable through one of the emitter's own, written just before: a store's number is a place no refresh
@@ -2606,6 +2659,205 @@ class Emitter {
     this.goto(frame.end);
   }
 
+  // ── coroutines and tasks (a map of our own: TrigScript 4, step 11) ──
+
+  /**
+   * A sleep of a coroutine: the frame it wakes at — the map's count of frames now plus these, one copy — and where it
+   * goes on, written into its wake; then its turn is given back. Where it goes on puts its wake back as it was, and goes
+   * on to `then` when there is one.
+   */
+  sleepIn(co: Co, frames: number, then?: string): void {
+    const resume = this.label("wake");
+    this.open().items.push({ route: { from: NOW, into: [co.tick], add: frames } }, { act: { dword: co.at, modifier: "set", value: { label: resume } } });
+    this.goto(co.yieldTo);
+    this.push({ label: resume, conds: [], items: [{ act: co.reset }], ...(then ? { next: then } : {}) });
+  }
+
+  /** A trigger of a slot's or a branch's that says whether nothing runs in it (done) or something does. */
+  private flags(check: string, on: boolean): Item {
+    return { act: { dword: { at: check, field: "flags" }, modifier: "set", value: on ? TRIGGER_ON : TRIGGER_OFF } };
+  }
+
+  /**
+   * A task into a free slot of its start: the arguments as they are now into the slot's parameters, its generation one
+   * more, the number it is known by, and its trigger in the tasks' turn switched on, due now, at the body's start. With
+   * every slot running nothing starts: the game says so once, and the number is 0, as the Python side's build does. A
+   * start that runs once has one slot, which is free.
+   */
+  start(s: StartStmt): void {
+    const slots = this.scope.slots.get(s)!;
+    if (!this.pools.has(s.task)) {
+      this.pools.set(s.task, { start: s, slots });
+      this.pendingTasks.push(s.task);
+    }
+    if (this.inTask) this.again = true;
+    if (this.scope.once.has(s)) {
+      this.arguments(slots[0].call);
+      return this.startSlot(s, slots[0], 0);
+    }
+    // (The arguments into variables of the emitter's own first: the slot is chosen after.)
+    const temps = slots[0].call.params.map((p) => {
+      const t = `${this.key}.ta${this.n++}`;
+      this.own.add(t);
+      if (p.decl.kind === "boolean") this.setBool(t, p.init as BoolExpr);
+      else this.write(t, linear(p.init as NumExpr)!);
+      return t;
+    });
+    const done = this.label("started"), into = slots.map(() => this.label("slot"));
+    slots.forEach((slot, k) => this.branch([{ dword: { at: slot.check, field: "flags" }, compare: "atLeast", value: 8, mask: 8 }], into[k], this.at));
+    const said = `${this.key}.said${s.task}`, quiet = this.label("quiet");
+    this.own.add(said);
+    this.jump({ kind: "compare", op: ">=", left: { kind: "var", id: said }, right: { kind: "const", value: 1 }, unsigned: true, at: this.at!, label: "" }, true, quiet, this.at);
+    this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, display: `\x06TrigScript: ${s.call.name ?? "a task"} did not start, line ${this.at?.line ?? "?"} - all ${slots.length} of this start's tasks are running.` } });
+    this.write(said, { c: 1, terms: [] });
+    this.land(quiet);
+    if (s.handle) this.write(s.handle, { c: 0, terms: [] });
+    this.goto(done);
+    slots.forEach((slot, k) => {
+      this.land(into[k]);
+      slot.call.params.forEach((p, j) => (p.decl.kind === "boolean" ? this.setBool(p.decl.id, { kind: "var", id: temps[j] }) : this.write(p.decl.id, { c: 0, terms: [{ id: temps[j], k: 1 }] })));
+      this.startSlot(s, slot, k);
+      this.goto(done);
+    });
+    this.land(done);
+  }
+
+  private startSlot(s: StartStmt, slot: TaskSlot, k: number): void {
+    // Its generation one more, from 1 again past 65 535; the number it is known by from it.
+    const past = this.label("gen");
+    this.jump({ kind: "compare", op: "<", left: { kind: "var", id: slot.gen }, right: { kind: "const", value: 0xffff }, unsigned: true, at: this.at!, label: "" }, true, past, this.at);
+    this.write(slot.gen, { c: 0, terms: [] });
+    this.land(past);
+    this.write(slot.gen, { c: 1, terms: [{ id: slot.gen, k: 1 }] });
+    this.write(slot.handle, { c: k + 256 * s.task, terms: [{ id: slot.gen, k: 65536 }] });
+    this.open().items.push(
+      { act: { dword: { at: slot.check, field: { cond: 0 } }, modifier: "set", value: 0 } },
+      { act: { dword: { at: slot.check, field: { act: 0, part: "value" } }, modifier: "set", value: { label: slot.entry } } },
+      this.flags(slot.check, true),
+    );
+    if (this.inTask) this.write(this.againVar, { c: 1, terms: [] });
+    if (s.handle) this.write(s.handle, { c: 0, terms: [{ id: slot.handle, k: 1 }] });
+  }
+
+  /** `t.cancel()`: the slot whose task the number names, while that task is in it, switched off — it is not resumed again. */
+  cancel(s: Extract<Stmt, { kind: "cancel" }>): void {
+    const h = s.task;
+    for (const slot of [...this.scope.slots.values()].flat()) {
+      const past = this.label("nc");
+      this.jump({ kind: "and", items: [{ kind: "compare", op: ">=", left: h, right: { kind: "const", value: 1 }, unsigned: true, at: this.at!, label: "" }, { kind: "compare", op: "==", left: h, right: { kind: "var", id: slot.handle }, at: this.at!, label: "" }] }, false, past, this.at);
+      this.open().items.push(this.flags(slot.check, false));
+      this.write(slot.handle, { c: 0, terms: [] });
+      this.land(past);
+    }
+  }
+
+  /**
+   * `Promise.all` and `Promise.race`: each branch a coroutine of its own, with a trigger that wakes it, all due as the
+   * statement is reached, each run in order until it sleeps; then, until all have ended (or one has, a race), the
+   * coroutine around sleeps a frame at a time and runs again those still running, in order — as the simulator does. A
+   * race goes on from the end of the first branch to end; the others are switched off where they are.
+   */
+  parallel(s: Extract<Stmt, { kind: "parallel" }>): void {
+    const outer = this.co, race = s.mode === "race";
+    const checks = s.branches.map(() => this.label("br")), nexts = checks.map((c) => `${c}:after`), entries = checks.map(() => this.label("bre"));
+    const dispatch = this.label("disp"), test = this.label("ptest"), after = this.label("pafter");
+    const items = this.open().items;
+    checks.forEach((c, j) => items.push(
+      { act: { dword: { at: c, field: { cond: 0 } }, modifier: "set", value: 0 } },
+      { act: { dword: { at: c, field: { act: 0, part: "value" } }, modifier: "set", value: { label: entries[j] } } },
+      this.flags(c, true),
+    ));
+    this.land(dispatch);
+    checks.forEach((c, j) => {
+      this.push({ label: c, conds: [{ dword: { var: NOW }, compare: "atLeast", value: 0 }], items: [{ act: { dword: nextOf(c), modifier: "set", value: { label: entries[j] } } }], next: nexts[j], off: true });
+      this.push({ label: nexts[j], conds: [], items: [], next: j + 1 < checks.length ? checks[j + 1] : test });
+    });
+    this.land(test);
+    if (!race) {
+      // (All ended: on at once.)
+      const wait = this.label("pwait");
+      for (const c of checks) this.branch([{ dword: { at: c, field: "flags" }, compare: "atMost", value: 0, mask: 8 }], wait, this.at);
+      this.goto(after);
+      this.land(wait);
+    }
+    this.sleepIn(outer, 1, dispatch);
+    s.branches.forEach((b, j) => {
+      const reset: Act = { dword: nextOf(checks[j]), modifier: "set", value: { label: nexts[j] } };
+      this.push({ label: entries[j], conds: [], items: [{ act: reset }] });
+      this.co = { tick: { at: checks[j], field: { cond: 0 } }, at: { at: checks[j], field: { act: 0, part: "value" } }, reset, yieldTo: nexts[j], end: outer.end };
+      this.stmts(b);
+      this.co = outer;
+      this.open().items.push(...(race ? checks : [checks[j]]).map((c) => this.flags(c, false)));
+      this.goto(race ? after : nexts[j]);
+    });
+    this.land(after);
+  }
+
+  /**
+   * Each start's slots' bodies, laid out once each after the program, as a called function's are: the task's call, its
+   * coroutine the slot's — its wake the slot's trigger in the tasks' turn — and at its end the slot switched off and the
+   * number it was known by 0.
+   */
+  tasks(): void {
+    for (let task = this.pendingTasks.shift(); task !== undefined; task = this.pendingTasks.shift()) {
+      for (const slot of this.pools.get(task)!.slots) {
+        const after = `${slot.check}:after`;
+        const reset: Act = { dword: nextOf(slot.check), modifier: "set", value: { label: after } };
+        const end = () => {
+          this.open().items.push(this.flags(slot.check, false));
+          this.write(slot.handle, { c: 0, terms: [] });
+          this.goto(after);
+        };
+        const outer = { co: this.co, handlers: this.handlers, cold: this.cold, loops: this.loops, frames: this.frames, current: this.current, depthBase: this.depthBase };
+        this.co = { tick: { at: slot.check, field: { cond: 0 } }, at: { at: slot.check, field: { act: 0, part: "value" } }, reset, yieldTo: after, end };
+        this.handlers = [];
+        this.cold = 0;
+        this.loops = [];
+        this.frames = [];
+        this.current = undefined;
+        this.depthBase = 0;
+        this.inTask++;
+        this.push({ label: slot.entry, conds: [], items: [{ act: reset }] });
+        const done = this.label("tend");
+        this.frames.push({ end: done });
+        this.stmts(slot.call.body);
+        this.frames.pop();
+        this.land(done);
+        end();
+        this.inTask--;
+        Object.assign(this, outer);
+      }
+    }
+  }
+
+  /**
+   * The tasks' turn, after the program's: each start's slots, in the order of the starts' numbers and then of their
+   * slots — a slot that is free passed by as done, one asleep a condition that fails, one awake sent into its body — and,
+   * when a task can start one, round again while one was started, for it to have its first turn in this frame too.
+   * Returns where it starts.
+   */
+  turnOfTasks(): string | undefined {
+    const slots = [...this.pools.values()].sort((a, b) => a.start.task - b.start.task).flatMap((p) => p.slots);
+    const round = this.label("again");
+    this.push({ label: this.tasksLabel, conds: [], items: [], next: slots.length ? slots[0].check : END });
+    slots.forEach((slot, i) => {
+      this.push({ label: slot.check, conds: [{ dword: { var: NOW }, compare: "atLeast", value: 0 }], items: [{ act: { dword: nextOf(slot.check), modifier: "set", value: { label: slot.entry } } }], next: `${slot.check}:after`, off: true });
+      this.push({ label: `${slot.check}:after`, conds: [], items: [], next: i + 1 < slots.length ? slots[i + 1].check : this.again ? round : END });
+    });
+    if (this.again) {
+      // (A jump is put back where it lands: not at the graph's end, which is no trigger of its own.)
+      const more = this.label("more");
+      this.land(round);
+      this.own.add(this.againVar);
+      this.jump({ kind: "compare", op: ">=", left: { kind: "var", id: this.againVar }, right: { kind: "const", value: 1 }, unsigned: true, at: this.at!, label: "" }, true, more, this.at);
+      this.goto(END);
+      this.land(more);
+      this.write(this.againVar, { c: 0, terms: [] });
+      this.goto(this.tasksLabel);
+    }
+    return slots[0]?.check;
+  }
+
   /**
    * Where an error thrown here goes: the `catch` of the nearest `try` around it, or out of the function being laid out
    * — from its trigger for errors (`thrown`), or, for one that may come back into itself, from its end, where the call
@@ -2702,7 +2954,6 @@ class Emitter {
       if (fn.thrown) this.thrownProtos.set(id, this.push({ label: fn.thrown, conds: [], items: [], keep: true, at: f.at }));
       this.depthBase = outer;
     }
-    this.settleThrown();
   }
 
   /**
@@ -4142,7 +4393,7 @@ class Emitter {
     const fixed = new Set<Act>();
     let n = 0;
     for (const p of kept) {
-      type Piece = { acts: (Act | WriteAct)[] } | { fill: { temp: string; target: string; apart?: boolean; top?: number } } | { copy: string; at?: At; island?: boolean; top?: number } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] } | { route: { from: string; into: Dword[] } };
+      type Piece = { acts: (Act | WriteAct)[] } | { fill: { temp: string; target: string; apart?: boolean; top?: number } } | { copy: string; at?: At; island?: boolean; top?: number } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] } | { route: { from: string; into: Dword[]; add?: number } };
       const pieces: Piece[] = [{ acts: [] }];
       const acts = () => {
         const last = pieces[pieces.length - 1];
@@ -4243,7 +4494,7 @@ class Emitter {
           continue;
         }
         if ("route" in piece) {
-          const t: Trigger = { label: label(), conds: [], acts: [], copy: { from: piece.route.from, into: piece.route.into.map((dword) => ({ dword, add: 0 })) }, ...(p.at ? { at: p.at } : {}) };
+          const t: Trigger = { label: label(), conds: [], acts: [], copy: { from: piece.route.from, into: piece.route.into.map((dword) => ({ dword, add: piece.route.add ?? 0 })) }, ...(p.at ? { at: p.at } : {}) };
           routes.add(t);
           made.push(t);
           continue;
@@ -4273,7 +4524,7 @@ class Emitter {
         for (let i = 0; i === 0 || i < piece.acts.length; i += MOST_ACTS) {
           if (i === 0 && piece.acts.length === 0 && made.length) break;
           // (A trigger with conditions keeps its own label, entered through its refreshes when it has any.)
-          const t: Trigger = { label: p.conds.length && i === 0 ? p.label : label(), conds: p.conds.length && i === 0 ? p.conds.map((c) => ({ ...c })) : [], acts: [], ...(p.at ? { at: p.at } : {}) };
+          const t: Trigger = { label: p.conds.length && i === 0 ? p.label : label(), conds: p.conds.length && i === 0 ? p.conds.map((c) => ({ ...c })) : [], acts: [], ...(p.at ? { at: p.at } : {}), ...(p.off && p.conds.length && i === 0 ? { off: true } : {}) };
           piece.acts.slice(i, i + MOST_ACTS).forEach((a, k) => {
             if ("into" in a) {
               at.set(a, { at: t.label, field: { act: k, part: "value" } });
@@ -4607,6 +4858,109 @@ function writtenIn(list: Stmt[], into = new Set<string>()): Set<string> {
     for (const v of Object.values(s)) if (Array.isArray(v) && v.length && typeof v[0] === "object" && v[0] && "kind" in v[0]) writtenIn(v as Stmt[], into);
   }
   return into;
+}
+
+/** Whether a piece of the IR holds a statement or an expression of this kind. */
+function holdsKind(x: unknown, kind: string): boolean {
+  if (!x || typeof x !== "object") return false;
+  if (Array.isArray(x)) return x.some((y) => holdsKind(y, kind));
+  const o = x as Record<string, unknown>;
+  return o.kind === kind || Object.entries(o).some(([k, v]) => k !== "original" && v && typeof v === "object" && holdsKind(v, kind));
+}
+
+/**
+ * The tasks of a map of our own (TrigScript 4, step 11): each `start`'s slots — one when the start can run only once
+ * (in no loop, nowhere twice, in no task of more than one slot), else as many as its `max`, each slot after the first a
+ * copy of the task's call whose variables of the task's are its own (as the simulator swaps them) — and the program
+ * with `running` and `taskHandle` worked out against the slots: a number is a task's while one slot's number is it.
+ * Or why not. The new variables' declarations go into `known`.
+ */
+function planTasks(root: Stmt, key: string, known: Map<string, VarDecl>, arrays: Map<string, ArrayDecl>): { root: Stmt; slots: Map<Stmt, TaskSlot[]>; once: Set<Stmt> } | string {
+  // Which starts run more than once, and which start each is inside.
+  const seen = new Map<Stmt, number>(), many = new Set<Stmt>(), parent = new Map<Stmt, Stmt | null>();
+  const visit = (x: unknown, looped: boolean, task: Stmt | null): void => {
+    if (!x || typeof x !== "object") return;
+    if (Array.isArray(x)) { x.forEach((y) => visit(y, looped, task)); return; }
+    const o = x as Record<string, unknown>;
+    if (o.kind === "start" && typeof o.task === "number" && o.call) {
+      const st = o as unknown as StartStmt;
+      seen.set(st, (seen.get(st) ?? 0) + 1);
+      if (looped || seen.get(st)! > 1) many.add(st);
+      parent.set(st, task);
+      visit(st.call.params, looped, task);
+      visit(st.call.body, false, st);
+      return;
+    }
+    const loop = o.kind === "while" || o.kind === "for" || o.kind === "do" || o.kind === "unitLoop" || o.kind === "textLoop";
+    for (const [k, v] of Object.entries(o)) if (k !== "original" && v && typeof v === "object") visit(v, looped || loop, task);
+  };
+  visit(root, false, null);
+  for (const [st, p] of parent) if (p && many.has(p)) return `a task started inside a task of more than one slot (line ${st.at.line})`;
+  // (A slot's arrays would be its own, as its variables are: not yet.)
+  for (const st of many) {
+    const a = [...arrays.values()].find((x) => x.task === (st as StartStmt).task);
+    if (a) return `an array of a task that runs in more than one slot at a time (${a.name}, line ${st.at.line})`;
+  }
+  // The slots: their numbers' variables, and for each slot after the first, the task's variables renamed.
+  // (Declared as the program starts: what is worked out from them — a slot's number from its generation — is kept in
+  // places, which a write sets.)
+  const plans = new Map<number, { n: number; handles: string[] }>(), declares: Stmt[] = [];
+  for (const st of parent.keys()) {
+    const s = st as StartStmt;
+    const n = many.has(st) ? s.max : 1;
+    const handles = Array.from({ length: n }, (_, k) => `@slot${s.task}.${k}.id`);
+    plans.set(s.task, { n, handles });
+    for (let k = 0; k < n; k++) for (const id of [`@slot${s.task}.${k}.gen`, handles[k]]) {
+      const decl: VarDecl = { id, name: "(task)", kind: "number", shared: false, at: s.at };
+      known.set(id, decl);
+      declares.push({ kind: "declare", decl, init: { kind: "const", value: 0 }, at: s.at, label: "" });
+    }
+  }
+  const every = [...plans.values()].flatMap((p) => p.handles);
+  const slots = new Map<Stmt, TaskSlot[]>(), once = new Set<Stmt>();
+  // (Copied where it is rewritten: the program's IR is the simulator's too, and each run's.)
+  const remake = (x: unknown, handle: NumExpr, rename: Map<string, string>): unknown => {
+    if (Array.isArray(x)) return x.map((y) => remake(y, handle, rename));
+    if (!x || typeof x !== "object") return typeof x === "string" && rename.has(x) ? rename.get(x) : x;
+    const o = x as Record<string, unknown>;
+    if (o.kind === "taskHandle") return handle;
+    if (o.kind === "running") {
+      const h = remake(o.task, handle, rename) as NumExpr, at = (o.at ?? { file: "", line: 0, column: 0 }) as At;
+      if (!every.length) return { kind: "const", value: false };
+      return { kind: "and", items: [{ kind: "compare", op: ">=", left: h, right: { kind: "const", value: 1 }, unsigned: true, at, label: "" }, { kind: "or", items: every.map((id) => ({ kind: "compare", op: "==", left: h, right: { kind: "var", id }, at, label: "" })) }] };
+    }
+    if (o.kind === "start" && typeof o.task === "number" && o.call) {
+      const s = o as unknown as StartStmt, plan = plans.get(s.task)!;
+      const calls = plan.handles.map((h, k) => {
+        // (Slot k's own variables: the task's, `id~k`.)
+        const own = new Map(rename);
+        if (k) for (const d of declsIn(s.call)) if (d.task === s.task) own.set(d.id, `${d.id}~${k}`);
+        const call = remake(s.call, { kind: "var", id: h }, own) as Call;
+        for (const d of declsIn(call)) if (!known.has(d.id)) known.set(d.id, d);
+        return call;
+      });
+      const made = { ...s, call: calls[0] } as StartStmt;
+      slots.set(made, calls.map((call, k) => ({ call, check: `${key}:task${s.task}.${k}`, entry: `${key}:task${s.task}.${k}:body`, gen: `@slot${s.task}.${k}.gen`, handle: plan.handles[k] })));
+      if (!many.has(s)) once.add(made);
+      return made;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(o)) out[k] = remake(v, handle, rename);
+    return out;
+  };
+  const made = remake(root, { kind: "const", value: 0 }, new Map()) as Stmt;
+  return { root: declares.length ? { kind: "block", body: [...declares, made], at: made.at } : made, slots, once };
+}
+
+/** Every declaration in a piece of the IR: a `declare`'s, a loop's, a call's parameters and result. */
+function declsIn(x: unknown, out: VarDecl[] = []): VarDecl[] {
+  if (Array.isArray(x)) { x.forEach((y) => declsIn(y, out)); return out; }
+  if (!x || typeof x !== "object") return out;
+  const o = x as Record<string, unknown>;
+  const d = o.decl as VarDecl | undefined;
+  if (d && typeof d === "object" && typeof d.id === "string" && typeof d.kind === "string") out.push(d);
+  for (const [k, v] of Object.entries(o)) if (k !== "decl" && v && typeof v === "object") declsIn(v, out);
+  return out;
 }
 
 /** Whether statements end in a `throw`: all they do is on an error's way. */
@@ -5646,6 +6000,15 @@ class Rewriter {
       }
       case "unrolled": return [{ ...s, iterations: s.iterations.map((it) => this.stmts(it)) }];
       case "try": return [{ ...s, body: this.stmts(s.body), catch: this.stmts(s.catch) }];
+      // (A task's arguments as a call's, worked out where it is started; its body rewritten as an inlined call's.)
+      case "start": {
+        if (!this.own) return [s];
+        const pre: Stmt[] = [];
+        this.call(s.call, pre, where);
+        const made = pre.pop() as Extract<Stmt, { kind: "call" }>;
+        return [...pre, { ...s, call: made.call }];
+      }
+      case "parallel": return [{ ...s, branches: s.branches.map((b) => this.stmts(b)) }];
       case "switch": {
         const pre: Stmt[] = [];
         // (Tested against each case: one variable plus a constant — bits under a mask computed first.)
@@ -5774,9 +6137,14 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   rw.players = players;
   rw.bits = tops;
   const block = rw.stmt(plainFns(inlined({ kind: "block", body, at: body[0]?.at } as Stmt, functions)) as Stmt);
-  const s: Stmt = block.length === 1 ? block[0] : ({ kind: "block", body: block, at: body[0]?.at } as Stmt);
+  // The tasks' slots, each start's planned (and the variables of a slot after the first declared).
+  const planned = planTasks(block.length === 1 ? block[0] : ({ kind: "block", body: block, at: body[0]?.at } as Stmt), key, known, arrays);
+  if (typeof planned === "string") return planned;
+  const s = planned.root;
   const scope = new Scope(known);
   rules(scope);
+  scope.slots = planned.slots;
+  scope.once = planned.once;
   // (The map's own variables, which no program declares and no run's start sets: 0 as the map starts, one cell each.)
   for (const d of known.values()) if (d.global) scope.declared.add(d.id);
   if (!scope.stmt(s, false)) return scope.why || "?";
@@ -5799,11 +6167,28 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     // Stacks: each `sp` and `depth` set at the start, which sets every place of each `sp` — the fields of its stack it
     // addresses. (Which stacks there are is known once the functions are laid out: the writes go into this trigger then.)
     const start = scope.recursion ? e.push({ conds: [], items: [] }) : null;
+    // The program a coroutine whose wake is its run's `@wake`; when it sleeps or ends, the tasks have their turn.
+    e.co = {
+      tick: { data: WAKE_TICK },
+      at: { data: WAKE_AT },
+      reset: { dword: { data: WAKE_NEXT }, modifier: "set", value: { label: e.tasksLabel } },
+      yieldTo: e.tasksLabel,
+      // At its end the program wakes no more.
+      end: () => {
+        e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } });
+        e.goto(e.tasksLabel);
+      },
+    };
     e.stmt(s);
-    // At its end the program wakes no more.
-    e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } });
-    e.goto(END);
-    e.functions();
+    e.co.end();
+    // The functions the program calls and the tasks it starts, each of which may call and start more.
+    while (true) {
+      e.functions();
+      e.tasks();
+      if (!e.pending.length && !e.pendingTasks.length) break;
+    }
+    const tasks = e.turnOfTasks();
+    e.settleThrown();
     e.emitDigits();
     if (start) {
       const writes: Write[] = [...[...e.stacks.values()].map((st) => st.sp), ...(e.stacks.size ? [e.depth] : [])].map((target) => ({ target, value: { c: 0, terms: [] } }));
@@ -5818,6 +6203,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
       g.cells = [...(g.cells ?? []), ...[...e.stacks.values()].map((st) => ({ id: st.id, cells: st.frame * e.stackDepth }))];
     }
     if (typeof g !== "string" && e.templates.length) g.templates = e.templates;
+    if (typeof g !== "string" && tasks) g.tasks = tasks;
     if (typeof g !== "string" && e.regions.size) g.cells = [...e.regions.values(), ...(g.cells ?? [])];
     const cells = typeof g === "string" ? 0 : (g.cells ?? []).reduce((n, r) => n + r.cells, 0);
     if (cells > STACK_CELLS_MOST) return { e, g: `arrays and stacks of ${cells} cells, past the ${STACK_CELLS_MOST} a map of our own lays out (72 bytes a cell)` };

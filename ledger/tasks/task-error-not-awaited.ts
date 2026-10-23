@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // An error a task ends on that nothing awaits: the task ends and the game says so, and the program goes on.
 async function worker() {
   await sleep(frames(1));

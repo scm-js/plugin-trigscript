@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // trigscript/timers: `after(delay, fn)`, a function run once, so many frames from now, in a task beside the program.
 import { after, SECOND } from "trigscript/timers";
 program(async () => {

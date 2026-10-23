@@ -12,7 +12,7 @@
 import type { CompileResult } from "../compiler";
 import type { ArrayDecl, FuncDecl, Program, VarDecl } from "../ir";
 import { ANY_PLAYERS, emitBody, groupSlots, type MapPlayers } from "./emit";
-import type { Act, Cond, Dword, Graph, Num, Trigger, Value } from "./graph";
+import { NOW, type Act, type Cond, type Dword, type Graph, type Num, type Trigger, type Value } from "./graph";
 import { TextPool, knownTexts } from "./texts";
 import { HEAP_GLOBALS, growingArrays, heldVariables, isHeapGlobal, loopScoped } from "./heap";
 import { UNIT_GLOBALS, unitValues } from "./units";
@@ -80,8 +80,8 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
       }
     };
     collect(program);
-    // (The heap's own variables, which no program declares: one cell each for the map.)
-    for (const d of [...HEAP_GLOBALS, ...UNIT_GLOBALS]) decls.set(d.id, d);
+    // (The heap's own variables, which no program declares, and the count of frames: one cell each for the map.)
+    for (const d of [...HEAP_GLOBALS, ...UNIT_GLOBALS, NOW_DECL]) decls.set(d.id, d);
     const functions = new Map<string, FuncDecl>((program.functions ?? []).map((f) => [f.id, f]));
     const arrays = new Map<string, ArrayDecl>((program.arrays ?? []).map((a) => [a.id, a]));
     // The variables and arrays every run of the program has in common: one for every player of a per-player program.
@@ -93,7 +93,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
       // (The first run keeps the emitter's names; each other one's are its own, but for what its program shares.)
       const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players, program.errors);
       if (typeof graph === "string") return graph;
-      const name = (id: string) => (!n || isHeapGlobal(id) || UNIT_GLOBALS.some((d) => d.id === id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
+      const name = (id: string) => (!n || isHeapGlobal(id) || id === NOW || UNIT_GLOBALS.some((d) => d.id === id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
       const g = n ? renamed(graph, `#${n}`, name) : graph;
       // An action of the game's names its text and its sound file by the script's strings: given here, for the layout.
       const of = (i: number) => (i ? r.strings[i - 1] : undefined);
@@ -142,5 +142,9 @@ function renamed(g: Graph, suffix: string, name: (id: string) => string): Graph 
     ...(g.cells ? { cells: g.cells.map((c) => ({ ...c, id: name(c.id) })) } : {}),
     ...(g.templates ? { templates: g.templates.map((t) => ({ ...t, id: t.id + suffix })) } : {}),
     ...(g.rows ? { rows: g.rows.map((r) => r.map(label)) } : {}),
+    ...(g.tasks ? { tasks: label(g.tasks) } : {}),
   };
 }
+
+/** The map's count of frames (`NOW`): a variable of every run's, one more each pass. */
+const NOW_DECL: VarDecl = { id: NOW, name: "(frames)", kind: "number", shared: true, routed: true, global: true, at: { file: "", line: 0, column: 0 } };

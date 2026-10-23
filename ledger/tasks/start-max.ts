@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A start that lets so many of its tasks run at once: `start(wave(n), { max: 4 })`.
 async function wave(n: number) {
   await sleep(frames(n));

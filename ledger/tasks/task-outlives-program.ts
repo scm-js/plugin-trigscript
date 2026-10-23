@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A task that runs on after the program has ended.
 program(async () => {
   start(async () => {

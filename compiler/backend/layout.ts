@@ -30,8 +30,8 @@
  * went on — a trigger of a few conditions and actions in a little over 200 bytes, not 2,408. A row a doubling trigger
  * walks (`Graph.rows`) is stacked as one, its triggers 2,408 bytes apart.
  */
-import { END, TRIGGER_BYTES, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
-import { GAME_TICK, TRIGGER_LISTS, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
+import { END, NOW, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
+import { TRIGGER_LISTS, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 import type { ScriptString } from "../runtime";
 
 export const STRINGS = 0x191943c8;
@@ -274,10 +274,11 @@ export function layout(input: LayoutInput): OwnMap {
   const routed = new Set(runs.flatMap((r) => [...r.routed]));
   const pad = -input.strings & 3;
   const base = STRINGS + input.strings + pad;
-  // The payload's triggers. Each run's `@wake` first: when the game's tick has reached the one the run sleeps until
-  // and its player is in the game (their list not empty), it sends the walk where the run goes on (its `@init`, the
-  // first time) with the current player theirs; otherwise on to the next run. A sleep writes `@wake`'s tick and where
-  // to go on; the run's end, a tick never reached. `@init`: `@wake` back to going on to the next run once woken.
+  // The payload's triggers. Each run's `@wake` first: when the map's count of frames (`NOW`) has reached the one the run
+  // sleeps until and its player is in the game (their list not empty), it sends the walk where the run goes on (its
+  // `@init`, the first time) with the current player theirs; otherwise on to the run's tasks, or the next run. A sleep
+  // writes `@wake`'s frame and where to go on; the run's end, a frame never reached. `@init`: `@wake` back to going on
+  // past the program once woken.
   const wake = (i: number) => (i ? `@wake#${i}` : "@wake"), init = (i: number) => (i ? `@init#${i}` : "@init");
   const stop = "@stop", run = "@run", entry = (p: number) => `@entry${p}`, gate = (p: number) => `@gate${p}`;
   const after = (i: number) => (i + 1 < runs.length ? wake(i + 1) : stop);
@@ -286,16 +287,16 @@ export function layout(input: LayoutInput): OwnMap {
   // (Where each run's graph ends: the next run.)
   const ends = new Map<string, string>(runs.map((_, i) => [i ? `${END}#${i}` : END, after(i)]));
   const endOf = (l: string) => ends.get(l) ?? l;
-  type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number };
+  type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number; off?: boolean };
   const triggers: T[] = runs.flatMap(({ graph, owner }, i) => [
     {
       label: wake(i),
-      conds: [{ dword: { game: GAME_TICK }, compare: "atLeast", value: 0 }, { dword: { game: list(owner) + 8 }, compare: "atMost", value: 0x7fffffff }],
+      conds: [{ dword: { var: NOW }, compare: "atLeast", value: 0 }, { dword: { game: list(owner) + 8 }, compare: "atMost", value: 0x7fffffff }],
       acts: [{ dword: { at: wake(i), field: "next" }, modifier: "set", value: { label: init(i) } }, { dword: { game: CURRENT_PLAYER }, modifier: "set", value: owner }],
-      next: after(i),
+      next: graph.tasks ?? after(i),
     } satisfies T,
-    { label: init(i), conds: [], acts: [{ dword: { at: wake(i), field: "next" }, modifier: "set", value: { label: after(i) } }], next: graph.triggers[0]?.label ?? after(i) } satisfies T,
-    ...graph.triggers.map((t, k) => ({ label: t.label, conds: t.conds, acts: t.acts, next: t.next !== undefined ? endOf(t.next) : graph.triggers[k + 1]?.label ?? after(i) })),
+    { label: init(i), conds: [], acts: [{ dword: { at: wake(i), field: "next" }, modifier: "set", value: { label: graph.tasks ?? after(i) } }], next: graph.triggers[0]?.label ?? after(i) } satisfies T,
+    ...graph.triggers.map((t, k) => ({ label: t.label, conds: t.conds, acts: t.acts, next: t.next !== undefined ? endOf(t.next) : graph.triggers[k + 1]?.label ?? after(i), ...(t.off ? { off: true } : {}) })),
   ]);
   triggers.push(
     // (Every pass ends here: the game's wait before the next pass set to none, as eudplib's eudTurbo does, so the
@@ -321,8 +322,8 @@ export function layout(input: LayoutInput): OwnMap {
       acts: [{ dword: { at: gate(p), field: "next" }, modifier: "set", value: { label: run } }],
       next: listEnd(p),
     })),
-    // Every entry and gate back to ending at its list's end, then the first run.
-    { label: run, conds: [], acts: players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), next: wake(0) },
+    // Every entry and gate back to ending at its list's end, the count of frames one more, then the first run.
+    { label: run, conds: [], acts: [...players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), { dword: { var: NOW }, modifier: "add", value: 1 }], next: wake(0) },
   );
   for (const t of runs.flatMap((r) => r.graph.triggers)) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
   // The triggers stacked, a row as one.
@@ -385,6 +386,7 @@ export function layout(input: LayoutInput): OwnMap {
     const f = d.field;
     if (f === "next") return t + 4;
     if (f === "current") return t + 2404;
+    if (f === "flags") return t + 2376;
     if ("cond" in f) return t + 8 + 20 * f.cond + (f.part === "player" ? 4 : f.part === "mask" ? 0 : 8);
     return t + 328 + 32 * f.act + { value: 20, dest: 16, modifier: 24, mask: 0, text: 4, wav: 8, time: 12, flags: 28 }[f.part];
   };
@@ -521,7 +523,7 @@ export function layout(input: LayoutInput): OwnMap {
       dv.setUint8(pad + o + 28 - base, 20);
       if (a.mask !== undefined) dv.setUint16(pad + o + 30 - base, MASKED, true);
     });
-    w32(n + 2376, 4); // preserved
+    w32(n + 2376, t.off ? TRIGGER_OFF : TRIGGER_ON); // preserved (and done, one passed by)
   });
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
   for (const t of graphs.flatMap((g) => g.templates ?? [])) if (!input.templateAt?.has(t.id) && t.at === undefined) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));

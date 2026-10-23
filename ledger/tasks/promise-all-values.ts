@@ -1,4 +1,4 @@
-// ledger: step 11, refused: Promise.all
+// ledger: step 11, takes
 // Each side's value from a `Promise.all`: `const [a, b] = await Promise.all([…])`.
 async function slow(n: number): Promise<number> {
   await sleep(frames(n));

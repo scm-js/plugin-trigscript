@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A task written where it is started: `start(async () => { … })`.
 program(async () => {
   start(async () => {

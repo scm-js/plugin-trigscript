@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A task waited for: `await t`, the program going on in the frame the task ends.
 async function short() {
   await sleep(frames(3));
