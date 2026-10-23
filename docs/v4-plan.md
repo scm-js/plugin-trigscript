@@ -5099,6 +5099,10 @@ the same frame and "ok".
 
 Played in Remastered (2026-10-22, recording 21.59.29, the lists' build): all 7 lines word for word and in order, each at
 the lifted game's frame (2, 4, 6, 12, 15, 29); the Marines made and killed as the script says; no hitch.
+Played again as merged, the watch (2026-10-22, recording 22.58.21, `own-step11-events-watch.scx`): the same 7 lines in
+order at the same frames, to the video frame; the Marines made and killed as before; no hitch. (The lines would be the
+same if Remastered read past a condition of kind 0, only slower: what a dead unit's place costs there is not measured
+yet.)
 
 ### Triggers stacked (2026-10-20)
 
