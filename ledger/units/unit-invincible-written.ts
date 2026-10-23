@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit's invincible written
+// ledger: step 10, takes
 // A unit made invincible: `u.invincible = true`.
 program(() => {
   first({ owner: P1 })!.invincible = true;

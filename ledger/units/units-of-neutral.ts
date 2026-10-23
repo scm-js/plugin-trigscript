@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over the neutral player's units, the critters and the mineral fields: `unitsOf(P12)`.
 program(() => {
   let n = 0;

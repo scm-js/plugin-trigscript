@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit kept in a variable
+// ledger: step 10, takes
 // trigscript/cutscene: a unit sent to a point by an Attack order, fighting on the way: `await charge(u, x, y)`.
 import { charge } from "trigscript/cutscene";
 program(async () => {

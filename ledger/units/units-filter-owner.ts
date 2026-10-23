@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over one player's units by the filter's owner: `allUnits({ owner: P2 })`.
 program(() => {
   let n = 0;

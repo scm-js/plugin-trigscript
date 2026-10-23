@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit kept in a variable
+// ledger: step 10, takes
 // A unit variable given another unit: `u = first(…)`.
 program(() => {
   let u = first({ owner: P1 });

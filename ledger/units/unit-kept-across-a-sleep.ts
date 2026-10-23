@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit kept in a variable
+// ledger: step 10, takes
 // A unit kept across a sleep, checked again before it is used: gone, it reads as none.
 program(() => {
   const u = first({ owner: P1 });

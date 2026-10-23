@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over the units of one type: `allUnits({ type: units.TerranMarine })`.
 program(() => {
   let n = 0;

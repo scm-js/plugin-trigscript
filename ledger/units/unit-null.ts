@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit kept in a variable
+// ledger: step 10, takes
 // A variable that holds a unit or none, none to begin with: `let u: Unit | null = null`.
 program(() => {
   let u: Unit | null = null;

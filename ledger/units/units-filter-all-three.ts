@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over a player's units of one type inside a location: `unitsAt(there, { owner: P1, type: units.TerranMarine })`.
 const there = reserveLocation("where to count");
 program(() => {

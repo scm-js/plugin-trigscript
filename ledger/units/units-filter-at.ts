@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over the units inside a location by the filter's `at`: `allUnits({ at: there })`.
 const there = reserveLocation("where to count");
 program(() => {

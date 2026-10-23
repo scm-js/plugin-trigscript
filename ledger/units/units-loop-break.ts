@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over units left early: `break` at the first unit that is hurt.
 program(() => {
   let found = false;

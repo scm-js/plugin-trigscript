@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over a group of types, the game's own: `unitsOf(P1, { type: units.Men })`.
 program(() => {
   let n = 0;
