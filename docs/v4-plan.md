@@ -5029,6 +5029,10 @@ later in the turn, branches inside a task and a race inside a branch, errors in 
 bytes frame after frame against the simulator, every text at its frame); the probe both ways in the lifted game, every
 line the same at the same frame and "ok".
 
+Played in Remastered (2026-10-22, recording 20.57.34): all 9 lines word for word and in order, "did not start" in red;
+each group at the lifted game's frame (2, 14, 22, 29, 40, 43, 47, 75), the frames where 32 tasks start among them; no
+hitch.
+
 ### Triggers stacked (2026-10-20)
 
 Brought forward from step 14 (`compiler/backend/layout.ts`). The game reads no more of a trigger's 2,408 bytes than
