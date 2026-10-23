@@ -4034,8 +4034,7 @@ the ledger is the list it can be written again from at 4.0.
   Egg dying while another unit's death is in progress (the counts leave the three out, and the dying list's head moves
   only when it was empty); a unit removed while hidden in a transport or a bunker (not counted). A frame on which a
   place is freed costs the watch and three reads (about 15 µs at 80 places): the place behind the head moves, and
-  nothing else says so. The gate's numbers are not checked in Remastered yet (0x628438, 0x581DE4, 0x581F34 are among
-  what it lets a map read; whether its emulation moves them as 1.16.1 does, the probe will say).
+  nothing else says so. The gate's numbers hold in Remastered (played 2026-10-23: the probe's events came on the frame).
   The handler reads a changed place's values a bit at a time, about 4 µs for a unit made: through the current player,
   pointed at the record once, instead of a copy of the record's EPD for every read. The 1,700 places are two triggers
   each (1.84 MB against eudplib's 1.27 for the probe without `on.order`): a stub of fewer actions packs tighter.
@@ -5365,8 +5364,10 @@ by on a frame when nothing can have come on or gone.
 
 Every line of the probe at the same frame as before, both ways. Checked: `tests/emitter.test.ts` ("a map of our
 own, unit events": a unit put in a place with neither the head nor a count moved is not seen until one moves; the head
-and Player 1's count move as the game moves them and the unit is handed on). Not played in Remastered yet
-(`Maps/TrigScript/own-step11-events-gated.scx`).
+and Player 1's count move as the game moves them and the unit is handed on). Played in Remastered (2026-10-23,
+recording 12.42.11, `own-step11-events-gated.scx`): all six lines "ok", each group at the lifted game's frame spacing
+(B two frames after A, C six after B, W fourteen after Weighed) — Remastered moves the free list's head and the counts
+as 1.16.1 does, and the gate opens on the frame a unit comes on or dies.
 
 ### Triggers stacked (2026-10-20)
 
