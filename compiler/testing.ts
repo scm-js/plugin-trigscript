@@ -16,6 +16,7 @@
  */
 import { ActionType, type ActionRecord, type TriggerRecord } from "../vendor/triggers";
 import { actionDef } from "../vendor/triggerDefs";
+import type { TestCost } from "./gameCost";
 import type { At, Program } from "./ir";
 import type { ScriptString } from "./runtime";
 import { Simulation } from "./simulate";
@@ -25,8 +26,8 @@ import type { SimBounds, SimUnit, SimUnitInit, SimUnitProperties } from "./world
 /* ── What is registered ── */
 
 type Mode = "run" | "skip" | "only";
-type TestFn = (sim: TestSim, ...args: unknown[]) => unknown;
-type Hook = (sim: TestSim) => unknown;
+type TestFn = (sim: TestWorldLike, ...args: unknown[]) => unknown;
+type Hook = (sim: TestWorldLike) => unknown;
 interface Where { file: string; line: number; column?: number }
 
 interface Suite {
@@ -49,6 +50,8 @@ interface Case {
   args: unknown[];
   /** `{ as: P2 }`: the player the world is simulated as, when the map's player settings are not given. */
   as?: number;
+  /** `{ players: [P1, P2] }`: in the game, a copy of it for each, kept in step. */
+  players?: number[];
 }
 
 /** A test or a `describe`, as the editor lists it. `id` is the file and the names down to it: the same from one compile to the next. */
@@ -61,6 +64,8 @@ export interface TestInfo {
   file: string;
   line: number;
   mode: Mode;
+  /** A test's `{ players }`: run in the game as a copy for each. */
+  players?: number[];
 }
 
 export interface TestEvent { frame: number; text: string; file?: string; line?: number; player: number }
@@ -81,6 +86,8 @@ export interface TestResult {
   events: TestEvent[];
   frames: number;
   ms: number;
+  /** In the lifted game: what the test's frames cost, by frame and by line (TrigScript 4, A4). */
+  cost?: TestCost;
 }
 
 export interface TestReport {
@@ -112,6 +119,11 @@ export interface TestWorld {
 
 export interface TestRunOptions {
   world?: TestWorld;
+  /**
+   * A world other than the simulator's for each test (the lifted game's, `GameSim`): made fresh for every test,
+   * given the player the test asked to be (`{ as: P2 }`). Absent: the simulator.
+   */
+  makeWorld?: (as?: number, test?: { id: string; players?: number[] }) => TestWorldLike;
   /** Run only these: tests of these files, or with these ids (a suite's id runs what is under it). Absent: all. */
   files?: string[];
   ids?: string[];
@@ -155,7 +167,11 @@ export class TestRegistry {
     if (typeof fn !== "function") throw new Error(`test("${name}"): the second argument is the test's function, (sim) => { … }.`);
     if (fn.constructor?.name === "AsyncFunction") throw new Error(`test("${name}"): a test is not async. Nothing in sim waits: sim.frames(n) and sim.until(…) have run by the time they return.`);
     const as = options && typeof options === "object" && typeof (options as { as?: unknown }).as === "number" ? (options as { as: number }).as : undefined;
-    this.current.children.push({ kind: "test", name, at: this.where(), mode, parent: this.current, fn: fn as TestFn, args, ...(as !== undefined ? { as } : {}) });
+    const given = options && typeof options === "object" ? (options as { players?: unknown }).players : undefined;
+    if (given !== undefined && !(Array.isArray(given) && given.length >= 2 && given.length <= 8 && given.every((p) => Number.isInteger(p) && p >= 0 && p < 8) && new Set(given).size === given.length))
+      throw new Error(`test("${name}", { players }): two to eight different players of P1 to P8, as [P1, P2].`);
+    const players = given as number[] | undefined;
+    this.current.children.push({ kind: "test", name, at: this.where(), mode, parent: this.current, fn: fn as TestFn, args, ...(as !== undefined ? { as } : {}), ...(players ? { players: [...players] } : {}) });
   }
 
   private addSuite(mode: Mode, name: unknown, body: unknown): void {
@@ -212,13 +228,57 @@ export class TestRegistry {
 /** The names `library()` gives: a script imports them, they are not globals (a script may well have a `test` of its own). */
 export const TESTING_NAMES = ["test", "it", "describe", "beforeEach", "afterEach", "expect"] as const;
 
+/* ── The world a test is handed ── */
+
+/** What every world a test may be handed carries: the simulator's (`TestSim`) and the lifted game's (`GameSim`). */
+export const WORLD = Symbol.for("trigscript.world");
+export const isWorld = (v: unknown): v is TestWorldLike => typeof v === "object" && v !== null && (v as { [WORLD]?: unknown })[WORLD] === true;
+
+/** What a test can ask of its world, whichever it was handed. */
+export interface TestWorldLike {
+  readonly [WORLD]: true;
+  /** What the test's frames cost, where the world counts it (the lifted game's). */
+  cost?(): TestCost | null;
+  faultsExpected: boolean;
+  readonly frame: number;
+  seed(n: number): this;
+  frames(n?: number): this;
+  seconds(n: number): this;
+  until(done: () => unknown, most?: number): this;
+  place(player: number, type: number, at: number, n?: number): SimUnit[];
+  kill(unit: SimUnit, by?: number): this;
+  remove(unit: SimUnit): this;
+  give(unit: SimUnit, to: number): this;
+  morph(unit: SimUnit, type: number): this;
+  move(unit: SimUnit, to: number | { x: number; y: number }): this;
+  press(key: string, player?: number): this;
+  click(button?: "left" | "right" | "middle", player?: number): this;
+  type(line: string, player?: number): this;
+  moveMouse(x: number, y: number, player?: number): this;
+  moveCamera(x: number, y: number, player?: number): this;
+  selectUnits(units: readonly SimUnit[], player?: number): this;
+  count(player: number, type: number, at?: number): number;
+  units(filter?: { owner?: number; type?: number; at?: number }): SimUnit[];
+  resources(player: number): { ore: number; gas: number };
+  deaths(player: number, type: number): number;
+  kills(player: number, type: number): number;
+  switch(n: number): boolean;
+  fog(player: number, area?: { x: number; y: number; width: number; height: number }): string[] | null;
+  location(n: number): SimBounds | undefined;
+  program(name?: string | number, player?: number): Record<string, unknown>;
+  printed(player?: number): string[];
+  log(sourceOf?: (trigger: number) => Where | null): TestEvent[];
+  readonly events: TestEvent[];
+  readonly faults: { at: At; message: string; cycle: number; frame: number; program: number }[];
+}
+
 /* ── expect ── */
 
 const show = (v: unknown): string => {
   if (typeof v === "string") return JSON.stringify(v);
   if (typeof v === "function") return "a function";
   if (v instanceof RegExp) return String(v);
-  if (v instanceof TestSim) return "sim";
+  if (isWorld(v)) return "sim";
   try { return JSON.stringify(v, (_, x) => (typeof x === "bigint" ? String(x) : x === undefined ? "undefined" : x)) ?? String(v); } catch { return String(v); }
 };
 const brief = (v: unknown): string => { const s = show(v); return s.length > 60 ? `${s.slice(0, 57)}…` : s; };
@@ -237,11 +297,11 @@ function expect(actual: unknown) {
     /** `holds` is the matcher's answer; `what` finishes "expected …". */
     const check = (holds: boolean, what: string, expected?: unknown) => {
       if (holds !== not) return;
-      const got = actual instanceof TestSim ? "" : `, got ${brief(actual)}`;
-      throw new ExpectError(`expected ${not ? "not " : ""}${what}${got}`, expected === undefined ? undefined : show(expected), actual instanceof TestSim ? undefined : show(actual));
+      const got = isWorld(actual) ? "" : `, got ${brief(actual)}`;
+      throw new ExpectError(`expected ${not ? "not " : ""}${what}${got}`, expected === undefined ? undefined : show(expected), isWorld(actual) ? undefined : show(actual));
     };
     const number = (name: string): number => { if (typeof actual !== "number") throw new ExpectError(`${name}: ${brief(actual)} is not a number`); return actual; };
-    const sim = (name: string): TestSim => { if (!(actual instanceof TestSim)) throw new ExpectError(`${name} is asked of the world: expect(sim).${name}(…)`); return actual; };
+    const sim = (name: string): TestWorldLike => { if (!isWorld(actual)) throw new ExpectError(`${name} is asked of the world: expect(sim).${name}(…)`); return actual; };
     return {
       toBe: (e: unknown) => check(Object.is(actual, e), brief(e), e),
       toEqual: (e: unknown) => check(same(actual, e), brief(e), e),
@@ -293,8 +353,9 @@ const mulberry = (seed: number) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 };
 
-/** The world a test is handed. */
-export class TestSim {
+/** The world a test is handed: the simulator's. */
+export class TestSim implements TestWorldLike {
+  readonly [WORLD] = true as const;
   /** Set by `expect(sim).toHaveFaulted`: the faults are the test's business, and do not fail it by themselves. */
   faultsExpected = false;
   private rng = mulberry(DEFAULT_SEED);
@@ -351,7 +412,17 @@ export class TestSim {
   /** What a fight is in a test. `by`: the player the kill is counted for. */
   kill(unit: SimUnit, by?: number): this { this.world.game.gone(unit, true, by); return this; }
   remove(unit: SimUnit): this { this.world.game.gone(unit, false); return this; }
-  give(unit: SimUnit, to: number): this { if (unit.alive) unit.owner = to; return this; }
+  give(unit: SimUnit, to: number): this { this.world.game.setOwner(unit, to); return this; }
+  /** A unit turns into another type and stays the same unit: the new type's hit points and shields, in the same part of them. */
+  morph(unit: SimUnit, type: number): this {
+    if (!unit.alive) return this;
+    const s = this.world.game.stats(type) ?? {};
+    const maxHp = Math.max(1, s.hp ?? unit.maxHp), maxShields = Math.max(0, s.shields ?? 0);
+    unit.hp = Math.max(1, Math.round((unit.hp * maxHp) / Math.max(1, unit.maxHp)));
+    unit.shields = unit.maxShields ? Math.round((unit.shields * maxShields) / unit.maxShields) : maxShields;
+    Object.assign(unit, { type, maxHp, maxShields });
+    return this;
+  }
   /** A unit to a location's centre, or to a point. */
   move(unit: SimUnit, to: number | { x: number; y: number }): this {
     const p = typeof to === "number" ? this.world.game.centreOf(to) : to;
@@ -365,6 +436,8 @@ export class TestSim {
   click(button: "left" | "right" | "middle" = "left", player?: number): this { this.programs.click(button, player); return this; }
   type(line: string, player?: number): this { this.programs.type(line, player); return this; }
   moveMouse(x: number, y: number, player?: number): this { this.programs.moveMouse(x, y, player); return this; }
+  moveCamera(x: number, y: number, player?: number): this { this.programs.moveCamera(x, y, player); return this; }
+  selectUnits(units: readonly SimUnit[], player?: number): this { this.programs.selectUnits(units as SimUnit[], player); return this; }
 
   /* ── the world read back ── */
 
@@ -381,6 +454,8 @@ export class TestSim {
   deaths(player: number, type: number): number { return this.world.death(player, type); }
   kills(player: number, type: number): number { return this.world.game.kills(this.owners(player), type); }
   switch(n: number): boolean { return this.world.switches[n] === 1; }
+  /** The fog of war as the simulator draws it: of the units a program set the sight of (simulateIr.ts, fog). */
+  fog(player: number, area?: { x: number; y: number; width: number; height: number }): string[] | null { return this.programs.fog(player, area); }
   /** Where a location is now. */
   location(n: number): SimBounds | undefined { const b = this.world.game.locations.get(n); return b ? { ...b } : undefined; }
 
@@ -449,7 +524,7 @@ export function listTests(registry: TestRegistry): { list: TestInfo[]; cases: Ma
       const n = (seen.get(id) ?? 0) + 1;
       seen.set(id, n);
       if (n > 1) id = `${id} #${n}`;
-      list.push({ id, kind: node.kind, name: node.name, path, file: node.at.file, line: node.at.line, mode: node.mode });
+      list.push({ id, kind: node.kind, name: node.name, path, file: node.at.file, line: node.at.line, mode: node.mode, ...(node.kind === "test" && node.players ? { players: node.players } : {}) });
       if (node.kind === "suite") walk(node, [...path, node.name]);
       else cases.set(id, node);
     }
@@ -476,7 +551,7 @@ export function runTests(registry: TestRegistry, ctx: TestContext, options: Test
       for (let s: Suite | null = test.parent; s; s = s.parent) chain.unshift(s);
       const skipped = test.mode === "skip" || chain.some((s) => s.mode === "skip") || (narrowed.has(info.file) && test.mode !== "only" && !chain.some((s) => s.mode === "only"));
       if (skipped) { results.push({ id: info.id, status: "skipped", printed: [], events: [], frames: 0, ms: 0 }); continue; }
-      results.push(runOne(info.id, test, chain, ctx, options.world ?? {}));
+      results.push(runOne(info.id, test, chain, ctx, options.world ?? {}, options.makeWorld));
     }
   } finally {
     registry.running = false;
@@ -484,14 +559,19 @@ export function runTests(registry: TestRegistry, ctx: TestContext, options: Test
   return { list, results, only, ms: Date.now() - started };
 }
 
-function runOne(id: string, test: Case, chain: Suite[], ctx: TestContext, world: TestWorld): TestResult {
+function costOf(sim: TestWorldLike | null): { cost?: TestCost } {
+  const cost = sim?.cost?.();
+  return cost ? { cost } : {};
+}
+
+function runOne(id: string, test: Case, chain: Suite[], ctx: TestContext, world: TestWorld, makeWorld?: TestRunOptions["makeWorld"]): TestResult {
   const began = Date.now();
-  let sim: TestSim | null = null;
+  let sim: TestWorldLike | null = null;
   const done = (extra: Partial<TestResult>): TestResult => ({
-    id, status: "passed", printed: sim?.printed() ?? [], events: (sim?.log((t) => ctx.sources[t] ?? null) ?? []).slice(0, 500), frames: sim?.frame ?? 0, ms: Date.now() - began, ...extra,
+    id, status: "passed", printed: sim?.printed() ?? [], events: (sim?.log((t) => ctx.sources[t] ?? null) ?? []).slice(0, 500), frames: sim?.frame ?? 0, ms: Date.now() - began, ...costOf(sim), ...extra,
   });
   try {
-    sim = new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);
+    sim = makeWorld ? makeWorld(test.as, { id, players: test.players }) : new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);
     for (const s of chain) for (const h of s.before) h(sim);
     const returned = test.fn(sim, ...test.args);
     if (returned && typeof (returned as { then?: unknown }).then === "function") throw new Error("A test is not async: what it returned is a promise. Nothing in sim waits.");

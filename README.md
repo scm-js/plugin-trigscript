@@ -10,10 +10,12 @@ players, arrays, classes and the standard library are all there. Those are ordin
 triggers and play on every version of the game.
 
 Code inside `program(() => { … })` is the other half: it runs *in the game*, with
-variables, arrays, texts, functions, classes, loops and `sleep`. A program is built into the map by
-[eudplib](https://github.com/scm-js/plugin-eudplib), the compiler behind euddraft, when
-you save, and a map with a program in it needs **StarCraft: Remastered**. A script that
-only calls `trigger()` never involves eudplib at all.
+variables, arrays, texts, functions, classes, loops and `sleep`. A program is built into the
+map by TrigScript itself when you save — laid out as the game's own triggers, in under a
+second, with nothing else to install — and a map with a program in it needs **StarCraft:
+Remastered**. What TrigScript's own build does not take yet is built through
+[eudplib](https://github.com/scm-js/plugin-eudplib), the compiler behind euddraft, and
+Problems says so on the line (see [Use](#use), on the status bar).
 
 The editor is Monaco with a `.d.ts` generated from the open map, so `locations.`,
 `switches.`, `units.` and `players.` complete to what your map actually has, and a
@@ -54,7 +56,7 @@ is, with the same keys where it has one:
 | **Tabs**, over the editor | One per open file; a file with problems is red, with their count, and two files of one name say their folder. Go to Definition on a name another file exports opens that file. |
 | **Run controls**, right of the tabs | Play (F5), Simulate (Ctrl+F5), Apply (Ctrl+Shift+B), Pick from map, the switch between the window and the panel beside the map, and **…** for the rest. |
 | **Panel**, under the editor (Ctrl+J) | **Problems** (Ctrl+Shift+M), **Output** (Ctrl+Shift+U) — what Apply, Play and the builds of the programs reported, with the build log — **Simulate**, **Test Results**, and **Settings** (Ctrl+,): what the map's author chose about how its programs are built, kept in the map beside the script so that it builds the same on any computer. It takes its room from the bottom, and only when asked for or when something failed. |
-| **Status bar** | The problem count, the tests (`12 passed`, or `1 failed` in red; a click opens Testing), whether the script's triggers are in the map (a click applies it), the last build of the programs, the eudplib plugin's state, the cursor. |
+| **Status bar** | The problem count, the tests (`12 passed`, or `1 failed` in red; a click opens Testing), whether the script's triggers are in the map (a click applies it), the last build of the programs, who builds them (**built by TrigScript**, or the eudplib plugin and its state), the cursor. |
 | **Command palette** (F1 or Ctrl+Shift+P) | Every command above under *TrigScript:*, beside Monaco's own. |
 
 Something that needs an answer — the triggers were edited outside the script, the map
@@ -68,7 +70,7 @@ There is no build step to remember. **Saving the map applies the script**, and s
 Tools ▸ Test Map and anything that exports the map: the script runs, its `trigger()`
 records are written into the trigger list as one contiguous block (replacing the previous
 block, or appended the first time), and its programs are built into the file being
-written. The map you keep editing never holds eudplib's output; the editor stores the map
+written. The map you keep editing never holds the build's output; the editor stores the map
 as you see it inside the saved file and gives that back when you open it. If the script
 has an error, the map is still saved, with the triggers from the last script that
 compiled, and a notice names the file and line.
@@ -277,7 +279,7 @@ import { test, expect, program, keyPressed, chatted, setResources, print, sleep,
 program(() => {
   let shop = false;
   while (true) {
-    if (keyPressed(CurrentPlayer, "F2")) { shop = !shop; print(shop ? "Shop open" : "Shop closed"); }
+    if (keyPressed(CurrentPlayer, "F7")) { shop = !shop; print(shop ? "Shop open" : "Shop closed"); }
     const give = chatted(CurrentPlayer, "-give {n}");
     if (give && shop) setResources(CurrentPlayer, "add", give.n, "ore");
     sleep(frames(1));
@@ -287,7 +289,7 @@ program(() => {
 test("-give pays only while the shop is open", (sim) => {
   sim.type("-give 100").frames(2);
   expect(sim.resources(0 as Player).ore).toBe(0);
-  sim.press("F2").frames(1);
+  sim.press("F7").frames(1);
   expect(sim.program("shop").shop).toBe(true);
   sim.type("-give 100").frames(2);
   expect(sim.resources(0 as Player).ore).toBe(100);
@@ -355,13 +357,16 @@ world has one player; `test(name, { as: P2 }, (sim) => { … })` says which.
 - Palette: *Run All Tests*, *Run Test at Cursor*, *Run Failed Tests*. *New File…* in a
   folder called `tests` proposes `<the open file>.test.ts` with one test written in it.
 
-A script with programs shows, at the right of the status bar, whether the eudplib plugin
-is running and whether its runtime is on this machine yet. The runtime — Pyodide, a
-Python for the browser, and eudplib — is downloaded once, about 15 MB, after asking, the
-first time a map with a program is saved; the desktop app and the container image carry
-it. Every build after that runs on this machine and nothing about the map leaves it. The
-status bar says how the last build went, Output keeps its log, and a failure that names a
-line puts a marker on it. A save whose build fails still writes the map and its script,
+A script with programs shows, at the right of the status bar, who builds them. **built by
+TrigScript** is the usual case: the plugin lays the programs out into the map itself, in
+under a second, with nothing to download. A script with something TrigScript's own build
+does not take yet — Problems says what, as a warning on the line — goes through the eudplib
+plugin instead, and the status bar then shows whether that plugin is running and whether
+its runtime is on this machine: Pyodide, a Python for the browser, and eudplib, downloaded
+once, about 15 MB, after asking, the first time such a map is saved (the desktop app and
+the container image carry it). Either way every build runs on this machine and nothing
+about the map leaves it. The status bar says how the last build went, Output keeps its
+log, and a failure that names a line puts a marker on it. A save whose build fails still writes the map and its script,
 with no programs in it — the status bar reads **Saved without its programs** until a save
 that builds — and a build that went well reads **edited since** once the script changes,
 because the programs in the saved file are then the older ones.
@@ -417,7 +422,7 @@ with a message, never passed over in silence.
 | `boolean` | Same | Assigned with `=` only: no `\|\|=`, `&&=`. |
 | `string` | Mostly | A value with no length to declare. `length`, `s[i]` and `slice` count characters (code points), where JavaScript counts UTF-16 units: they differ only past U+FFFF. A made text holds 1 023 bytes. The methods are a subset: no `split`, `replace`, `trim`, `toUpperCase`, `parseInt`, regular expressions. |
 | `null`, `undefined` | Units only | `Unit \| null` is real (`first(…)`, `if (u)`, `u?.kill()`). A number, a boolean or a text is never either: where JavaScript would give `undefined` — `pop()`, `find()`, `get()`, `at()` — say what it is then (`xs.pop() ?? 0`). No optional fields or parameters (`y?: number`); a parameter's default (`y = 1`) is there. |
-| Operators: `+ - * / %`, comparisons, `&&` `\|\|` `!`, `c ? a : b`, `& \| ^ << >> >>>`, `??`, `?.`, `++` `--`, the compound assignments, the comma | Same | `==` and `===` are one thing, since nothing is coerced. A shift by 32 or more leaves nothing, where JavaScript shifts by the remainder. Missing: `**`, `typeof`, `in`, `delete`. |
+| Operators: `+ - * / %`, comparisons, `&&` `\|\|` `!`, `c ? a : b`, `& \| ^ << >> >>>`, `??`, `?.`, `++` `--`, the compound assignments, the comma | Same | `==` and `===` are one thing, since nothing is coerced. A shift by 32 or more leaves nothing, where JavaScript shifts by the remainder. `typeof x === "…"` and `"key" in x` work where the answer is known when the script is built — a function written for a number or a text is inlined with the side its argument takes — and not as tests in the game. Missing: `**`, `delete`. |
 | `if`, `while`, `do`, `for`, `for…of`, `switch`, `break`, `continue` | Same | A loop runs all its rounds within one frame of the game, so one that never ends must `sleep()` on every path; `while (true)` left only by a `break` needs the sleep too. A `for` over bounds the script knows is unrolled. No `for…in`, no labels. |
 | Functions: declarations, parameters by value, defaults, rest parameters, recursion, generics | Same | The compiler inlines a function or calls it; the meaning is the same. One that calls itself cannot `sleep()` and has a depth limit. A function declared inside another does not see the outer one's locals (it sees the program's). It returns a number, a boolean, a text, a unit or an instance — not a record or an array it made. |
 | Arrow functions, closures, functions as values | Callbacks only | An arrow is written where a method takes it (`xs.map((x) => x + bonus)`), and sees every variable in reach. It cannot be kept: not in a variable, an array, a field or a return value. |
@@ -430,7 +435,7 @@ with a message, never passed over in silence.
 | `try` / `catch` / `throw` | Missing | The game has no exceptions. What is always a mistake — an index past the end, a full heap, a stack overflow — is said in the game in red, or listed by Simulate. |
 | `async` / `await`, promises, generators, timers | Missing | `sleep()` is how a program waits: it gives the frame back and carries on later, and may stand anywhere but in a function that calls itself or a loop over units. Something on its own clock is another `program()`. |
 | Modules | Same | `import` between the script's files and from `"trigscript"`; nothing from npm. A function another file's program calls is made with `game()`. |
-| The standard library | A little | `Math.min`, `Math.max`, `Math.abs` (and the rounding ones, which change nothing), `String(n)`, `n.toString()`, `Array.from`, `new Array(n).fill(v)`. For `console.log` there is `print()`, for `Math.random()` there is `random(n)`. No `JSON`, `Date`, `RegExp`, `Object.*`, and no `Math.sqrt` or `**` on a variable. |
+| The standard library | A little | `Math.min`, `Math.max`, `Math.abs` (and the rounding ones, which change nothing), `String(n)`, `n.toString()`, `Array.from`, `new Array(n).fill(v)`; `Math.sqrt`, `Math.sign`, `Math.log2` (of a whole number: rounded down), `~`, and `**` / `Math.pow` by a power known when the script is built. For `console.log` there is `print()`, for `Math.random()` there is `random(n)`. Inside a program `Math.random()`, `Date.now()` and `new Date()` are refused, since they would be worked out once when the map is built; game time is `elapsed()` or `memory.game.frame`. No `JSON`, `Date`, `RegExp`, `Object.*`, and no `**` by a variable. |
 | — | Added | What TypeScript has no word for: `sleep`, `rose` and `once`, reads of the game (`minerals(p)`), `Unit` objects and loops over units, `stats()`, `keyPressed` / `clicked` / `mouse` / `chatted`, `shared()`, per-player programs. |
 
 The sections below say each of these in full, and [What a program does not
@@ -548,8 +553,11 @@ program(() => {
 Everything inside the arrow runs in the game. **A program is a coroutine the game
 resumes every frame.** Its body runs from where it left off until it reaches a `sleep()`
 or its end, all within that frame; the next frame it goes on from there. A body that ends
-stops for good. `while (true) { …; sleep(frames(1)); }` is therefore a game loop running
-once per frame, and `sleep(seconds(2))` at its end makes it one every two seconds.
+stops for good, and a `return` at the top of the body ends it there (`if (!hero) return;`).
+`while (true) { …; sleep(frames(1)); }` is therefore a game loop running once per frame,
+and `sleep(seconds(2))` at its end makes it one every two seconds. A trigger's `preserve()`
+does nothing in a program, which is said as a remark; `disabled(…)` is refused, since a
+program tests its conditions and runs its actions rather than skipping them.
 
 #### Variables and records
 
@@ -566,7 +574,7 @@ played and cost the map nothing: no death counters, no switches, no triggers in 
 arrays; each kind has its paragraph below. `let hp = [10, 20, 30]`, `let xs = [a, a * 2, 0]`,
 `let lives: u8[] = new Array(12).fill(3)`; an index is a constant or a variable
 (`hp[i] += 7`, `hp[i + 1]++`), `.length`, `for (const x of xs)` with `break` and `continue`
-(`x` is a copy of the cell, as in TypeScript), `fill(v)`, `includes(v)` and `indexOf(v)`
+(`x` is a copy of the cell, as in TypeScript), `fill(v, start?, end?)`, `includes(v)` and `indexOf(v)`
 (−1 when there is none) all run within the frame. A `const` array the body stores into is an
 array of the program like a `let` one. Cells keep their type: a `u8[]` stops at both ends, a
 `number[]` goes below zero. An array handed to a function is the same array. In a program of
@@ -1194,11 +1202,15 @@ if (target) target.order("move", locations.Exit);
 
 `unitsAt(location, filter?)`, `unitsOf(player, filter?)` and `allUnits(filter?)` are what a
 `for…of` runs over; `first(filter?)`, `nearest(type, location, filter?)` and
-`randomUnit(filter?)` pick one unit or `null`, and TypeScript wants the `if (target)` before
-the unit is used (or `target?.kill()`). A filter is `{ type, owner, at }`, every part known
+`randomUnit(filter?)` pick one unit or `null` — `first` and `randomUnit` take a set too,
+`first(unitsAt(locations.Base, { owner: P1 }))` — and TypeScript wants the `if (target)`
+before the unit is used (or `target?.kill()`, `target?.hp ?? 0`). A filter is `{ type, owner, at }`, every part known
 when you build; `units.Men`, `units.Buildings` and `units.Factories` work as a type, and
-`CurrentPlayer` as an owner. Units come in the order of the game's unit table; a dying unit
-is passed over, so `first()` after a `kill()` is the next one.
+`CurrentPlayer` as an owner. Units come oldest first: the game's unit table in the order the
+game hands its places out (slot 0, then 1699 downwards), the walk stopping once it has met
+every unit in use, so a loop costs what the map holds. A unit made in the place of one that
+died, once the game has freed it, comes where the dead one did. A dying unit is passed over,
+so `first()` after a `kill()` is the next one.
 
 A unit has `hp`, `shields` and `energy` in whole points, `maxHp` / `maxShields` of its
 type, `owner`, `type`, `x`, `y`, `kills`, `orderId`, `cooldown`, `resources` (a mineral
@@ -1292,8 +1304,9 @@ program(() => {
 
 `keyPressed(player, key)` is true when the press arrives — once per press, not while the
 key is held (the game reports no held key), and not while the player is typing a message.
-Keys are the letters and digits, `"F1"` … `"F12"` without `"F6"` (the game keeps it to
-itself and reports no press of it — played and seen — so it is an error to ask), `"Space"`, `"Enter"`, `"Escape"`,
+Keys are the letters and digits, `"F1"`, `"F7"` … `"F12"` (the game keeps F2 to F6 to
+itself and reports no press of them — played and seen; F2 to F4 move the camera — so it is
+an error to ask), `"Space"`, `"Enter"`, `"Escape"`,
 `"Tab"`, `"Shift"`, `"Ctrl"`, `"Alt"`, the arrows (`"Left"` …), `"Backspace"`, `"Delete"`,
 `"Insert"`, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"` and `"Numpad0"` … `"Numpad9"`; the
 game's own use of a key still happens. `clicked(player, "left" | "right" | "middle")` is
@@ -1479,14 +1492,12 @@ a message that says so, none is passed over in silence:
 | --- | --- |
 | Fractions: every number is whole | work in a smaller unit (pixels, frames, hundredths) |
 | `**`, `Math.sqrt`, `Math.sign` and the rest of `Math` on a variable — `min`, `max` and `abs` are there, and the rounding ones around a division | a loop, or a list the script worked out (`const roots = Array.from({ length: 100 }, (_, n) => Math.floor(Math.sqrt(n)))`, then `roots[n]`) |
-| A function kept as a value: `const f = (x: number) => x + k`, a function in an array, one returned | `function f(x: number) { … }` in the program; an arrow is fine where a method takes one |
-| A function that returns a record or an array it made | hand it the record or the array to fill in; an instance of a class is the exception (*Classes*) |
-| `try`, `catch`, `throw` — the game has no exceptions | return a number that says what happened |
-| `async`, generators, `for…in`, a labelled `break`, `typeof` | — |
+| A function that returns an array it made (a record or an instance it made is fine) | hand it the array to fill in |
+| `for…in`, a labelled `break` | `for…of`, a flag tested after the inner loop |
 | An `enum` declared inside the program | declare it above the program: its members are numbers the script has, and a variable holds one |
-| On an array: `shift`, `unshift`, `splice`, `at`, `lastIndexOf`, `join` of numbers | `pop` and `push`, a place kept in a variable, `xs[xs.length - 1]`, a template in a loop |
+| What `splice` takes out, as a value | read it first: `xs.slice(start, end)` |
 | `map` into texts or records | `push` in a `for…of` |
-| On a made text: `split`, `trim`, `replace`, `toUpperCase`, `lastIndexOf`, `parseInt`, regular expressions | keep the number beside the text and make the text from it |
+| On a made text: regular expressions, and `replace` with a function | `replace` / `replaceAll` / `split` with a text |
 | A `Map` whose values are texts or records, or whose keys are texts | the place of a row of an array of records as the value |
 | Writing a unit's position, cloak or tint | the game refuses these itself (*Units*) |
 
@@ -1673,7 +1684,7 @@ The layout:
 | | |
 | --- | --- |
 | `plugin.ts` | Activation: the menu item, the claim on the generated block (`api.triggers.claim`), the commands. |
-| `service.ts` | What the plugin does to the map: names off `api.settings` / `api.names` / `api.query`, the members through `api.document.extras`, an apply as one `document.update`, and its part in saving (`attach`): `buildSteps.before` applies a script that is newer than its block, and a contribution to the eudplib plugin's build hands over the IR, `python/trigscript.py` and eudTurbo. A compile is `prepare`d into an artifact stamped with the map's id and a hash of its names, and `install` refuses an artifact whose map is not the one in front — the dialog compiles once and installs that, never a second run. |
+| `service.ts` | What the plugin does to the map: names off `api.settings` / `api.names` / `api.query`, the members through `api.document.extras`, an apply as one `document.update`, and its part in saving (`attach`): `buildSteps.before` applies a script that is newer than its block; the plugin's own build step (`buildOwn`, `compiler/backend/build.ts` in the compile worker) lays the programs out into the scenario the editor hands it, wherever the last apply found nothing a map of our own refuses (the manifest's `ownRefusal`) and Magenta's triggers are not in the map; otherwise a contribution to the eudplib plugin's build hands over the IR, `python/trigscript.py` and eudTurbo. A compile is `prepare`d into an artifact stamped with the map's id and a hash of its names, and `install` refuses an artifact whose map is not the one in front — the dialog compiles once and installs that, never a second run. |
 | `editor.ts` | The dialog: the file list and Monaco, plain DOM in the editor's own classes. |
 | `tree.ts` | The files as folders, and a move that takes the imports with it. Pure over strings. |
 | `testState.ts` | What the workspace shows of a compile's test report: results kept between runs, marks, the failures said at their lines, the warnings, the Testing view's tree. |
@@ -1682,12 +1693,12 @@ The layout:
 | `bundle/`, `dist/` | `npm run bundle` builds Monaco with esbuild — the editor core, its features and the TypeScript language alone, styles injected by the module and the codicon font inlined, plus the two workers — and writes `lib.d.ts`, the standard library the compile worker checks scripts against (`bundle/lib.mjs`), into `dist/`, which is committed. A CDN's on-the-fly bundler turns Monaco's lazy language chunks into standalone bundles carrying a second editor core, which is why the plugin carries its own. After a Monaco bump: rebuild, commit, tag `monaco-<version>-<n>`, move `DIST_TAG`. |
 | `compile.ts` | Compiling in a worker: a blob worker `importScripts` TypeScript from the CDN, fetches `lib.d.ts` once, and imports this plugin's own compiler module by the `blob:` URL the editor's loader gave it; a request the script does not answer in fifteen seconds (an endless loop outside `program()`) terminates the worker. A worker that cannot import the blob is replaced by one that imports the release's `dist/compiler.js`; when that fails too the compile rejects with `CompilerUnavailable` and a later one starts over. The script is never run on the main thread, where an endless loop could not be stopped. |
 | `script.ts` | The files, the block and its manifest: hashing (the block, and every record on its own), finding the block by content, staleness and what a stale block can still be taken apart into, planning a build. Pure over a trigger list and a map of the members. |
-| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, collects the map references, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and turns each `program()` — and the `game()` functions it calls — through `structured.ts` (with `scope.ts`, what a name is bound to, and `tables.ts`, the game's tables) into the IR (`ir.ts`, `docs/ir.md`); `input.ts` sets up what the programs read of keys, mouse and chat, `numbers.ts` writes into every operation whether it reads its 32 bits as a `number` or a `u32`, `recursion.ts` finds the functions that call themselves and what each call has to keep, and `eud.ts` checks the result (a loop that never sleeps, a constant divisor, a constant that does not fit its width) and serialises it with every text written out; `python/trigscript.py` is the other half, the euddraft plugin that lowers the IR to eudplib, embedded by `npm run embed`; `simulate.ts` is the trigger-cycle interpreter and `simulateIr.ts` the program interpreter, which computes every number the way the Python does, the two over the one world of `world.ts` (the unit table, the players and forces, what is done to units and what the unit conditions count); `testing.ts` is the script's own `test()`s — the registry the script fills as it runs, `sim` and `expect`, and the runner, whose report is plain data because it crosses from the compile worker; `lower.ts` is what the raw level still needs (condition negation, hyper triggers); `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
-| `python/trigscript.py` | The Remastered lowering: the euddraft plugin that turns the IR into eudplib code, handed to the eudplib plugin with every build. `npm run embed` writes it into `compiler/generated/trigscriptPy.ts`; `tests/python.test.ts` fails when the two drift. `scripts/build-fixture.mts` builds a script into a playable map under Node through a plugin-eudplib checkout; `probes/` holds a probe script for each part of the language (`arrays.ts`, `recursion.ts`, `strings.ts`, `classes.ts`, `map.ts`, …): every line prints what it expects, a test plays it in the simulator against those lines, and the built map — in the ignored `fixtures/` folder, since it sits on a Blizzard map — is played in the game before the part ships, which is the only place the Python really runs. |
+| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, collects the map references, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and turns each `program()` — and the `game()` functions it calls — through `structured.ts` (with `scope.ts`, what a name is bound to, and `tables.ts`, the game's tables) into the IR (`ir.ts`, `docs/ir.md`); `input.ts` sets up what the programs read of keys, mouse and chat, `numbers.ts` writes into every operation whether it reads its 32 bits as a `number` or a `u32`, `recursion.ts` finds the functions that call themselves and what each call has to keep, and `eud.ts` checks the result (a loop that never sleeps, a constant divisor, a constant that does not fit its width) and serialises it with every text written out; `backend/` is the build of a map of our own — `emit.ts` lowers a program's whole body to a graph of the game's triggers, `own.ts` every program of a script (and says what it does not take), `layout.ts` lays the graph out as the game's trigger nodes at the addresses Remastered keeps the strings at, `build.ts` does it to a scenario's bytes (`chk.ts` reads and writes the sections it touches, `fixes.ts` does what eudplib does to a map before writing it, `maps.ts` says where each trigger and each variable is for the tools that read a built map in the lifted game); `python/trigscript.py` is the other way, the euddraft plugin that lowers the IR to eudplib for what the own build does not take yet, embedded by `npm run embed`; `simulate.ts` is the trigger-cycle interpreter and `simulateIr.ts` the program interpreter, which computes every number the way the Python does, the two over the one world of `world.ts` (the unit table, the players and forces, what is done to units and what the unit conditions count); `testing.ts` is the script's own `test()`s — the registry the script fills as it runs, `sim` and `expect`, and the runner, whose report is plain data because it crosses from the compile worker; `lower.ts` is what the raw level still needs (condition negation, hyper triggers); `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
+| `python/trigscript.py` | The other lowering: the euddraft plugin that turns the IR into eudplib code, handed to the eudplib plugin with a build of what TrigScript's own build does not take yet. `npm run embed` writes it into `compiler/generated/trigscriptPy.ts`; `tests/python.test.ts` fails when the two drift. `scripts/build-fixture.mts` builds a script into a playable map under Node — TrigScript's own build, or through a plugin-eudplib checkout with `EUDPLIB=1` — with the maps of where its triggers and variables are beside it for the lifted game's scripts (`test-game`, `game-check`, `debug-game`, `bench-lowering`); `probes/` holds a probe script for each part of the language (`arrays.ts`, `recursion.ts`, `strings.ts`, `classes.ts`, `map.ts`, …): every line prints what it expects, a test plays it in the simulator against those lines, and the built map — in the ignored `fixtures/` folder, since it sits on a Blizzard map — is played in the game before the part ships, which is the only place the Python really runs. |
 | `vendor/` | The tables the compiler reads, copied from the editor: the trigger record layout and its codec, the condition and action definitions, the unit names, the flag names, the text format's printer and parser. The editor is the source of truth; copy them again when it changes. |
 | `dist/plugin.js`, `dist/compiler.js` | The bundle the editor loads, and the compiler alone (`compiler/entry.ts`) for the compile worker of a copy compiled into the editor, which has no `blob:` module to hand it; `npm run build` writes both — commit both before tagging (CI commits and checks `plugin.js` on its own). |
 | `dist/testing.js`, `dist/testing.d.ts` | Not loaded by the plugin. The trigger text parser (`vendor/text.ts`), the trigger interpreter and its world, and the record constants, bundled from `compiler/testingEntry.ts` so that another repository's tests can run trigger text instead of reading it, and compile a script (`compileScript`, `defaultScriptNames`, `defaultLib`) to check that the TrigScript it shows a model still compiles: a devDependency on the tarball of one of this repository's tags (`https://github.com/scm-js/plugin-trigscript/archive/refs/tags/v3.10.4.tar.gz`), then `import { parseTriggers, Simulation } from "scmjs-plugin-trigscript/testing"`. `npm run build` writes both and CI holds them to the same rule as `compiler.js`. |
-| `tests/` | vitest. `script.test.ts` pins the names, the declarations, the runtime's argument handling, files and imports, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation, and a file a part of the language does the same for it (`arrays`, `grids`, `callbacks`, `destructuring`, `functions`, `recursion`, `classes`, `strings`, `hash`, `leftovers`, `units`, `input`) — `hash` and `leftovers` also run each body in JavaScript itself and compare what was printed; `readme.test.ts` compiles every example of this file, and checks what an example says it prints; `python.test.ts` holds the Python to the compiler's IR version; `simulate-ir.test.ts` pins the program interpreter's contract with the game (frames, and how a number comes out); `service.test.ts` the apply and the part in saving, against a stand-in host and library; `eud-build.test.ts` builds golden maps through a plugin-eudplib checkout beside this repository when there is one; `refs.test.ts` the references and renames. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and run back to the same record. |
+| `tests/` | vitest. `script.test.ts` pins the names, the declarations, the runtime's argument handling, files and imports, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation, and a file a part of the language does the same for it (`arrays`, `grids`, `callbacks`, `destructuring`, `functions`, `recursion`, `classes`, `strings`, `hash`, `leftovers`, `units`, `input`) — `hash` and `leftovers` also run each body in JavaScript itself and compare what was printed; `readme.test.ts` compiles every example of this file, and checks what an example says it prints; `python.test.ts` holds the Python to the compiler's IR version; `simulate-ir.test.ts` pins the program interpreter's contract with the game (frames, and how a number comes out); `service.test.ts` the apply and the part in saving — the own build step, and the contribution to eudplib's — against a stand-in host and library; `own-build.test.ts` the build of a map of our own from a scenario's bytes (the payload after the strings, the start-up, eudplib's fixes, the map's triggers, the input's properties slot, a refusal said, the maps of triggers and variables) and the built file walked as the game walks it (`ownWalk.ts`), its lines against the simulator's and its variables read through the map; `eud-build.test.ts` builds golden maps through a plugin-eudplib checkout beside this repository when there is one; `refs.test.ts` the references and renames. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and run back to the same record. |
 
 ### How the compiler is built
 
@@ -1753,7 +1764,8 @@ stored label. Arithmetic is 32 bits that wrap, and each comparison, division, sh
 right, `min`, `max` and printed number reads them signed or unsigned as `numbers.ts`
 marked it. An array that grows is a block of one heap the programs share — sizes double,
 a block given back serves the next array of its size — and a made text is such a block
-of bytes. A function that is called is one body with its parameters as variables; one
+of bytes; an array's own cells sit beside the heap's bytes, a variable each, so that a
+loop's counter reads and writes them in a few triggers. A function that is called is one body with its parameters as variables; one
 that calls itself keeps what a call would overwrite on a stack of its own, an array
 beside the heap whose depth the script's Settings give. `docs/ir.md` says what each node
 means to both backends. A per-player program loops over the

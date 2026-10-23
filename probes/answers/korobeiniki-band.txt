@@ -1,0 +1,13 @@
+TrigScript sounds, step 4 again: Korobeiniki in half bars
+=========================================================
+
+The same as trigscript-korobeiniki-band.scx, cut every half bar instead of every bar, for your "waiting for the next
+bar line took a bit too long": a jump or a layer change now waits at most 0.84 s (it was 1.68), and Space's crash
+plays on the next beat (at most 0.42 s). The cost: 7.5 MB instead of 5.6, and up to 20 sounds at once of the game's 32
+(it was 13). Host it as a multiplayer game, alone, game music OFF, and record it if you like.
+
+Keys as before: 1-7 a section, D B H M a layer, L loop, Space a crash.
+
+1. Does a change feel quick enough now for "something important happens"? ............
+2. Can you hear the half-bar seams anywhere (a stutter, a flam)? ............
+3. Half bars (quicker, bigger map) or whole bars (slower, smaller), for the showpiece? ............

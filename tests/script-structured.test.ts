@@ -82,7 +82,7 @@ describe("structured: loops and branches", () => {
     expect(r.triggers).toEqual([]);
     expect(r.strings).toEqual([]);
     expect(r.ir).toHaveLength(1);
-    expect(r.ir[0]).toMatchObject({ version: 14, owner: 0, owners: [0], perPlayer: false });
+    expect(r.ir[0]).toMatchObject({ version: 26, owner: 0, owners: [0], perPlayer: false });
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, "n")).toBe(6);
@@ -524,7 +524,7 @@ describe("structured: diagnostics", () => {
     });`);
     // Dividing by a variable is fine now.
     expect(msgs.some((m) => m.startsWith("4:"))).toBe(false);
-    expect(msgs).toContain("5:Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>.");
+    expect(msgs).toContain("5:The power is known when the script is built: a ** 2, Math.pow(a, 3). For one the game works out, multiply in a loop.");
     expect(msgs).toContain("6:wait's milliseconds must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.");
     expect(msgs.some((m) => m.startsWith("7:Variables hold numbers, booleans, texts, units of the game or records of them ({ lives: 3 }); s is symbol"))).toBe(true);
     expect(msgs.some((m) => m.startsWith("8:f calls itself on every path through it"))).toBe(true);
@@ -617,7 +617,7 @@ describe("structured: diagnostics", () => {
     expect(messages(`program(() => {\n  program(() => {});\n});`)).toEqual(["2:program() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements."]);
     expect(messages(`program(() => {}, { owner: players.Foes });`)).toEqual(["1:program: the owner is a player (P1 … P12), AllPlayers, a force (players.Force1), or a list of players — the program runs once for each of them, with CurrentPlayer as that player."]);
     expect(messages(`const body = () => {};\nprogram(body);`)).toEqual(["2:program() takes an arrow function written directly in the call: program(() => { … })."]);
-    expect(messages(`program(() => {\n  const f = () => { let n = 0; n++; };\n  let m = 0;\n  const g = () => m;\n  [1].flatMap(() => m++);\n});`)).toEqual(["4:g is a function that uses the program's variables; declare it with function so it is inlined at each call.", "5:A function written inside program() cannot use the program's variables; declare it with function so it is inlined, or move it outside."]);
+    expect(messages(`program(() => {\n  const f = () => { let n = 0; n++; };\n  let m = 0;\n  const g = () => m;\n  [1].flatMap(() => m++);\n});`)).toEqual(["5:flatMap() is not one of the methods a program has that take a function: forEach, map, filter, find, findIndex, findLast, findLastIndex, some, every, reduce and sort."]);
     expect(messages(`program(() => {\n  displayText("x");\n  random();\n});`)).toEqual(["3:random() does nothing on its own; test it in an if, or assign it to a variable."]);
     expect(messages(`trigger(P1, [random() as any], []);`)).toEqual(["1:random() is a coin toss and random(n) a number from 0 to n − 1, both made by the game: use them inside program()."]);
   });
@@ -794,7 +794,8 @@ describe("structured: time, edges, lists and players", () => {
     const sim = run(r, 1);
     expect(value(sim, "total")).toBe(16);
     expect(texts(sim)).toEqual(["0:wave 2", "0:wave 5", "0:wave 9", "0:again 2", "0:a", "0:b"]);
-    expect(compile(program("let n = 0; for (const x of [n]) displayText(\"x\");")).diagnostics[0].message).toMatch(/^What a for…of loop runs over must be known when the script is built, but n is a variable/);
+    // (A list with a value of the program in it is an array of the program, made where it is written, and walked.)
+    expect(compile(program("let n = 0; for (const x of [n]) displayText(\"x\");")).diagnostics).toEqual([]);
   });
 
   it("a program owned by All Players runs once per player, each with their own variables", () => {
@@ -856,7 +857,8 @@ describe("structured: short circuits, lazy constants, names", () => {
   });
 
   it("build-time parts of a body run once", () => {
-    const counted = files({ "main.ts": 'import { tick } from "./count";\nprogram(() => { let n = 0; if (bring(P1, units.AnyUnit, locations.Anywhere, ">=", tick())) n++; });', "count.ts": "let calls = 0;\nexport const tick = () => ++calls;\nexport const seen = () => calls;" });
+    // (Counted by a push: a function assigning a variable of its file keeps a state, and a call of it is the program's.)
+    const counted = files({ "main.ts": 'import { tick } from "./count";\nprogram(() => { let n = 0; if (bring(P1, units.AnyUnit, locations.Anywhere, ">=", tick())) n++; });', "count.ts": "const calls: number[] = [];\nexport const tick = () => calls.push(0);\nexport const seen = () => calls.length;" });
     expect(counted.ok).toBe(true);
     const stmt = counted.ir[0].body.find((s) => s.kind === "if");
     expect(stmt && stmt.kind === "if" && stmt.cond.kind === "cond" ? stmt.cond.record.amount : null).toBe(1);
@@ -932,8 +934,8 @@ describe("structured: game functions, returns and records", () => {
     const sim = run(r, 1);
     expect(value(sim, "a")).toBe(2);
     expect(value(sim, "b")).toBe(3);
-    // A missing return in a function typed to return a number is TypeScript's error; a rest parameter is ours.
-    expect(files({ "main.ts": 'const f = game((...n: number[]) => 1); program(() => { let a = 0; a = f(1); });' }).diagnostics.map((d) => d.message)).toContain("Rest parameters are not supported in a game function.");
+    // A rest parameter is the call's arguments in an array of its own (tests/small-gaps.test.ts).
+    expect(files({ "main.ts": 'const f = game((...n: number[]) => n.length); program(() => { let a = 0; a = f(1, 2); });' }).diagnostics).toEqual([]);
   });
 
   it("records: a let holding an object literal is a variable per field", () => {
@@ -954,8 +956,10 @@ describe("structured: game functions, returns and records", () => {
     expect(r.variables.find((v) => v.name === "p.lives")).toMatchObject({ kind: "number", at: expect.objectContaining({ line: 2 }) });
     const typed = okProgram("let p: { n: u8 } = { n: 250 }; p.n += 10;");
     expect(value(run(typed, 1), "p.n")).toBe(255);
-    expect(messagesOf(program("let p = { n: 1 }; p = { n: 2 };"))).toEqual(["A record is assigned field by field: p.lives = 3."]);
-    expect(messagesOf(program("const p = { n: 1 }; p.n = 2;"))).toEqual(["This object is computed when the script is built. Declare it with let inside the program to make it a record of variables."]);
+    // Given whole (B9): a copy of the fields.
+    expect(value(run(okProgram("let p = { n: 1 }; p = { n: 2 };"), 1), "p.n")).toBe(2);
+    // A const record something writes is the program's, as a const array is (TrigScript 4).
+    expect(value(run(okProgram("const p = { n: 1 }; p.n = 2;"), 1), "p.n")).toBe(2);
   });
 });
 

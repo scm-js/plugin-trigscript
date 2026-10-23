@@ -46,6 +46,15 @@ describe("units: the front end", () => {
     expect(test).toMatchObject({ kind: "if", cond: { kind: "unitAlive" }, then: [{ kind: "unitDo", verb: { do: "order", order: "move", target: 1 } }] });
     expect(r.variables.map((v) => `${v.name}:${v.kind}`)).toEqual(["u:unit", "t:unit"]);
   });
+  it("a field or a flag read straight off a pick is the game's, not worked out when the script is built", () => {
+    // (It was: `first(…)?.hp` printed "undefined", and `if (first(…)?.cloaked)` left nothing — the pick's own field.)
+    const r = compile(`print(\`\${first({ owner: P1 })?.hp}\`); if (nearest(units.TerranMarine, ${at(2)})?.burrowed) print("b"); let n = first({ owner: P2 })!.hp + 1;`);
+    const [print, test, decl] = r.ir[0].body as Stmt[];
+    expect(print).toMatchObject({ kind: "print", parts: [{ kind: "number", expr: { kind: "unitField", field: "hp", unit: { kind: "pick", by: "first" } } }] });
+    expect(test).toMatchObject({ kind: "if", cond: { kind: "unitFlag", flag: "burrowed", unit: { kind: "pick", by: "nearest" } } });
+    expect(decl).toMatchObject({ kind: "declare", init: { kind: "binary", op: "+", left: { kind: "unitField", field: "hp", unit: { kind: "pick" } } } });
+    expect(run(`let n = 0; n = first({ owner: P1 })!.hp;`).value("n")).toBe(40);
+  });
   it("Anywhere and Any Unit are no filter at all", () => {
     const r = compile(`for (const u of unitsAt(locations.Anywhere, { type: units.AnyUnit })) u.kill();`);
     expect(r.ir[0].body[0]).toMatchObject({ kind: "unitLoop", filter: {} });
@@ -119,7 +128,7 @@ describe("units: in the simulated game", () => {
     const sim = run(`let kept = first({ owner: P2 }); let before = 0; let after = 9; let there = true; if (kept) before = kept.hp; if (kept) kept.kill(); sleep(frames(1)); if (kept) { there = true; } else { there = false; } after = kept ? kept.hp : 0; if (kept) kept.hp = 99;`, 3);
     expect([sim.value("before"), sim.value("after"), sim.value("there")]).toEqual([35, 0, false]);
     expect(sim.units[2]).toMatchObject({ alive: false, hp: 35 });
-    expect(sim.events.map((e) => e.text)).toEqual(["unit 2 (type 37, P2)"]);
+    expect(sim.events.map((e) => e.text)).toEqual(["unit 1698 (type 37, P2)"]);
   });
   it("first() after a kill is the next one: a loop that ends", () => {
     const sim = run(`let n = 0; let u = first({ owner: P2 }); while (u) { u.kill(); n++; u = first({ owner: P2 }); }`);
@@ -139,7 +148,7 @@ describe("units: in the simulated game", () => {
     expect(sim.locations.get(2)).toEqual({ left: 100, top: 90, right: 140, bottom: 130 });
     // The box, moved onto the Zergling, holds it and the Marine beside it.
     expect(sim.value("n")).toBe(2);
-    expect(sim.events.map((e) => e.text)).toEqual(["attack: unit 2 (type 37, P1)"]);
+    expect(sim.events.map((e) => e.text)).toEqual(["attack: unit 1698 (type 37, P1)"]);
   });
   it("functions take and return units; == says whether two are one", () => {
     const sim = run(`function weakest(): Unit | null { let best: Unit | null = null; let least = 9999; for (const u of unitsOf(P1, { type: units.Men })) { if (u.hp < least) { least = u.hp; best = u; } } return best; }

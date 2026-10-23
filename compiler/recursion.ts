@@ -316,6 +316,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             s.value = v as NumExpr | BoolExpr;
             break;
           }
+          case "select": { s.units = operands(s.units.map((e) => ({ e, kind: "unit" as const })), pre, w) as UnitExpr[]; break; }
           case "unitDo": {
             const items: { e: Expr; kind: Kind }[] = [{ e: s.unit, kind: "unit" }];
             if (s.verb.do === "damage" || s.verb.do === "heal") items.push({ e: s.verb.amount, kind: "number" });
@@ -332,9 +333,15 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             if (s.text) s.text = rewriteText(s.text, pre, w);
             break;
           }
-          case "centerLocation": [s.x, s.y] = operands([{ e: s.x, kind: "number" }, { e: s.y, kind: "number" }], pre, w) as NumExpr[]; break;
-          case "print": {
-            const numbers = s.parts.filter((p) => p.kind === "number");
+          case "syncSend": { s.value = (operands([{ e: s.value, kind: "number" as const }], pre, w) as NumExpr[])[0]; break; }
+          case "centerLocation": {
+            const done = operands([s.x, s.y, ...(s.size ? [s.size.width, s.size.height] : [])].map((e) => ({ e, kind: "number" as const })), pre, w) as NumExpr[];
+            [s.x, s.y] = done;
+            if (s.size) s.size = { width: done[2], height: done[3] };
+            break;
+          }
+          case "print": case "buildText": {
+            const numbers = s.parts.filter((p) => p.kind === "number" || p.kind === "char");
             const done = operands(numbers.map((p) => ({ e: p.expr, kind: "number" as const })), pre, w) as NumExpr[];
             numbers.forEach((p, i) => { p.expr = done[i]; });
             for (const p of s.parts) if (p.kind === "value") p.text = rewriteText(p.text, pre, w);
@@ -373,7 +380,9 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             continue;
           }
           case "unrolled": s.iterations = s.iterations.map((i) => body(i, returns)); break;
+          case "parallel": s.branches = s.branches.map((b) => body(b, returns)); break;
           case "block": s.body = body(s.body, returns); break;
+          case "try": s.body = body(s.body, returns); s.catch = body(s.catch, returns); break;
           case "textLoop":
             errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over a text holds such a call: the loop's place in the text is not something a call can keep. Walk it by place — for (let i = 0; i < s.length; i++) — which a call keeps as it keeps any number.` });
             s.body = body(s.body, returns);
@@ -398,12 +407,12 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
         if (s.kind === "call" && s.call.fn === f.id) return true;
         if (s.kind === "if" && s.else && never(s.then) && never(s.else)) return true;
         if (s.kind === "block" && never(s.body)) return true;
-        // Anything else that holds a return (or is one) may be the way out.
-        if (s.kind !== "remark" && mentions(s, "return")) return false;
+        // Anything else that holds a return or a throw (or is one) may be the way out.
+        if (s.kind !== "remark" && (mentions(s, "return") || mentions(s, "throw"))) return false;
       }
       return false;
     };
-    if (never(f.body)) errors.push({ at: f.at, message: `${f.name} calls itself on every path through it, so no call of it ever returns: the stack would run out the first time it is called. Give it a way out — an if that returns before the call.` });
+    if (never(f.body)) errors.push({ at: f.at, message: `${f.name} calls itself on every path through it, so no call of it ever returns: the stack would run out the first time it is called. Give it a way out — an if that returns (or throws) before the call.` });
 
     // An array declared in the function is each run's own: a block of the heap, so that a frame keeps its handle.
     const local: string[] = [];

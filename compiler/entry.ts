@@ -9,6 +9,10 @@
  * module bundled on its own as `dist/compiler.js`.
  */
 export { compileScript } from "./compiler";
+/** The worker encodes a build's Ogg Vorbis sounds with these (`vorbis.ts`). */
+export { finishSounds, loadVorbis } from "./vorbis";
+/** The worker builds a map of our own with this (`backend/build.ts`): the programs into the scenario, no eudplib. */
+export { buildOwnMap } from "./backend/build";
 
 /** Where this module was loaded from — what the worker is told to import. */
 export const ENTRY_URL: string = import.meta.url;

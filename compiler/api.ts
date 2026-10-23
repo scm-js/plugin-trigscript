@@ -12,6 +12,7 @@
 import {
   ACTION_DEFS, CHOICES, CONDITION_DEFS, type ActionDef, type ArgDef, type ArgKind, type ConditionDef,
 } from "../vendor/triggerDefs";
+import { ORDER_OF_VERB } from "./orders";
 import {
   ActionType, AllianceStatus, Comparison, ConditionType, Order, ResourceType, ScoreType, SetModifier, SwitchAction, SwitchState, TriggerFlag, UnitState,
 } from "../vendor/triggers";
@@ -78,6 +79,12 @@ export const CANONICAL: Partial<Record<ArgKind, [number, string][]>> = {
   ],
 };
 
+/** The Order action's own number for an order of orders.* it gives (move 0, patrol 1, attack 2); a raw number as it is. */
+export function orderOfAction(value: number): number {
+  const verb = (Object.keys(ORDER_OF_VERB) as (keyof typeof ORDER_OF_VERB)[]).find((v) => ORDER_OF_VERB[v] === value);
+  return verb === undefined ? value : CANONICAL.order!.find(([, w]) => w === verb)![0];
+}
+
 /** The canonical word for a value, else the table's label. */
 export function choiceWord(kind: ArgKind, value: number): string | undefined {
   const hit = CANONICAL[kind]?.find(([v]) => v === value);
@@ -111,11 +118,17 @@ export function argType(kind: ArgKind): string {
     case "unit": return "UnitType";
     case "location": return "Location";
     case "switch": return "Switch";
-    case "text": case "wav": return "string";
+    case "text": return "string";
+    // A sound of the map (sounds.badapple, from the Sound Editor's list) or a path in the map's archive.
+    case "wav": return "Sound | Clip | string";
     case "aiScript": return "AiScript | string";
     case "count": return "Count";
     case "textFlags": return "boolean";
     case "number": case "amount": case "duration": case "percent": case "cuwp": case "slot": return "number";
+    // orders.Move, orders.Patrol and orders.AttackMove are the action's three (`orderOfAction`); any other of orders.* is
+    // what a unit is doing, which the action cannot give. A raw number is a second signature (`declarations.ts`): in one
+    // union with it, TypeScript takes orders.Die for a number.
+    case "order": return "OrderKind | OrderOfAction";
     default: return `${CHOICE_TYPES[kind] ?? "number"} | number`;
   }
 }

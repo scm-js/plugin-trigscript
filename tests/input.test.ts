@@ -75,13 +75,13 @@ describe("chat patterns", () => {
 describe("input: the front end", () => {
   it("a key, a click, the mouse and a typed line arrive as IR", () => {
     const r = compile(`while (true) {
-      if (keyPressed(P1, "F2") && !clicked(P2, "right")) { const at = mouse(P1); centerLocation(3 as Location, at.x, at.y + 16); }
+      if (keyPressed(P1, "F7") && !clicked(P2, "right")) { const at = mouse(P1); centerLocation(3 as Location, at.x, at.y + 16); }
       const m = chatted(CurrentPlayer, "-give {n}");
       if (m) setResources(CurrentPlayer, "add", m.n, "ore");
       sleep(frames(1));
     }`);
     const ir = JSON.stringify(r.ir);
-    expect(ir).toContain(`"input":{"source":"key","key":"F2","player":0}`);
+    expect(ir).toContain(`"input":{"source":"key","key":"F7","player":0}`);
     expect(ir).toContain(`"input":{"source":"click","button":"right","player":1}`);
     expect(ir).toContain(`"input":{"source":"mouse","axis":"x","player":0}`);
     expect(ir).toContain(`"input":{"source":"chat","pattern":"-give {n}","capture":null,"player":13}`);
@@ -98,6 +98,9 @@ describe("input: the front end", () => {
     // The game reports no press of F6 (the probe, twice): not a Key, and said plainly to a script that gets past the types.
     expect(errors(`if (keyPressed(P1, "F6")) displayText("x");`)[0]).toMatch(/not assignable to parameter of type 'Key'/);
     expect(errors(`if (keyPressed(P1, "f6" as Key)) displayText("x");`)[0]).toMatch(/keeps F6 to itself/);
+    // F2 to F5 the same (the B2 keys probe: neither on.key nor keyPressed heard them; F2–F4 move the camera).
+    for (const k of ["F2", "F3", "F4", "F5"]) expect(errors(`if (keyPressed(P1, "${k}")) displayText("x");`)[0]).toMatch(/not assignable to parameter of type 'Key'/);
+    expect(errors(`if (keyPressed(P1, "f2" as Key)) displayText("x");`)[0]).toMatch(/keeps F2 to itself \(a camera key\)/);
   });
 
   it("an action takes a unit type and a count from a typed line at once", () => {
@@ -107,24 +110,30 @@ describe("input: the front end", () => {
     expect(action).toContain(`"field":"modifier","bits":8`);
   });
 
+  it("centerLocation with every argument known when the script is built is still the program's, in a function too", () => {
+    const r = compileFile(`program(() => { function at(x: number, y: number) { centerLocation(3 as Location, x * 64, y * 64); } centerLocation(3 as Location, 4, 5); at(1, 2); });`);
+    expect(r.diagnostics).toEqual([]);
+    expect(serializeIr(r.ir, r.strings, r.input).match(/"kind":"centerLocation"/g)).toHaveLength(2);
+  });
+
   it("says what is wrong", () => {
-    expect(errors(`keyPressed(P1, "F2");`)[0]).toMatch(/does nothing on its own/);
-    expect(errors(`if (keyPressed(players.Force1, "F2")) displayText("x");`)[0]).toMatch(/expected one player/);
+    expect(errors(`keyPressed(P1, "F7");`)[0]).toMatch(/does nothing on its own/);
+    expect(errors(`if (keyPressed(players.Force1, "F7")) displayText("x");`)[0]).toMatch(/expected one player/);
     expect(errors(`if (chatted(P1, "{n}")) displayText("x");`)[0]).toMatch(/starts with its own word/);
     expect(errors(`let x = mouse(P1) + 1;`)[0]).toBeDefined();
     expect(errors(`let n = 0; centerLocation(locations.Anywhere, n, n);`)[0]).toMatch(/not Anywhere/);
     expect(errors(`const u = underMouse(P1, { within: 0 });`)[0]).toMatch(/distance in pixels/);
     // What the players did does not change within a frame: a loop waiting for it has to sleep.
-    expect(errors(`while (!keyPressed(P1, "F2")) { displayText("waiting"); }`)[0]).toMatch(/never changes inside it/);
-    expect(errors(`while (!keyPressed(P1, "F2")) { sleep(frames(1)); }`)).toEqual([]);
+    expect(errors(`while (!keyPressed(P1, "F7")) { displayText("waiting"); }`)[0]).toMatch(/never changes inside it/);
+    expect(errors(`while (!keyPressed(P1, "F7")) { sleep(frames(1)); }`)).toEqual([]);
   });
 
   it("outside a program the functions say where they belong", () => {
     // Outside, the call would be an object and \`if (keyPressed(…))\` always true: refused at once instead.
-    expect(compileFile(`if (keyPressed(P1, "F2")) trigger(P1, [always()], [displayText("x")]);`).diagnostics[0].message).toMatch(/keyPressed\(\) asks what a player does while the game runs: use it inside program\(\)/);
+    expect(compileFile(`if (keyPressed(P1, "F7")) trigger(P1, [always()], [displayText("x")]);`).diagnostics[0].message).toMatch(/keyPressed\(\) asks what a player does while the game runs: use it inside program\(\)/);
     expect(compileFile(`const m = chatted(P1, "-help");`).diagnostics[0].message).toMatch(/inside program\(\)/);
     // A helper of the script's own, called from a program, is the program's.
-    expect(compileFile(`const fire = () => keyPressed(CurrentPlayer, "F2"); program(() => { while (true) { if (fire()) displayText("x"); sleep(frames(1)); } });`).diagnostics).toEqual([]);
+    expect(compileFile(`const fire = () => keyPressed(CurrentPlayer, "F7"); program(() => { while (true) { if (fire()) displayText("x"); sleep(frames(1)); } });`).diagnostics).toEqual([]);
     expect(compileFile(`centerLocation(1 as Location, 0, 0);`).diagnostics[0].message).toMatch(/inside program\(\)/);
   });
 });
@@ -142,7 +151,18 @@ describe("input: the plan and the build's plugins", () => {
     expect(r.input).toEqual({ keys: ["A", "Escape"], buttons: ["left"], chats: [], qcLocation: 62, mouseBase: null });
     const plugins = buildPlugins(r.input, "/ir.json");
     expect(Object.keys(plugins)).toEqual(["trigscript", "MSQC", "eudTurbo"]);
-    expect(plugins.MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyPress(A); NotTyping": "tsin_key0, 1", "KeyPress(ESC); NotTyping": "tsin_key1, 1", "MouseDown(L)": "tsin_button0, 1" });
+    expect(plugins.MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyDown(A); NotTyping": "tsin_key0, 1", "KeyDown(ESC); NotTyping": "tsin_key1, 1", "MouseDown(L)": "tsin_button0, 1" });
+  });
+
+  it("keyHeld: MSQC's KeyPress, every frame the key is down, into cells of its own", () => {
+    const r = compile(`while (true) { if (keyHeld(P1, "D") || keyPressed(P1, "D")) displayText("x"); sleep(frames(1)); }`);
+    expect(r.input).toEqual({ keys: ["D"], held: ["D"], buttons: [], chats: [], qcLocation: 62, mouseBase: null });
+    // No KeyDown with a held key in the game: two frames' commands may arrive at once, the later replacing the earlier, and
+    // a press of its own would be lost; a press is worked out from the held key where it arrives.
+    expect(buildPlugins(r.input, "/ir.json").MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyPress(D); NotTyping": "tsin_held0, 1" });
+    const both = compile(`while (true) { if (keyHeld(P1, "D") || keyPressed(P1, "W")) displayText("x"); sleep(frames(1)); }`);
+    expect(both.input?.held).toEqual(["D", "W"]);
+    expect(Object.keys(buildPlugins(both.input, "/ir.json").MSQC)).toEqual(["QCUnit", "QCLoc", "QCPlayer", "QCDebug", "KeyPress(D); NotTyping", "KeyPress(W); NotTyping"]);
   });
 
   it("the mouse: eight locations in a row, clear of the map's own and of Anywhere", () => {
@@ -176,15 +196,26 @@ describe("input: the plan and the build's plugins", () => {
 
 describe("input: the interpreter", () => {
   it("a key and a click are true on the one frame they arrive", () => {
-    const sim = simulate(loop(`if (keyPressed(CurrentPlayer, "F2")) n += 1; if (clicked(CurrentPlayer, "right")) v += 10;`));
+    const sim = simulate(loop(`if (keyPressed(CurrentPlayer, "F7")) n += 1; if (clicked(CurrentPlayer, "right")) v += 10;`));
     sim.step();
-    sim.press("f2").step();
+    sim.press("f7").step();
     sim.step();
     expect(sim.value("n")).toBe(1);
-    sim.press("F3").click("left").step();
+    sim.press("Q").click("left").step();
     expect([sim.value("n"), sim.value("v")]).toEqual([1, 0]);
-    sim.press("F2").click("right").step();
+    sim.press("F7").click("right").step();
     expect([sim.value("n"), sim.value("v")]).toEqual([2, 10]);
+  });
+
+  it("a key down on frames in a row is one press, and held on each of them and two frames after; a gap within those is no new press", () => {
+    const sim = simulate(loop(`if (keyPressed(CurrentPlayer, "D")) n += 1; if (keyHeld(CurrentPlayer, "D")) v += 1;`));
+    for (let i = 0; i < 4; i++) sim.press("D").step();
+    sim.step();
+    sim.press("D").step();
+    // Let go for one frame: still held (the grace covers a message lost on the way), so not pressed again either.
+    expect([sim.value("n"), sim.value("v")]).toEqual([1, 6]);
+    for (let i = 0; i < 4; i++) sim.step();
+    expect(sim.value("v")).toBe(8);
   });
 
   it("another player's key is not this player's", () => {

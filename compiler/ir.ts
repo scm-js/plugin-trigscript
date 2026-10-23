@@ -8,8 +8,20 @@
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
+import type { Graph } from "./backend/graph";
 
 /**
+ * 26: a `graph` statement — a loop the emitter (`backend/emit.ts`) lowered to triggers of its own, which a backend makes as they are; `original` is the loop, for what does not lower (the simulator).
+ * 25: value ranges — `range` on a number of the IR, `[lowest, highest]` of its signed reading, which `ranges.ts` found it can never leave (absent: any 32 bits). A backend may take only the bits a range has; it is never told anything that is not so, and one that reads no ranges does what it did.
+ * 24: closures over locals — `VarDecl.held`: a variable that holds a reference the closures count, read by its own `declare` (what it held is let go of) and so 0 before it was ever declared. Everything else of closures is the front end's: an environment is a row of arrays of the program, and the counting is statements.
+ * 22: exceptions — `taskHandle`, the number of the task an expression runs in; `try` (a body, and the statements that run when an error is thrown in it), `throw` (the error in flight goes to the nearest `try` around it, out through the calls it is in), `uncaught` (the error in flight is said in red and given up), and `Program.errors`, the variables an error in flight is kept in. A called function that may throw returns at once with the error in flight, and its call goes on to the nearest `try`. A function that calls itself throws a `RangeError` when the stack runs out, where it used to stop the program.
+ * 21: functions as values — `fn` on a `const`: the number is a function's, the id of the `FuncDecl` it runs, which is what keeps that function in the map. A call through such a number is a call of a function the front end made (a *dispatcher*, a `switch` on its first parameter), so no new kind of statement. A function may now be called, and so lowered, before a variable it uses is declared: a backend makes a variable where it is first used.
+ * 20: fixed-point numbers — `VarDecl.fixed` / `ArrayDecl.fixed` (a 16.16 number: the cell holds the value times 65 536), `fixed` on a `const` (its value is the raw cell), the intrinsics `fmul` / `fdiv` (a product and a quotient of two fixed numbers, rounded towards zero), `sqrt` (of a fixed, rounded down) and `atan2` (`table`: the program's array of arc tangents it reads), and `fixed` on a printed number (shown as a decimal). `numbers.ts` writes them; a backend never works a type out.
+ * 19: more events — `unitLoop.source` also `killed` (a death in a fight, the killer in `was`), `ordered` (a unit that took up a new order, the one it had in `was`) and `morphed` (a unit that turned into another type, the type it was in `was`); `unitLoop.event` filters them by the new order or the killer.
+ * 18: events — `unitLoop.source`: the units that came onto the map (`created`) or died (`died`) since the frame before, as the frame's events pass found them, where a loop without one goes through the unit table.
+ * 17: texts built a piece at a time — `buildText` writes parts into a buffer (`reset` starts it empty) and `built` is what the buffer holds, which is how a JSX text is put together without copying it at every piece; `char` among the parts, one byte from a number (a colour code).
+ * 16: tasks — `start`: a task that runs beside what started it, a copy of an async function's body with the arguments it was started with; `cancel` and `running` on what `start()` gives back. A task's variables and arrays (`VarDecl.task`, `ArrayDecl.task`) are a row a task, as many rows as tasks of it can run at once.
+ * 15: `parallel` — `await Promise.all([…])` / `Promise.race([…])`: branches that run side by side, each a coroutine of its own inside the program's frame.
  * 14: a text in the cells of three arrays — `textAt`, `storeText`, `releaseText` — which is what lets a row of an array of records hold one.
  * 13: texts — a `text` variable (`VarDecl.text`: the id of a text of the built map's table, or a text that was made: where it is, the block of the heap it owns, its length in characters), `TextExpr`, `assignText`, `textLoop`, a text among a `print`'s parts, in an action's text field (`action.text`) and as a unit type's name; `textLength` / `textIndexOf` / `textCode` among the numbers, `textCompare` / `textTest` among the conditions; `ArrayDecl.texts`.
  * 12: arrays inside things — `ArrayDecl.slice` (a window on another array's cells) and `ArrayDecl.through` (a growing array whose handle is a cell of four others).
@@ -24,7 +36,10 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 14;
+export const IR_VERSION = 26;
+
+/** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
+export const BUILD_BYTES = 2047;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -43,14 +58,46 @@ export interface VarDecl {
    * just made is moved), and assigning or declaring again gives the old block back first.
    */
   text?: "id" | "made";
+  /**
+   * A map of our own only (`compiler/backend/texts.ts`): kept in one cell and read where it is used, as a variable the
+   * emitter copies is — for one read in many places and written often (a write is one action, not one a place).
+   */
+  routed?: boolean;
+  /**
+   * A map of our own only (`compiler/backend/heap.ts`): never below zero and at most this, whatever is written — a copy
+   * of it into a place that holds a multiple of it is then worked out over only the bits it can have.
+   */
+  top?: number;
+  /**
+   * A map of our own only (`compiler/backend/heap.ts`): one cell for the whole map — every program and every run of one
+   * — that no program declares, 0 as the map starts, and read where it is used (`routed` too).
+   */
+  global?: boolean;
+  /**
+   * A map of our own only (`compiler/backend/heap.ts`): kept in every place it is read, however many — written seldom and
+   * read often (where an array's block starts), so that a read never copies it in, as a variable past a trigger's worth
+   * of places otherwise is.
+   */
+  everywhere?: boolean;
+  /**
+   * A map of our own only (`compiler/backend/heap.ts`): declared in a loop's body and read nowhere outside the loop — a
+   * `for…of`'s variable — so its cell need not hold what is read into it.
+   */
+  scoped?: boolean;
   /** `shared(…)`: one cell for every player of a per-player program. */
   shared: boolean;
   /** A `u8` / `u16` annotation; unset for the full 32 bits. */
   bits?: 8 | 16;
   /** A `u32`: the 32 bits read as 0 … 4 294 967 295. Unset, a number is signed (a `u8` / `u16` never goes below zero either way). */
   unsigned?: boolean;
+  /** A `fixed`: a 16.16 number, the cell the value times 65 536 (signed). Declared so, or found by `numbers.ts` to be stored a fraction. */
+  fixed?: boolean;
   /** A backend's scratch value that dies with the statement (a function's result). */
   temp?: boolean;
+  /** A variable of a task's body (`start`, its `task`): a cell for each of its slots, within each player's row. */
+  task?: number;
+  /** A reference the closures count (24): its declare lets go of what it held before, so it is read first — 0 the first time, as a backend's cell is. */
+  held?: boolean;
   at: At;
 }
 
@@ -69,9 +116,13 @@ export interface ArrayDecl {
   shared: boolean;
   bits?: 8 | 16;
   unsigned?: boolean;
+  /** Its cells are `fixed` numbers (16.16), as a variable's are; `values` are then the raw cells. */
+  fixed?: boolean;
   values?: number[];
   /** A list of texts the script has, which a program indexes with a variable (`titles[level]`): `values` are their places here, the lowering's their ids in the built map's table. */
   texts?: string[];
+  /** An array declared in a task's body (`start`, its `task`): its cells once for each of its slots. */
+  task?: number;
   /**
    * The array grows: something pushes to it, pops from it or sets its length. Its cells are a block of the
    * programs' heap (`HEAP_CELLS`), reached through a handle — where the block is, how many cells are in use, how
@@ -105,6 +156,12 @@ export interface ArrayDecl {
 export const HEAP_CELLS = 16384;
 export const HEAP_CELLS_MIN = 1024;
 export const HEAP_CELLS_MAX = 1 << 20;
+/**
+ * Up to this many heap cells, growing arrays keep cells of their own beside the heap's (72 bytes each while the map is
+ * played, read and written in a few triggers: `python/trigscript.py#list_heap`); past it they share the heap's four-byte
+ * cells, as in 3.x, and a read takes about three times as long. The lowering has the same number.
+ */
+export const CELL_HEAP_MOST = 1 << 16;
 /** A heap size as the build takes it: whole, within the limits; the default for anything that is not a number. */
 export function heapCells(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(HEAP_CELLS_MAX, Math.max(HEAP_CELLS_MIN, Math.floor(value))) : HEAP_CELLS;
@@ -117,6 +174,8 @@ export const HEAP_SMALLEST = 4;
  * largest frame any program has — and only there when some function recurses, so the limit is the same whatever the
  * programs' arrays hold: the simulator and the game stop at the same call.
  */
+/** How many tasks of one `start` can run at once, unless the start says (`{ max }`, 1 … 255). */
+export const TASK_MAX = 16;
 export const STACK_DEPTH = 1024;
 export const STACK_DEPTH_MIN = 16;
 export const STACK_DEPTH_MAX = 65536;
@@ -138,8 +197,12 @@ export type RaceId = 0 | 1 | 2;
  * race or (`race` null) of the race the player is. `player` is a slot, or 13 for the
  * current player.
  */
+/**
+ * `epd` (a map of our own only, `compiler/backend/texts.ts`): the condition's player field is this value — a Deaths of
+ * unit 0 then reads the dword at that EPD, wherever it is.
+ */
 export type ReadSource =
-  | { source: "condition"; record: ConditionRecord }
+  | { source: "condition"; record: ConditionRecord; epd?: NumExpr }
   | { source: "player"; fact: "race" | "slot" | "left"; player: number }
   | { source: "supply"; of: "used" | "max" | "provided"; race: RaceId | null; player: number };
 
@@ -149,6 +212,12 @@ export type ReadSource =
  * current player) and a location the unit's centre is inside (1-based). An absent part matches all.
  */
 export interface UnitFilter { type?: number; owner?: number; at?: number }
+
+/**
+ * Where the units of an events pass loop come from (`unitLoop.source`): the ones that came onto the map, died, died in a
+ * fight, took up a new order, or turned into another type since the pass of the frame before.
+ */
+export type EventSource = "created" | "died" | "killed" | "ordered" | "morphed";
 
 /** A number of a unit on the map. Hit points, shields and energy are whole points; the timers and the cooldown frames. */
 export type UnitNumField = "hp" | "maxHp" | "shields" | "maxShields" | "energy" | "owner" | "type" | "x" | "y" | "kills" | "orderId" | "cooldown" | "resources"
@@ -177,7 +246,9 @@ export type UnitExpr =
    */
   | { kind: "unitAt"; ptr: NumExpr; epd: NumExpr; uid: NumExpr; at: At }
   /** A call inlined here whose result is a unit. */
-  | { kind: "call"; call: Call };
+  | { kind: "call"; call: Call }
+  /** The unit in slot `index` of this computer's selection (`local.selected` is slot 0; B5), or none: a Local value. */
+  | { kind: "selected"; index: number; at: At };
 
 /** What a unit is told to do. `to` and `target` are known when the script is built; an amount is the program's. */
 export type UnitVerb =
@@ -219,8 +290,15 @@ export const I32_MAX = 0x7fffffff;
 export const I32_MIN = -0x80000000;
 export const U32_MAX = 0xffffffff;
 
+/**
+ * A number of the IR. Any of them may carry `range: [lo, hi]` (IR 25): `ranges.ts` found its signed reading always
+ * between the two, both included. It is a promise a backend may lean on — take only the bits a value can have, drop a
+ * check that cannot fail — and never needs to.
+ */
 export type NumExpr =
-  | { kind: "const"; value: number }
+  /** `fixed`: a 16.16 number, `value` its raw cell (the value times 65 536); `numbers.ts` reads it so, a backend takes `value` as it is. */
+  /** `fn`: the number is a function kept as a value (B3), the id of the function it stands for — what keeps that function in the map. */
+  | { kind: "const"; value: number; fixed?: boolean; fn?: string }
   | { kind: "var"; id: string }
   /** `hp[i]`: a cell of an array of numbers; 0 when the index is past either end. */
   | { kind: "element"; array: string; index: NumExpr; at: At }
@@ -235,7 +313,7 @@ export type NumExpr =
   | { kind: "pop"; array: string; at: At }
   | { kind: "unary"; op: "-"; expr: NumExpr; at: At }
   /** `u32(x)` / `i32(x)`: the same 32 bits read the other way. Nothing is computed; it is there for `numbers.ts`, which works out what each operation reads its sides as. */
-  | { kind: "cast"; to: "u32" | "i32"; expr: NumExpr; at: At }
+  | { kind: "cast"; to: "u32" | "i32" | "fixed"; expr: NumExpr; at: At }
   /** `unsigned`, on `/` and `%`: both sides are `u32`s. Unset, the division is signed and rounds towards zero, the remainder taking the dividend's sign. */
   | { kind: "binary"; op: ArithOp; left: NumExpr; right: NumExpr; unsigned?: boolean; at: At; label: string }
   /** A value of the game, read when the expression is evaluated. */
@@ -249,14 +327,24 @@ export type NumExpr =
   /** What a player did, as it reached every computer (`input.ts`): a key or a click reads 1 on its frame, the mouse its place on the map, a typed line 1 or a value it carried. */
   | { kind: "input"; input: InputSource; at: At; label: string }
   | { kind: "ternary"; cond: BoolExpr; whenTrue: NumExpr; whenFalse: NumExpr; at: At; label: string }
-  /** `unsigned`, on `min` and `max`: the arguments are compared as `u32`s. `abs` is of a signed number. */
-  | { kind: "intrinsic"; name: "min" | "max" | "abs"; args: NumExpr[]; unsigned?: boolean; at: At; label: string }
+  /**
+   * `unsigned`, on `min` and `max`: the arguments are compared as `u32`s. `abs` is of a signed number.
+   * Of fixed numbers (16.16, raw cells): `fmul` is a × b / 65 536 and `fdiv` a × 65 536 / b, each rounded towards zero
+   * and wrapping at 32 bits (a divisor of 0 gives 0); `sqrt` is the square root of a fixed, rounded down (0 below
+   * zero), or with `unsigned` of a whole number read from 0 up, the root still a fixed; `atan2` of (y, x) is the angle in radians, a fixed from −π to π, read from `table`, an array of the program
+   * whose 1 025 cells are atan(i / 1 024), between its cells; `sin` / `cos` of (x, scale) read `table`, the 4 096 cells
+   * sin(2π i / 4 096), at fmul(x, scale) (a quarter turn on for `cos`), between its cells. The front end also gives
+   * `floor` / `ceil` / `round` / `trunc`, which `numbers.ts` turns into the operations above and no backend meets.
+   */
+  | { kind: "intrinsic"; name: "min" | "max" | "abs" | "fmul" | "fdiv" | "sqrt" | "atan2" | "sin" | "cos" | "floor" | "ceil" | "round" | "trunc"; args: NumExpr[]; unsigned?: boolean; table?: string; at: At; label: string }
   /** `s.length`, in characters (code points). */
   | { kind: "textLength"; of: TextExpr; at: At; label: string }
   /** `s.indexOf(find, from)`: the place of the first character of the first match at or after `from`, in characters; −1 when there is none. */
   | { kind: "textIndexOf"; of: TextExpr; find: TextExpr; from?: NumExpr; at: At; label: string }
   /** `s.codePointAt(i)`: the character's number; −1 past either end. */
   | { kind: "textCode"; of: TextExpr; index: NumExpr; at: At; label: string }
+  /** The number of the task this runs in — what `start()` gave for it, `slot | task << 8 | generation << 16` — or 0 outside a task (B4: where a task's error is kept for an `await` of it). */
+  | { kind: "taskHandle"; at: At }
   /** A call inlined here: its body runs, its result is the number. */
   | { kind: "call"; call: Call };
 
@@ -291,9 +379,11 @@ export type TextExpr =
   /** `s.repeat(n)`; nothing when n is below 1. */
   | { kind: "textRepeat"; of: TextExpr; count: NumExpr; at: At; label: string }
   /** A call inlined here whose result is a text: the value is taken out of the call's result, which then holds none. */
-  | { kind: "textCall"; call: Call };
+  | { kind: "textCall"; call: Call }
+  /** What buffer `buffer` holds, as the `buildText` statements before it left it: looked at where it is, never owned. */
+  | { kind: "built"; buffer: string };
 
-const TEXT_KINDS: ReadonlySet<string> = new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
+const TEXT_KINDS: ReadonlySet<string> = new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall", "built"]);
 export const isTextExpr = (e: { kind: string }): e is TextExpr => TEXT_KINDS.has(e.kind);
 
 /** What a pass that walks or rewrites every expression does with the numbers, the conditions and the calls inside a text; the texts inside it are walked here. */
@@ -302,7 +392,7 @@ export interface TextMap { num: (e: NumExpr) => NumExpr; bool: (e: BoolExpr) => 
 const innerText = (t: TextExpr, f: TextMap): TextExpr => (f.text ? f.text(t) : mapText(t, f));
 
 export function mapTextParts(parts: TextPart[], f: TextMap): TextPart[] {
-  return parts.map((p) => (p.kind === "number" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p));
+  return parts.map((p) => (p.kind === "number" || p.kind === "char" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p));
 }
 
 /** A text with everything it is worked out from handed to `f` — a copy; a pass that only looks gives back what it was handed. */
@@ -344,7 +434,11 @@ export function textHasId(e: TextExpr, kinds: (id: string) => "id" | "made" | un
 export type BoolExpr =
   | { kind: "const"; value: boolean }
   /** A trigger condition the script wrote, its fields known when the script is built. */
-  | { kind: "cond"; record: ConditionRecord }
+  /**
+   * `amount`: a map of our own's backend only (`Rewriter.asked`), a read compared with a value — the condition's
+   * amount that value plus `add`, a place of it.
+   */
+  | { kind: "cond"; record: ConditionRecord; amount?: { expr: NumExpr; add: number }; epd?: NumExpr }
   /** A boolean variable. */
   | { kind: "var"; id: string }
   /** `alive[i]`: a cell of an array of booleans; false when the index is past either end. */
@@ -363,6 +457,8 @@ export type BoolExpr =
   | { kind: "not"; expr: BoolExpr }
   /** `random()`: a coin toss, fresh at every evaluation. */
   | { kind: "random"; at: At }
+  /** `t.running`: the task the number stands for (what `start()` gave) has not ended, nor been cancelled. 0 is no task. */
+  | { kind: "running"; task: NumExpr; at: At }
   /** `if (target)`: the variable holds a unit and that unit is still on the map. */
   | { kind: "unitAlive"; unit: UnitExpr; at: At; label: string }
   /** `u == target`: both name the same unit of the game (and there is one). */
@@ -382,12 +478,20 @@ export type BoolExpr =
 /** A piece of a `print`'s text: written text, a number's digits, a player's name, the colour code of a player's colour. */
 export type TextPart =
   | { kind: "text"; text: string }
-  /** `unsigned`: printed as a `u32`; unset, a number below zero has its minus sign. */
-  | { kind: "number"; expr: NumExpr; unsigned?: boolean }
+  /** `unsigned`: printed as a `u32`; unset, a number below zero has its minus sign. `fixed`: a 16.16 number, printed as a decimal of up to four places (3.5, -0.25). */
+  | { kind: "number"; expr: NumExpr; unsigned?: boolean; fixed?: boolean }
   | { kind: "name"; player: number }
   | { kind: "color"; player: number }
   /** A text of the program: a variable's, a function's result. */
-  | { kind: "value"; text: TextExpr };
+  | { kind: "value"; text: TextExpr }
+  /** One byte, the number's low eight bits: a colour code chosen when the map is played. 0 writes nothing. */
+  | { kind: "char"; expr: NumExpr }
+  /**
+   * The text of the case `by` equals: only a map of our own makes it (`compiler/backend/texts.ts`), for a text known
+   * when built chosen while the game runs; `by` is a variable or a constant, always one case's `when` or between it
+   * and its `upTo`.
+   */
+  | { kind: "pick"; by: NumExpr; cases: { when: NumExpr; upTo?: NumExpr; text: string }[] };
 
 /** A field of an action filled in by the program: `bits` 8 is a unit count (done once per unit), 16 a unit type, 32 an amount. */
 export interface ActionVariable { field: keyof ActionRecord; bits: 8 | 16 | 32; name: string; expr: NumExpr }
@@ -465,8 +569,16 @@ export type Stmt =
   /**
    * `for (const u of unitsAt(…))`: the body once for every unit the filter matches, in the order of
    * the game's unit table, all within the frame — no `sleep` inside. `decl` is the unit of the turn.
+   * `source` (`on.created` / `on.died`): instead of the table, the units of this frame's events pass — the ones that
+   * came onto the map since the pass of the frame before (`created`; one that has gone since is passed over), or that
+   * died or were removed since then (`died`; the unit of the turn is the dead one, its fields read as it died, and
+   * nothing done to it does anything); `killed` (those of `died` that died in a fight: their hit points 0, a player's
+   * attack the last that hurt them); `ordered` (living units whose order is not the one the pass before found); `morphed`
+   * (living units whose type is not the one the pass before found). `was`, when there: set at each turn to the killer,
+   * the order the unit had, or the type it was. `event`: `ordered` only the units whose new order is `order`; `killed`
+   * only the units `by` killed.
    */
-  | { kind: "unitLoop"; decl: VarDecl; filter: UnitFilter; body: Stmt[]; at: At; label: string }
+  | { kind: "unitLoop"; decl: VarDecl; filter: UnitFilter; source?: EventSource; was?: VarDecl; event?: { order?: number; by?: number }; body: Stmt[]; at: At; label: string }
   /** `u.hp = 40`, `u.invincible = true`: nothing happens when the unit is none or gone. */
   | { kind: "unitWrite"; unit: UnitExpr; field: UnitNumField | UnitFlag; value: NumExpr | BoolExpr; at: At; label: string }
   /** `u.kill()`, `u.order("move", there)`: nothing happens when the unit is none or gone. */
@@ -488,6 +600,32 @@ export type Stmt =
   | { kind: "return"; value?: NumExpr | BoolExpr | UnitExpr | TextExpr; at: At; label: string }
   /** `cycles` is a count of frames (`frames(n)`; `cycles(n)` is the older word for the same). */
   | { kind: "sleep"; ms?: number; cycles?: number; at: At; label: string }
+  /**
+   * `await Promise.all([…])` (`all`) / `await Promise.race([…])` (`race`): each branch is a coroutine of its own, started
+   * here, in order, within this frame. From then on, every frame the program is here, each branch that has not ended
+   * goes on from where it slept, in order, and the program goes on past this statement on the frame the last branch
+   * ends (`all`) or the first does (`race`, whose other branches then stop where they are). A branch's `sleep` is its
+   * own; `break`, `continue` and `return` never leave a branch.
+   */
+  | { kind: "parallel"; mode: "all" | "race"; branches: Stmt[][]; at: At; label: string }
+  /**
+   * `start(wave(n))`: a task — `call`, an async function's body inlined, its parameters copies of this start's arguments —
+   * that runs beside what started it. Each `start` statement is a body of its own, `task` its number (they are numbered
+   * from 1 in the order they are met, a task inside another's body after it), with `max` slots: that many of its tasks can
+   * run at once, and a start with every slot taken starts nothing (the game says so once). A task starts in the frame it
+   * is started in, once the program has given the frame back (it slept, waited or ended); from then on it goes on every
+   * frame, after the program, the tasks in order of their number and slot. It runs on after the program ends. `handle`:
+   * the variable that takes a number for the task — `slot | task << 8 | generation << 16`, the generation one more at
+   * every start in the slot — or 0 when nothing started.
+   */
+  /**
+   * `listen` (on.created, on.died, on.chat, on.key): the task is a listener, whose body waits a frame at the top of a loop
+   * that hands on what happened, so a turn when nothing did does nothing. Once it has begun, it is given a turn only in
+   * a frame the events pass found units of `source`, or one of `inputs` arrived. A lowering may also give it every turn.
+   */
+  | { kind: "start"; task: number; max: number; call: Call; handle?: string; listen?: { source?: EventSource; inputs?: InputSource[] }; at: At; label: string }
+  /** `t.cancel()`: the task stops where it is. Nothing happens when it has ended, or the number is no task's. */
+  | { kind: "cancel"; task: NumExpr; at: At; label: string }
   /** A trigger action; each of `variables` names a field that takes an expression's value instead of the record's. */
   /**
    * `text`: the action's text is the program's. One of the table goes into the action as its id. One that was made is
@@ -497,17 +635,75 @@ export type Stmt =
    */
   | { kind: "action"; record: ActionRecord; variables?: ActionVariable[]; text?: TextExpr; at: At; label: string }
   /** Centre a location on a point of the map, in pixels, its size kept. */
-  | { kind: "centerLocation"; location: number; x: NumExpr; y: NumExpr; at: At; label: string }
+  /** `size`: the location takes it too, centred on the point (nothing of the old size is read). */
+  /**
+   * `sync(player, value)`'s first half (B5): on every computer, `player`'s arrival cell of slot `slot` (the `sync` input
+   * source) is cleared to 0; on `player`'s own computer `value` + 1 is put where the input plugin sends it from, to arrive
+   * on every computer as that cell a few frames later. `value` may be a `Local` one: it is the one thing that may be.
+   */
+  | { kind: "syncSend"; slot: number; player: number; value: NumExpr; at: At; label: string }
+  /**
+   * `select(player, units)` (B5): on `player`'s own computer, its selection becomes these units (up to 12, none left out
+   * but those that are gone) — the panel told to show them again — and a Select command goes to every computer, so the
+   * player's orders go to them everywhere. Done on every other computer, it does nothing.
+   */
+  | { kind: "select"; player: number; units: UnitExpr[]; at: At; label: string }
+  | { kind: "centerLocation"; location: number; x: NumExpr; y: NumExpr; size?: { width: NumExpr; height: NumExpr }; at: At; label: string }
   /**
    * Text with values in it, shown to `to` — a slot, 13 for the current player, All Players or a
    * force — in the chat area or on the line in the middle of the screen the game's own errors use.
    */
   | { kind: "print"; parts: TextPart[]; to: number; position: "chat" | "center"; at: At; label: string }
+  /**
+   * The parts written at the end of buffer `buffer` (`reset`: the buffer emptied first): a text put together a piece at a
+   * time, read back with `built`. A buffer is one place for the whole game, used up within the frame it is built in.
+   */
+  | { kind: "buildText"; buffer: string; parts: TextPart[]; reset?: boolean; at: At; label: string }
   | { kind: "call"; call: Call; at: At; label: string }
   /** A block only for scoping; nothing of its own. */
   | { kind: "block"; body: Stmt[]; at: At }
+  /**
+   * `try { … } catch { … }`: `body` runs; when an error is thrown in it — a `throw`, a call that comes back with an error in
+   * flight, a stack that ran out — the body stops there and `catch` runs, with the error still in flight
+   * (`Program.errors`): its first statements are the front end's, which take the error and set `thrown` back to 0.
+   * `finally` is the front end's too: a copy of it before every way out, and a `try` around the whole that runs it and
+   * throws again. A `break`, `continue` or `return` inside `body` leaves it as it would leave a block.
+   */
+  | { kind: "try"; body: Stmt[]; catch: Stmt[]; at: At; label: string }
+  /**
+   * The error in flight (`Program.errors`, which the statements before this one set) goes to the nearest `try` around this
+   * statement: the `catch` of one in this body, or, inside a called function, out of the function — which returns at
+   * once, the error still in flight, to a call that goes on in the same way. `rethrow`: the error is one that was caught
+   * and is thrown again, so where it was first thrown is still where it came from.
+   */
+  | { kind: "throw"; rethrow?: boolean; at: At; label: string }
+  /**
+   * The error in flight reached the end of a program, a task or a handler with nothing to catch it: said in red, as a fault
+   * of the game's is — its class's name (`Program.errors.names` at `thrown`), its message and the line it was thrown at — and
+   * given up (`thrown` 0). What it was thrown in then ends, as JavaScript's does: a program or a task stops, a handler of
+   * an event gives up only this turn.
+   */
+  | { kind: "uncaught"; at: At; label: string }
   /** A word for the editor about a line: a loop unrolled when the script was built. */
-  | { kind: "remark"; text: string; short?: string; at: At };
+  | { kind: "remark"; text: string; short?: string; at: At }
+  /**
+   * A map of our own only (`compiler/backend/texts.ts`): `decl`, a number, declared as the EPD of block `block` — a
+   * string of the map's `bytes` long, laid out for it (one block for every statement that names it), empty at first or
+   * holding `text`. `data`: bytes of the payload's instead, never shown as a string (the pool of blocks the cells of
+   * arrays of texts that grow take: the game's own table of strings names only its first 64 KB in 1.16.1).
+   */
+  | { kind: "textBlock"; decl: VarDecl; block: string; bytes: number; text?: string; data?: boolean; at: At }
+  /** A map of our own only: Display Text of block `block` as it is now, to `to` as a print's is. */
+  | { kind: "showText"; block: string; bytes: number; to: number; at: At }
+  /**
+   * A map of our own only (`compiler/backend/units.ts`): the events pass's watch of the game's unit places — a trigger
+   * for each, whose conditions read `fields` of the unit record where it is (`dword` into it, `mask`) against what the
+   * trigger saw there last, its own numbers. A place as it was goes on to the next; one that changed runs `handler`,
+   * with `@ev.e` the record's EPD and the current player at the trigger's first condition's number (`emit.ts`).
+   */
+  | { kind: "watch"; fields: { dword: number; mask?: number; compare: "atLeast" | "exactly" }[]; handler: Stmt[]; gate?: boolean; at: At; label: string }
+  /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */
+  | { kind: "graph"; graph: Graph; original: Stmt[]; at: At; label: string };
 
 export interface Program {
   version: number;
@@ -519,9 +715,37 @@ export interface Program {
   arrays: ArrayDecl[];
   /** The functions that are called rather than inlined; absent when there is none. */
   functions?: FuncDecl[];
+  /** Present when the program throws or catches anything (B4): where an error in flight is kept. */
+  errors?: ProgramErrors;
+  /**
+   * A map of our own only (`compiler/backend/units.ts`): the frame's events pass — what came onto the map, died, took up
+   * an order or turned into another type since the pass before — run before the programs' turns, once for the map.
+   */
+  pass?: Stmt[];
+  /**
+   * A map of our own only (`compiler/backend/input.ts`): the frame's send pass — what this computer's player did,
+   * sent to every computer as game commands — run after the programs' turns, once for the map.
+   */
+  after?: Stmt[];
   body: Stmt[];
   at: At;
 }
+
+/**
+ * The error in flight, between a `throw` and the `catch` that takes it: `thrown` is its class's code — 0 when no error is
+ * in flight, `ERROR_CODES` for the built-in classes, 16 and up for a program's own — and `message` its message, a made
+ * text. Both are `shared` variables of the program, declared at the start of its body: an error is never in flight
+ * across a frame, so one of each serves every player and every task. A class's own fields go through variables of their
+ * own, which the front end copies; a backend knows only these two. `names` is the array of texts of the classes' names
+ * by their code, which an uncaught error is said with.
+ */
+export interface ProgramErrors { thrown: string; message: string; names: string }
+
+/** The codes of the built-in classes of error; a program's own classes are numbered from `FIRST_ERROR_CLASS`. */
+export const ERROR_CODES = { Error: 1, RangeError: 2, TypeError: 3 } as const;
+export const FIRST_ERROR_CLASS = 16;
+/** What a stack that ran out throws, as JavaScript's does. */
+export const STACK_OVERFLOW_MESSAGE = "Maximum call stack size exceeded";
 
 /** Every statement list of a program: its body, then the body of each function that is called. */
 export function bodiesOf(program: Pick<Program, "body" | "functions">): Stmt[][] {
@@ -548,6 +772,15 @@ export function eachCall(root: unknown, visit: (c: Call) => void): void {
   for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
 }
 
+/** Every `start` of a piece of IR, in the order of their numbers: outer ones before the ones in their bodies. */
+export function eachStart(root: unknown, visit: (s: Extract<Stmt, { kind: "start" }>) => void): void {
+  if (Array.isArray(root)) { for (const x of root) eachStart(x, visit); return; }
+  if (!root || typeof root !== "object") return;
+  const o = root as Record<string, unknown>;
+  if (o.kind === "start" && typeof o.task === "number" && o.call && typeof o.call === "object") visit(o as Extract<Stmt, { kind: "start" }>);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachStart(v, visit);
+}
+
 export const isUnitExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is UnitExpr =>
   e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || (e.kind === "call" && e.call.result?.kind === "unit");
 
@@ -558,7 +791,7 @@ export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is Num
     case "var": return false; // ambiguous by shape; callers know the variable's kind
     case "element": case "pop": return false; // ambiguous by shape, as a variable is
     case "length": case "unitPart": return true;
-    case "unary": case "cast": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": return true;
+    case "unary": case "cast": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": case "taskHandle": return true;
     case "ternary": return isNumExpr(e.whenTrue);
     case "call": return e.call.result?.kind === "number";
     default: return false;
@@ -582,22 +815,29 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "storeText": expr(s.index); text(s.value); break;
       case "releaseText": expr(s.index); break;
       case "textLoop": text(s.of); out.push(s.decl); s.body.forEach(stmt); break;
-      case "unitLoop": out.push(s.decl); s.body.forEach(stmt); break;
+      case "unitLoop": out.push(s.decl); if (s.was) out.push(s.was); s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); init(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
+      case "select": s.units.forEach(unit); break;
       case "tableWrite": init(s.value); break;
       case "if": init(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) init(s.cond); s.body.forEach(stmt); break;
       case "do": s.body.forEach(stmt); init(s.cond); break;
       case "for": if (s.cond) init(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": call(s.call); break;
+      case "cancel": expr(s.task); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) init(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
-      case "centerLocation": expr(s.x); expr(s.y); break;
-      case "print": parts(s.parts); break;
+      case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
+      case "syncSend": expr(s.value); break;
+      case "print": case "buildText": parts(s.parts); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
+      case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
+      case "graph": s.original.forEach(stmt); break;
       default: break;
     }
   };
@@ -608,7 +848,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
     c.body.forEach(stmt);
   };
   const init = (e: NumExpr | BoolExpr | UnitExpr | TextExpr) => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e));
-  const parts = (ps: TextPart[]) => { for (const p of ps) { if (p.kind === "number") expr(p.expr); else if (p.kind === "value") text(p.text); } };
+  const parts = (ps: TextPart[]) => { for (const p of ps) { if (p.kind === "number" || p.kind === "char") expr(p.expr); else if (p.kind === "value") text(p.text); } };
   const text = (t: TextExpr) => {
     switch (t.kind) {
       case "textOf": case "textAt": expr(t.index); break;
@@ -651,6 +891,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "ternary": bool(b.cond); bool(b.whenTrue); bool(b.whenFalse); break;
       case "textCompare": text(b.left); text(b.right); break;
       case "textTest": text(b.of); text(b.find); break;
+      case "running": expr(b.task); break;
       case "call": call(b.call); break;
       default: break;
     }

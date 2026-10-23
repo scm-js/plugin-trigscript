@@ -176,7 +176,7 @@ const FIXTURES: Record<string, string> = {
   input: `program(() => {
     let gold = 0;
     while (true) {
-      if (keyPressed(CurrentPlayer, "F2") || keyPressed(CurrentPlayer, "Space")) gold += 1;
+      if (keyPressed(CurrentPlayer, "F7") || keyPressed(CurrentPlayer, "Space")) gold += 1;
       if (clicked(CurrentPlayer) || clicked(CurrentPlayer, "right")) { const at = mouse(CurrentPlayer); centerLocation(1, at.x + 8, at.y); createUnit(CurrentPlayer, units.TerranMarine, 1, 1); }
       const m = chatted(CurrentPlayer, "-spawn {n} {unit:unit}");
       if (m) createUnit(CurrentPlayer, m.unit, m.n, 1);
@@ -282,13 +282,130 @@ const FIXTURES: Record<string, string> = {
       sleep(frames(12));
     }
   }, { owner: AllPlayers });`,
+  tasks: `program(async () => {
+    let n = 0;
+    async function wave(k: number): Promise<number> {
+      createUnit(P8, units.ZergZergling, k, locations.Anywhere);
+      await until(() => countUnits(P8, units.ZergZergling) === 0);
+      return k;
+    }
+    for (let i = 1; i <= 3; i++) {
+      const won = await Promise.race([wave(i * 2), sleep(seconds(30)).then(() => -1)]);
+      if (won < 0) defeat();
+      await Promise.all([
+        (async () => { while (n < i * 10) { n++; await sleep(frames(1)); } })(),
+        sleep(seconds(2)),
+      ]);
+    }
+    victory();
+  });`,
+  tasksPerPlayer: `program(async () => {
+    let mine = 0;
+    let total = shared(0);
+    await Promise.all([
+      (async () => { for (let i = 0; i < 5; i++) { mine++; await sleep(frames(3)); } })(),
+      (async () => { await until(() => mine >= 5); total += 1; })(),
+    ]);
+    const first = await Promise.race([until(() => total >= 2).then(() => true), sleep(seconds(5)).then(() => false)]);
+    if (first) setResources(CurrentPlayer, "add", 50, "ore");
+  }, { owner: AllPlayers });`,
+  started: `program(async () => {
+    let made = 0;
+    async function drip(k: number, name: string) {
+      for (let i = 0; i < k; i++) { createUnit(P8, units.ZergZergling, 1, locations.Anywhere); made++; await sleep(frames(2)); }
+      print(\`\${name} done\`);
+    }
+    const t = start(drip(3, "a"), { max: 4 });
+    for (let i = 0; i < made + 2; i++) start(drip(i, "b"));
+    void drip(1, "c");
+    start(async () => { await Promise.all([sleep(frames(1)), until(() => made >= 2)]); start(drip(1, "inner")); });
+    await t;
+    if (t.running) defeat();
+    const f = start(async () => { while (true) await sleep(frames(1)); });
+    f.cancel();
+    victory();
+  });`,
+  events: `program(async () => {
+    let made = 0;
+    on.created(units.ZergZergling, (u) => { u.energy = 50; made++; });
+    on.created({ owner: P1, at: locations.Anywhere }, async (u) => { await sleep(frames(2)); u.heal(5); }, { max: 4 });
+    const deaths = on.died({ owner: P8 }, async (u) => { await sleep(seconds(2)); createUnit(P8, u.type, 1, locations.Anywhere); print(\`back at \${u.x}, \${u.y}\`); });
+    on.died(units.Men, (u) => { if (u.owner == 0) setResources(P1, "add", 1, "ore"); });
+    on.chat("-give {n}", (p, { n }) => { setResources(p, "add", n, "ore"); });
+    on.key("F7", (p) => print("help", { to: p }), { from: P1 });
+    await until(() => made >= 10);
+    deaths.cancel();
+  });`,
+  eventsMore: `program(async () => {
+    let storms = 0, sieged = 0;
+    on.killed((u, by) => { setResources(by, "add", 25, "ore"); print(\`\${u.type} at \${u.x}\`); });
+    on.killed({ owner: P8, by: P1 }, async (u) => { await sleep(frames(4)); createUnit(P8, u.type, 1, locations.Anywhere); });
+    on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, (u) => { storms++; });
+    on.order({ owner: P1 }, (u, order, was) => { if (was == orders.PlayerGuard && order == orders.Move) u.heal(1); });
+    on.morphed(units.TerranSiegeTankSiegeMode, (u, was) => { sieged++; print(\`from \${was}\`); });
+    await until(() => storms + sieged >= 10);
+  });
+  on.died(units.TerranMarine, (u) => print(\`marine down at \${u.x}\`));
+  on.chat("-hi", (p) => print("hello", { to: p }));`,
+  eventsPerPlayer: `program(async () => {
+    let mine = 0;
+    on.created({ owner: CurrentPlayer }, () => { mine++; });
+    on.chat("-me", () => { print(\`\${mine}\`); });
+  }, { owner: AllPlayers });`,
+  startedPerPlayer: `program(async () => {
+    let mine = 0;
+    async function add(k: number) { await sleep(frames(k)); mine += k; }
+    start(add(1));
+    start(add(2), { max: 2 });
+    await until(() => mine >= 3);
+    setResources(CurrentPlayer, "add", 50, "ore");
+  }, { owner: AllPlayers });`,
+  generators: `program(async () => {
+    class Squad { left: number; constructor(n: number) { this.left = n; } async drain() { while (this.left > 0) { this.left--; await sleep(frames(1)); } } }
+    async function slow(n: number): Promise<number> { await sleep(frames(n)); return n * 10; }
+    function* waves(n: number) { yield { count: 1, unit: units.ZergZergling }; for (let i = 1; i <= n; i++) { if (i == 3) continue; yield { count: i + 1, unit: units.ZergZergling }; } }
+    for (const w of waves(4)) { if (w.count > 4) break; createUnit(P8, w.unit, w.count, locations.Anywhere); await sleep(frames(1)); }
+    const [a, , c] = await Promise.all([slow(3), sleep(frames(1)), slow(1).then((k) => k > 5)]);
+    const v = await Promise.race([slow(2).then((k) => k + a), sleep(frames(10)).then(() => 0)]);
+    if (c) setResources(P1, "set", v, "ore");
+    const s = new Squad(3);
+    await s.drain();
+  });`,
+  errors: `program(async () => {
+    class OutOfGold extends Error { constructor(public need: number) { super(\`need \${need} more\`); } }
+    let gold = 30;
+    function buy(cost: number) { if (cost > gold) throw new OutOfGold(cost - gold); gold -= cost; }
+    function deep(n: number): number { if (n > 100000) return 0; return deep(n + 1) + 1; }
+    async function worker() { await sleep(frames(2)); throw new RangeError("worker"); }
+    start(worker());
+    on.key("F7", (p) => { if (gold < 0) throw new Error("never"); setResources(p, "add", 1, "ore"); });
+    let log = 0;
+    for (const c of [10, 50, 5]) {
+      try { buy(c); log++; }
+      catch (e) { if (e instanceof OutOfGold) setResources(P1, "set", e.need, "gas"); else throw e; }
+      finally { log += 10; }
+    }
+    try { log = deep(0); } catch (e) { if (e instanceof RangeError) displayText(e.message); }
+    class Bad extends Error { describe() { return \`bad \${this.message}\`; } }
+    class Worse extends Bad { describe() { return \`worse \${this.message}\`; } }
+    function* count(n: number) { try { for (let j = 0; j < n; j++) yield j; } finally { log++; } }
+    for (const x of count(5)) { if (x == log) break; }
+    async function wave(n: number) { await sleep(frames(2)); if (n > 1) throw new Worse(\`wave \${n}\`); }
+    const w = start(wave(log));
+    try { await w; } catch (e) { if (e instanceof Bad) print(\`\${e.describe()} \${e.stack ?? ""}\`); }
+    while (true) {
+      try { await sleep(frames(1)); if (log > 1000) throw new Error(\`log \${log}\`); log++; }
+      catch (e) { if (e instanceof Error) print(e.message); }
+    }
+  });`,
 };
 
 function build(name: string, src: string): { out: number; triggers: number } {
-  const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
+  // A fixture that writes JSX is a .tsx file: its name ends in Tsx.
+  const r = compileScript(ts, { [name.endsWith("Tsx") ? "main.tsx" : "main.ts"]: src, ...(FIXTURE_FILES[name] ?? {}) }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" ? 2 : name === "leftoversProbe" ? 1 : name === "recursionProbe" ? 3 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" || name === "local" ? 2 : name === "leftoversProbe" ? 1 : name === "recursionProbe" || name === "eventsMore" ? 3 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -304,6 +421,57 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const m = /(\d+) triggers/.exec(res.stdout);
   return { out, triggers: m ? Number(m[1]) : 0 };
 }
+
+// TrigScript 4, S2: JSX put together in a buffer, a cell of the program's colour, a bar, ui.lines redrawn when what it reads
+// changes — and the Tetris that shows it all off, keys and all.
+// B7: memory cells — a write every frame, a read in arithmetic and in a condition.
+FIXTURES.memory = `program(async () => {
+  let seen = 0;
+  while (true) {
+    memory.vision.countdown = 1;
+    seen = memory.game.frame * 2;
+    if (memory.game.frame % 24 == 0) displayText("a second");
+    await sleep(frames(1));
+  }
+});`;
+// B5: what only one computer knows, shown under a test of it, and sent to every computer with sync() — for one player
+// named and for each player of a per-player program.
+FIXTURES.local = `program(async () => {
+  while (true) {
+    if (local.mouse.x > 400) print(\`right \${local.camera.x + local.mouse.x}\`);
+    if (keyPressed(P1, "Q")) {
+      const x = await sync(P1, local.camera.x + 320);
+      setResources(P1, "set", x, "ore");
+    }
+    await sleep(frames(1));
+  }
+});
+program(async () => {
+  const [x, y] = await sync(CurrentPlayer, local.camera.x, local.camera.y);
+  setResources(CurrentPlayer, "set", x + y, "gas");
+  const u = local.selected;
+  if (u) print(\`\${u.hp} of \${local.selectionCount}\`);
+  const m = first({ owner: CurrentPlayer, type: units.TerranMarine });
+  if (m) select(CurrentPlayer, m);
+}, { owner: AllPlayers });`;
+FIXTURES.uiTsx = `program(async () => {
+    const cells = [0, 8, 17, 0];
+    let hp = 40;
+    const t = ui.lines(P1, () => (
+      <>
+        <line color="yellow">HP {hp} <bar value={hp} max={100} width={8} /></line>
+        <line>{cells.map((c, i) => <cell color={i === 0 ? 14 : c} />)}{hp > 50 && <span color="red"> high</span>}</line>
+      </>
+    ));
+    for (let i = 0; i < 10; i++) { hp += 7; cells[3] = i % 2 ? 7 : 0; await sleep(frames(4)); }
+    t.cancel();
+    print(<line>done</line>);
+  });`;
+FIXTURES.tetrisTsx = readFileSync(resolve(import.meta.dirname, "..", "probes", "tetris.tsx"), "utf8");
+/** The files a fixture imports, beside it. */
+const FIXTURE_FILES: Record<string, Record<string, string>> = {
+  tetrisTsx: { "lib/unit-screen.ts": readFileSync(resolve(import.meta.dirname, "..", "probes", "lib", "unit-screen.ts"), "utf8") },
+};
 
 // Functions that are called: parameters and results of each kind, an argument that is a call of the same function, a copy an
 // array, a called function calling another, and — in the second program — cells that are a row a player.
@@ -480,6 +648,8 @@ FIXTURES.classes = `program(() => {
 // And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
 // and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.
 FIXTURES.callbacksProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "callbacks.ts"), "utf8");
+// And functions as values (B3): dispatchers, functions lowered before a variable they use is declared, recursion through a variable.
+FIXTURES.functionValues = readFileSync(resolve(import.meta.dirname, "..", "probes", "game-function-values.ts"), "utf8");
 
 describe.skipIf(!have)("programs build through the eudplib plugin", () => {
   for (const [name, src] of Object.entries(FIXTURES)) {
@@ -499,6 +669,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(14);
+    expect(ir.version).toBe(26);
   });
 });

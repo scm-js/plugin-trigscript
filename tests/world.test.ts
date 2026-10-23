@@ -33,7 +33,8 @@ describe("units are made", () => {
   it("at the location's centre, with the type's hit points, and a loop finds them", () => {
     const sim = run(`createUnit(P1, units.TerranMarine, 3, ${HOME}); let n = 0; let hp = 0; for (const u of unitsAt(${HOME}, { owner: P1 })) { n++; hp += u.hp; } print(\`\${n} \${hp} \${countUnits(P1, units.TerranMarine, ${HOME})} \${countUnits(P1, units.TerranMarine, ${FIELD})}\`);`);
     expect(shown(sim)).toEqual(["3 120 3 0"]);
-    expect(sim.units.map((u) => [u.x, u.y, u.slot])).toEqual([[100, 100, 0], [100, 100, 1], [100, 100, 2]]);
+    // (Slot 0, then 1699 downwards: the places in the order the game hands them out.)
+    expect(sim.units.map((u) => [u.x, u.y, u.slot])).toEqual([[100, 100, 0], [100, 100, 1699], [100, 100, 1698]]);
   });
 
   it("a type's hit points a program wrote are what the next one is made with", () => {
@@ -60,7 +61,9 @@ describe("units are made", () => {
 });
 
 describe("what is done to units", () => {
-  it("gives, moves, kills some and removes the rest; deaths are counted, removals are not", () => {
+  // (Neither a trigger's kill nor a removal is a death: only a unit that dies in the game counts. The lifted game says
+  // so — TrigScript 4, A2 — and the editor's trigger reference, checked in the game, says so of Kill Unit.)
+  it("gives, moves, kills some and removes the rest; neither the kills nor the removals are deaths", () => {
     const sim = run(`
       createUnit(P1, units.TerranMarine, 5, ${HOME});
       giveUnits(P1, P2, units.TerranMarine, 2, ${HOME});
@@ -69,7 +72,7 @@ describe("what is done to units", () => {
       killUnitAt(P1, units.TerranMarine, 2, ${HOME});
       removeUnit(P2, units.TerranMarine);
       print(\`\${a} \${b} \${countUnits(P1, units.AnyUnit)} \${countUnits(P2, units.AnyUnit)} \${deaths(P1, units.TerranMarine)} \${deaths(P2, units.TerranMarine)}\`);`);
-    expect(shown(sim)).toContain("3 2 1 0 2 0");
+    expect(shown(sim)).toContain("3 2 1 0 0 0");
     expect(sim.units.filter((u) => u.owner === 1).map((u) => [u.x, u.y])).toEqual([[1100, 1050], [1100, 1050]]);
   });
 
@@ -92,13 +95,14 @@ describe("what is done to units", () => {
       for (const u of unitsAt(${HOME})) hits.set(u, 7);
       const victim = first({ type: units.TerranMarine });
       if (victim) victim.kill();
-      createUnit(P1, units.TerranMarine, 1, ${HOME});
+      createUnit(P1, units.TerranMarine, 2, ${HOME});
       let found = 0; let live = 0;
       for (const u of unitsAt(${HOME})) { live++; if (hits.has(u)) found++; }
       print(\`\${live} \${found} \${victim ? victim.hp : -1}\`);`);
-    // Two alive, one of them known; the variable that held the dead one finds no unit, though its place has one in it again.
-    expect(shown(sim)).toEqual(["2 1 -1"]);
-    expect(sim.units.map((u) => [u.slot, u.uid, u.alive])).toEqual([[0, 0, false], [1, 0, true], [0, 1, true]]);
+    // Three alive, one of them known; the variable that held the dead one finds no unit, though its place has one in it
+    // again: the game hands out the next free place first and the freed one after it (slot 0 here, its byte moved on).
+    expect(shown(sim)).toEqual(["3 1 -1"]);
+    expect(sim.units.map((u) => [u.slot, u.uid, u.alive])).toEqual([[0, 0, false], [1699, 0, true], [1698, 0, true], [0, 1, true]]);
   });
 
   it("a trigger()'s units are the programs' units: one world", () => {
@@ -109,7 +113,8 @@ describe("what is done to units", () => {
     const programs = new ProgramSimulation(r.ir, { world, strings: r.strings, table: TABLE });
     for (let i = 0; i < 4; i++) { world.step(); programs.step(); }
     expect(world.events.map((e) => e.text).filter(Boolean)).toEqual(["three left"]);
-    expect(world.death(0, ZERGLING)).toBe(1);
+    // (Killed by the program: gone, and not a death.)
+    expect(world.death(0, ZERGLING)).toBe(0);
   });
 });
 

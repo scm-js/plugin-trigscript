@@ -19,7 +19,8 @@
  * again: the script is never run on the main thread, where nothing could stop an endless
  * loop in it.
  */
-import type { CompileResult, ScriptFiles } from "./compiler/compiler";
+import type { CompileResult, OwnCheck, ScriptFiles } from "./compiler/compiler";
+import type { OwnBuildInput, OwnBuildOutcome } from "./compiler/backend/build";
 import { ENTRY_URL } from "./compiler/entry";
 import type { ScriptNames } from "./compiler/names";
 import type { TestRunOptions } from "./compiler/testing";
@@ -42,6 +43,21 @@ export const compilerUrl = (dist: string = DEFAULT_DIST) =>
   dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/compiler.js` : `${dist.replace(/\/+$/, "")}/compiler.js`;
 
 /**
+ * What runs a script's tests beside the lifted game (`dist/gametest.js`, from `compiler/gameTestEntry.ts`), at this
+ * release's own tag like the compiler: its text is handed to the engine's page (TrigScript 4, A2).
+ */
+export const gametestUrl = (dist: string = DEFAULT_DIST) =>
+  dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/gametest.js` : `${dist.replace(/\/+$/, "")}/gametest.js`;
+
+/** What Remastered is known to allow (`data/allowlist.json`, copied into `dist/` by the build), for Find EUD Error: fetched only then. */
+export const allowlistUrl = (dist: string = DEFAULT_DIST) =>
+  dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/allowlist.json` : `${dist.replace(/\/+$/, "")}/allowlist.json`;
+
+/** The Ogg Vorbis encoder (`compiler/vorbis.ts`, `dist/vorbis.wasm`), at this release's own tag: fetched only by a build that has a long clip to put in the map. */
+export const vorbisUrl = (dist: string = DEFAULT_DIST) =>
+  dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/vorbis.wasm` : `${dist.replace(/\/+$/, "")}/vorbis.wasm`;
+
+/**
  * What the worker is told to import. The editor's loader turns a fetched plugin into
  * `blob:` modules, and the compiler's own blob URL is the compiler the main thread would
  * run. A plugin compiled into the editor (a default) has no such URL — its module is a
@@ -51,23 +67,38 @@ export const compilerUrl = (dist: string = DEFAULT_DIST) =>
 export const workerModuleUrl = (dist: string = DEFAULT_DIST) => (ENTRY_URL.startsWith("blob:") && !blobRefused ? ENTRY_URL : compilerUrl(dist));
 
 export const COMPILE_TIMEOUT_MS = 15_000;
+/** A build's compile makes the script's sounds too — a long song mixed and encoded — and gets longer. */
+export const BUILD_TIMEOUT_MS = 60_000;
 
 export interface CompileInput {
   files: ScriptFiles;
   names: ScriptNames;
   /** Run the script's tests after the compile: the world they start from, and which of them. */
   tests?: TestRunOptions;
+  /** Encode the sounds the map is to get (a build): a check leaves an Ogg Vorbis one as its name (`compiler/vorbis.ts`). */
+  sounds?: boolean;
+  /** Ask whether TrigScript's own build takes the programs for this map (`CompileResult.ownRefusal`). */
+  own?: OwnCheck;
 }
 
 interface CompileRequest extends CompileInput {
   id: number;
   moduleUrl: string;
   libUrl: string;
+  vorbisUrl?: string;
+}
+
+/** A map of our own built in the worker (`compiler/backend/build.ts`), off the main thread like a compile. */
+interface BuildRequest {
+  id: number;
+  moduleUrl: string;
+  libUrl: string;
+  build: OwnBuildInput;
 }
 
 interface CompileResponse {
   id: number;
-  result?: CompileResult;
+  result?: CompileResult | OwnBuildOutcome;
   error?: string;
   /** The worker could not load its compiler at all: every later request would fail the same way. */
   fatal?: boolean;
@@ -78,19 +109,32 @@ importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, libUrl, files, names, tests } = e.data;
+  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests, own, build } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
     try { mod = await loading; } catch (err) { loading = null; postMessage({ id, error: String((err && err.message) || err), fatal: true }); return; }
     // The plugin fetched as one bundle is a blob too, but one that exports the plugin and not the compiler.
     if (typeof mod.compileScript !== "function") { loading = null; postMessage({ id, error: "the module has no compiler in it", fatal: true }); return; }
+    // A build of a map of our own: the compile's programs into the scenario's bytes, no TypeScript needed.
+    if (build) {
+      if (typeof mod.buildOwnMap !== "function") throw new Error("This compiler bundle cannot build a map of its own: update the plugin.");
+      postMessage({ id, result: mod.buildOwnMap(build) });
+      return;
+    }
     if (lib === null) {
       const r = await fetch(libUrl);
       if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
       lib = await r.text();
     }
-    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib, tests }) });
+    // A check names the script's clips and makes none of them; a build makes them, the long ones encoded below.
+    const result = mod.compileScript(self.ts, files, names, { lib, tests, sounds: Boolean(vorbisUrl), own });
+    // A build's long clips encoded as Ogg Vorbis; a check's left as names, their samples not sent.
+    if (typeof mod.finishSounds === "function") {
+      const encoder = vorbisUrl && result.sounds.some((s) => s.vorbis) ? await mod.loadVorbis(vorbisUrl) : null;
+      mod.finishSounds(result.sounds, encoder);
+    }
+    postMessage({ id, result });
   } catch (err) {
     postMessage({ id, error: String((err && err.message) || err) });
   }
@@ -113,7 +157,8 @@ let worker: Worker | null = null;
 let blobRefused = false;
 let unavailable: { reason: string; at: number } | null = null;
 let seq = 0;
-const pending = new Map<number, { resolve: (r: CompileResult) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+/** What is in flight: a compile, which a newer compile supersedes, or a build, which nothing does. */
+const pending = new Map<number, { resolve: (r: CompileResult | OwnBuildOutcome) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; build: boolean }>();
 
 /**
  * The worker is a whole TypeScript instance (tens of MB of heap) and it is only busy while
@@ -188,14 +233,14 @@ function breakWorker(reason: string) {
 }
 
 /** The script ran too long: drop this worker (the next request starts another) and say so. */
-function timeOut(id: number) {
+function timeOut(id: number, ms: number) {
   const p = pending.get(id);
   if (!p) return;
   pending.delete(id);
   worker?.terminate();
   worker = null;
   rejectAll("The compile was stopped.");
-  p.reject(new Error(`The script did not finish in ${COMPILE_TIMEOUT_MS / 1000} seconds. Is there an endless loop outside program()?`));
+  p.reject(new Error(p.build ? `The build did not finish in ${ms / 1000} seconds.` : `The script did not finish in ${ms / 1000} seconds. Is there an endless loop outside program()?`));
 }
 
 /** The worker, started if there is none. Throws `CompilerUnavailable` when one cannot be made, or could not a moment ago. */
@@ -240,18 +285,39 @@ export function compileInBackground(input: CompileInput, dist: string = DEFAULT_
   let w: Worker;
   try { w = getWorker(); } catch (err) { return Promise.reject(err as Error); }
   const id = ++seq;
-  // Anything still in flight is stale now.
+  // Any compile still in flight is stale now (a build is not: it answers whatever is typed meanwhile).
   for (const [old, p] of pending) {
+    if (p.build) continue;
     pending.delete(old);
     clearTimeout(p.timer);
     p.reject(new CompileSuperseded());
   }
   return new Promise<CompileResult>((resolve, reject) => {
-    pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
-    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}) };
+    const ms = input.sounds ? BUILD_TIMEOUT_MS : COMPILE_TIMEOUT_MS;
+    pending.set(id, { resolve: (r) => resolve(r as CompileResult), reject, timer: setTimeout(() => timeOut(id, ms), ms), build: false });
+    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}), ...(input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}), ...(input.own ? { own: input.own } : {}) };
     w.postMessage(req);
   }).catch((err: Error) => {
     if (err.message === RETRY) return compileInBackground(input, dist);
+    throw err;
+  });
+}
+
+/**
+ * Build a map of our own in the background (`compiler/backend/build.ts`): the compile's programs laid out into the
+ * scenario's bytes, which the plugin's build step hands the editor. Not superseded by a compile, and supersedes none.
+ */
+export function buildInBackground(input: OwnBuildInput, dist: string = DEFAULT_DIST): Promise<OwnBuildOutcome> {
+  let w: Worker;
+  try { w = getWorker(); } catch (err) { return Promise.reject(err as Error); }
+  const id = ++seq;
+  return new Promise<OwnBuildOutcome>((resolve, reject) => {
+    const ms = BUILD_TIMEOUT_MS;
+    pending.set(id, { resolve: (r) => resolve(r as OwnBuildOutcome), reject, timer: setTimeout(() => timeOut(id, ms), ms), build: true });
+    const req: BuildRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), build: input };
+    w.postMessage(req);
+  }).catch((err: Error) => {
+    if (err.message === RETRY) return buildInBackground(input, dist);
     throw err;
   });
 }

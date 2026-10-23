@@ -20,24 +20,34 @@ import type { TriggerRecord } from "../vendor/triggers";
 import { MODULE_NAME } from "./api";
 import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type TestReport, type TestRunOptions } from "./testing";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
-import { libraryCallName, libraryName, planProgram, transformer, type ProgramPlan } from "./hoist";
-import { locate, resolveModule, runModules, type LinkedFile } from "./link";
+import { isScriptClass, isScriptFunction, scriptArrow, isTopListener, libraryCallName, libraryName, planClass, planFunction, planListener, planProgram, transformer, type ProgramPlan } from "./hoist";
+import { locate, resolveModule, runModules, STDLIB_DIR, type LinkedFile } from "./link";
+import { isMediaFile, mediaValue } from "./media";
+import { STDLIB, stdlibImports, stdlibPath } from "./stdlib";
 import { checkProgram } from "./eud";
+import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
+import { rangeNumbers } from "./ranges";
+import { emitGraphs, type MapPlayers } from "./backend/emit";
+import { emitOwn } from "./backend/own";
 import { markRecursion, settleRecursion } from "./recursion";
-import { inputPlan, inputsOf, type InputPlan } from "./input";
-import { programDeclarations, type Program } from "./ir";
+import { inputPlan, inputsOf, numberSyncSlots, type InputPlan } from "./input";
+import { declarations, programDeclarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
 import { newBody, Structured, type Body } from "./structured";
 import { english, type Translate } from "../i18n";
+import type { ClipFile } from "./sound";
 
 export type { ScriptString } from "./runtime";
 export { DEATHS_TABLE_ADDRESS } from "./runtime";
 
-/** The file a script starts from. */
+/** The file a script starts from: main.ts, or main.tsx for a script that writes JSX in it. */
 export const ENTRY_FILE = "main.ts";
+export const ENTRY_TSX = "main.tsx";
+/** The entry of a script's files: main.tsx when there is one, else main.ts. */
+export const entryOf = (files: Iterable<string>): string => ([...files].includes(ENTRY_TSX) ? ENTRY_TSX : ENTRY_FILE);
 const LIB_FILE = "lib.d.ts";
 
 /** The script's files by path (`main.ts`, `bases.ts`, `ai/waves.ts`). */
@@ -84,15 +94,18 @@ export interface VariableInfo {
   bits?: number;
   /** A `u32`; unset, a number is signed. */
   unsigned?: boolean;
+  /** A `fixed`: a number with a fraction (16.16). */
+  fixed?: boolean;
 }
 
 /** What a program's variable holds, as the editor's hover says it: the kind, and for a number its range and what happens at the ends. */
-export function describeVariable(v: Pick<VariableInfo, "kind" | "bits" | "unsigned">, t: Translate = english): string {
+export function describeVariable(v: Pick<VariableInfo, "kind" | "bits" | "unsigned" | "fixed">, t: Translate = english): string {
   if (v.kind === "unit") return t("a unit of the game, or none — checked before every use: once the unit is gone it reads 0 and takes no write");
   if (v.kind === "boolean") return t("a boolean");
   if (v.kind === "text") return t("a text — `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes");
   if (v.bits) return t("a u{bits} number (0 … {max}, stopping at either end)", { bits: v.bits, max: 2 ** v.bits - 1 });
   if (v.unsigned) return t("a u32 number (0 … 4 294 967 295, wrapping at either end as `x >>> 0` does)");
+  if (v.fixed) return t("a fixed number (−32 768 … 32 767.99998, in steps of 1/65 536): a number with a fraction");
   return t("a number (−2 147 483 648 … 2 147 483 647, whole, wrapping at either end as `x | 0` does)");
 }
 
@@ -134,6 +147,12 @@ export interface CompileResult {
   sources: (TriggerSource | null)[];
   /** Local string table: a record's `text` / `wav` field `k > 0` means `strings[k - 1]`. */
   strings: ScriptString[];
+  /**
+   * The clips the script plays (`sound.ts`), as the files the map's archive gets, by their names there: once each. An
+   * Ogg Vorbis one has its samples instead of bytes until `finishSounds` (`vorbis.ts`) encodes it; after a compile with
+   * `sounds: false` (a check) each is its name alone: the map is to get them from a build.
+   */
+  sounds: ClipFile[];
   diagnostics: ScriptDiagnostic[];
   /** The programs' variables, in declaration order; a function's copies and results are left out. */
   variables: VariableInfo[];
@@ -150,8 +169,27 @@ export interface CompileResult {
   input: InputPlan | null;
   /** The script's `test()`s, and what running them found; null when it has none, or did not compile that far. */
   tests: TestReport | null;
+  /**
+   * The script as JavaScript, file by file, when it has tests and compiled: what runs them somewhere else — in the
+   * lifted game, beside the engine (`gameTests.ts`) — without TypeScript there.
+   */
+  modules?: [string, LinkedFile][];
+  /**
+   * Why a map of our own does not take the programs (`backend/own.ts`, `emitOwn`), when the compile was asked
+   * (`CompileOptions.own`) and it does not: the first part it never takes, with its line. Absent when it takes them,
+   * when there are none, or when the script did not compile.
+   */
+  ownRefusal?: string;
   /** No errors: `triggers` and `ir` are the complete output. */
   ok: boolean;
+}
+
+/** The map a compile is checked against for a map of our own (`CompileOptions.own`): who plays, and the map's size in pixels. */
+export interface OwnCheck {
+  players: MapPlayers;
+  humans: number[];
+  width: number;
+  height: number;
 }
 
 export interface CompileOptions {
@@ -159,6 +197,22 @@ export interface CompileOptions {
   lib: string;
   /** Run the script's tests after a compile that went through: the world they start from, and which of them. Absent: they are listed and not run. */
   tests?: TestRunOptions;
+  /** false: no value ranges (`ranges.ts`) — what a test compares a program with them against. */
+  ranges?: boolean;
+  /** false: no loop is lowered by the emitter (`backend/emit.ts`), all by the Python side — what a test or a bench compares against. */
+  emitter?: boolean;
+  /** Told which loops the emitter took and which it left, and why. */
+  emitterReport?: (line: string) => void;
+  /**
+   * false: the clips the script plays are named, not made — a check as the user types, whose sounds the map does not
+   * get (`sound.ts`'s clips work their samples out only when asked). A build's compile leaves it out.
+   */
+  sounds?: boolean;
+  /**
+   * Ask whether a map of our own takes the programs as they are, for this map (`ownRefusal`): what the editor shows
+   * as a problem while the script is typed, so that a map does not change builds without anyone seeing.
+   */
+  own?: OwnCheck;
 }
 
 export { LowerError };
@@ -180,13 +234,25 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, tests: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
+    // A function of the script's is compiled where each call is: its error once, not once a call.
+    const said = new Set<string>();
+    for (let i = diagnostics.length - 1; i >= 0; i--) {
+      const d = diagnostics[i], key = `${d.file}:${d.line}:${d.column}:${d.message}`;
+      if (said.has(key)) diagnostics.splice(i, 1); else said.add(key);
+    }
+    return { triggers: [], sources: [], strings: [], sounds: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, tests: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
   const refs: MapReference[] = [];
   const scripts = new Map<string, string>();
-  for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
-  if (!scripts.has(ENTRY_FILE)) {
+  // A video, an image or a sound among the files (`media.ts`) is no TypeScript: an import of it gives a value the linker makes.
+  const media = new Map<string, string>();
+  for (const [path, text] of Object.entries(files)) (isMediaFile(path) ? media : scripts).set(normalizePath(path), text);
+  // The standard library's modules the script imports ("trigscript/fog"), as files of its own: only those, since one
+  // may hold a program of its own.
+  for (const name of stdlibImports([...scripts.values()])) scripts.set(stdlibPath(name), STDLIB[name]);
+  const entry = entryOf(scripts.keys());
+  if (!scripts.has(entry)) {
     diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: `The script has no ${ENTRY_FILE}; that is the file a build starts from.`, source: "compiler" });
     return result();
   }
@@ -197,12 +263,15 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const compilerOptions: TS.CompilerOptions = {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, moduleResolution: ts.ModuleResolutionKind.Bundler,
     strict: true, types: [], sourceMap: true, noLib: false,
+    paths: { [`${MODULE_NAME}/*`]: [`./${STDLIB_DIR}/*`] },
+    // JSX (in a .tsx file) is a text the game shows: elements are calls of __jsx, which the structured compiler lowers in a program.
+    jsx: ts.JsxEmit.React, jsxFactory: "__jsx", jsxFragmentFactory: "__fragment",
   };
   const outputs = new Map<string, string>();
   const host: TS.CompilerHost = {
     getSourceFile: (name) => {
       const text = texts.get(name);
-      return text === undefined ? undefined : ts.createSourceFile(name, text, ts.ScriptTarget.ES2022, true);
+      return text === undefined ? undefined : ts.createSourceFile(name, text, ts.ScriptTarget.ES2022, true, name.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     },
     getDefaultLibFileName: () => LIB_FILE,
     writeFile: (name, text) => { outputs.set(name, text); },
@@ -263,12 +332,44 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
 
   /* ── Plan the programs and the game functions ── */
   const plans = new Map<TS.Node, ProgramPlan>();
+  /** The classes at the top of the script's files, each planned as a game function is (`planClass`). */
+  const classPlans = new Map<TS.ClassDeclaration, ProgramPlan>();
+  /** The functions at the top of the script's files, each planned as a game function is (`planFunction`). */
+  const functionPlans = new Map<TS.Node, ProgramPlan>();
   const byPosition = new Map<string, { plan: ProgramPlan; sf: TS.SourceFile; name?: string }>();
   const fileIndex = (sf: TS.SourceFile) => fileNames.indexOf(sf.fileName);
   const buildTime: SourceRange[] = [];
   for (const name of fileNames) {
     const sf = program.getSourceFile(name)!;
     const visit = (node: TS.Node) => {
+      // Its errors wait for a program that makes an instance of it (`classBody` below); a class only ever used when the
+      // script is built has none.
+      if (isScriptClass(ts, node) && !isTestFile(name)) {
+        const plan = planClass(ts, checker, node);
+        classPlans.set(node, plan);
+        byPosition.set(`${fileIndex(sf)}:${node.getStart(sf)}`, { plan, sf, name: node.name!.text });
+      }
+      // A function at the top of a file: its errors, too, wait for a program that calls it with its own values.
+      if (isScriptFunction(ts, node) && !isTestFile(name)) {
+        const plan = planFunction(ts, checker, node);
+        functionPlans.set(node, plan);
+        byPosition.set(`${fileIndex(sf)}:${node.getStart(sf)}`, { plan, sf, name: node.name!.text });
+      }
+      const arrowFn = !isTestFile(name) ? scriptArrow(ts, node) : undefined;
+      if (arrowFn) {
+        const plan = planFunction(ts, checker, arrowFn);
+        functionPlans.set(arrowFn, plan);
+        byPosition.set(`${fileIndex(sf)}:${arrowFn.getStart(sf)}`, { plan, sf, name: ((node as TS.VariableDeclaration).name as TS.Identifier).text });
+      }
+      // `on.died(…)` at the top of a file: a program of its own, its body the statement.
+      if (isTopListener(ts, checker, node) && !isTestFile(name)) {
+        const plan = planListener(ts, checker, node);
+        plans.set(node, plan);
+        byPosition.set(`${fileIndex(sf)}:${node.getStart(sf)}`, { plan, sf });
+        for (const e of plan.errors) nodeError(e.node, e.message);
+        for (const e of plan.hoisted) buildTime.push({ file: name, ...position(sf, e.getStart(sf), e.getEnd()) });
+        return;
+      }
       if (ts.isCallExpression(node)) {
         const lib = libraryCallName(ts, checker, node);
         const arrow = node.arguments[0];
@@ -302,14 +403,14 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   for (const d of diagnostics) planned.add(`${d.file}:${d.line}`);
 
   /* ── Emit ── */
-  const emitted = program.emit(undefined, undefined, undefined, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow) })] });
+  const emitted = program.emit(undefined, undefined, undefined, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow), planForClass: (cls) => classPlans.get(cls), planForListener: (stmt) => plans.get(stmt), planForFunction: (fn) => functionPlans.get(fn) })] });
   for (const d of emitted.diagnostics) {
     if (d.category === ts.DiagnosticCategory.Error) diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
   }
   if (diagnostics.length > planned.size) return result();
   const linked = new Map<string, LinkedFile>();
   for (const name of fileNames) {
-    const base = name.replace(/\.ts$/, "");
+    const base = name.replace(/\.tsx?$/, "");
     const js = outputs.get(`${base}.js`);
     if (js === undefined) { diagnostics.push({ file: name, line: 1, column: 1, endLine: 1, endColumn: 1, message: "The file produced no JavaScript.", source: "compiler" }); continue; }
     linked.set(name, { js, map: outputs.get(`${base}.js.map`) });
@@ -318,13 +419,14 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
 
   /* ── Run ── */
   const collector = new Collector();
+  collector.soundContents = options.sounds !== false;
   const registry = new TestRegistry();
   const where = (err: unknown) => { const at = locate(err, linked); return at.file ? { file: at.file, line: at.line ?? 1, ...(at.column ? { column: at.column } : {}) } : null; };
   registry.where = () => where(new Error()) ?? { file: ENTRY_FILE, line: 1 };
   const runtime = { ...createRuntime(names, collector), ...registry.library() };
   collector.running = true;
   // The entry first, so the programs are there; then the test files, which nothing imports.
-  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort() });
+  const failure = runModules(linked, entry, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort(), media: (path) => { const text = media.get(path); return text === undefined ? undefined : mediaValue(path, text); } });
   collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;
@@ -347,6 +449,55 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     return b;
   };
   const resolve = (fn: GameFunctionValue): Body | undefined => bodyOf(fn.descriptor) ?? undefined;
+  // A class of the script's own, when a program makes an instance of it: its plan, with what the run made of its bodies'
+  // build-time parts. Its plan's errors are reported now, once.
+  const classBodies = new Map<TS.ClassDeclaration, Body | null>();
+  const classBody = (cls: TS.ClassDeclaration): Body | undefined => {
+    let b = classBodies.get(cls);
+    if (b === undefined) {
+      const sf = cls.getSourceFile();
+      const key = `${fileIndex(sf)}:${cls.getStart(sf)}`;
+      const found = byPosition.get(key);
+      const ran = collector.classes.get(key);
+      b = null;
+      if (found && ran) {
+        try { b = newBody(found.plan, found.sf, ran.hoisted(), found.name); } catch { b = null; }
+        for (const e of found.plan.errors) nodeError(e.node, e.message);
+      }
+      classBodies.set(cls, b);
+    }
+    return b ?? undefined;
+  };
+
+  // A function of the script's own, when a program calls it with its own values: the same, from what `__fn` was handed.
+  const functionBodies = new Map<TS.Node, Body | null>();
+  const functionBody = (fn: TS.FunctionDeclaration | TS.ArrowFunction | TS.FunctionExpression): Body | undefined => {
+    let b = functionBodies.get(fn);
+    if (b === undefined) {
+      const sf = fn.getSourceFile();
+      const key = `${fileIndex(sf)}:${fn.getStart(sf)}`;
+      const found = byPosition.get(key);
+      const ran = collector.functions.get(key);
+      b = null;
+      if (found && ran) {
+        try { b = newBody(found.plan, found.sf, ran.hoisted(), found.name); } catch { b = null; }
+        for (const e of found.plan.errors) nodeError(e.node, e.message);
+      }
+      functionBodies.set(fn, b);
+    }
+    return b ?? undefined;
+  };
+
+  // Every class written in the script's files, for what a type of a program may be an instance of (B9).
+  let classList: TS.ClassDeclaration[] | null = null;
+  const scriptClasses = (): TS.ClassDeclaration[] => {
+    if (classList) return classList;
+    classList = [];
+    const found = classList;
+    const visit = (n: TS.Node) => { if (ts.isClassDeclaration(n) && n.name) found.push(n); ts.forEachChild(n, visit); };
+    for (const name of fileNames) { const sf = program.getSourceFile(name); if (sf) visit(sf); }
+    return classList;
+  };
 
   const triggers: TriggerRecord[] = [];
   const sources: (TriggerSource | null)[] = [];
@@ -354,6 +505,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const variables: VariableInfo[] = [];
   const hints: LineHint[] = [];
   const ir: Program[] = [];
+  let syncSlots = 0;
   for (const entry of collector.entries) {
     const from = sourceOf(entry.kind === "trigger" ? entry.at : entry.descriptor.at);
     if (from && isTestFile(from.file)) {
@@ -367,20 +519,44 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     if (!body) { diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" }); continue; }
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
-    const emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    // Walked again when kept functions turned out to use variables of the blocks they were written in: those are kept in
+    // environments the next walk (closures over locals), and only the last walk's errors are said.
+    // Walked again, too, when classes turned out to be kept by reference (B9): their instances are rows of the object
+    // table the next walk.
+    const boxed = new Set<TS.Node>();
+    const refs = new Set<TS.ClassDeclaration>();
+    let emitted: ReturnType<Structured["run"]>;
+    for (let walk = 0; ; walk++) {
+      const said: [TS.Node, string, "compiler" | "script" | undefined][] = [];
+      emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => { said.push([node, message, source]); }, resolve, classBody, functionBody, boxed, refs, classes: scriptClasses() }).run();
+      if ((emitted.boxes?.length || emitted.refs?.length) && walk < 6) { for (const d of emitted.boxes ?? []) boxed.add(d); for (const c of emitted.refs ?? []) refs.add(c); continue; }
+      for (const [node, message, source] of said) nodeError(node, message, source);
+      break;
+    }
     if (entry.options.name) emitted.program.name = entry.options.name;
     // What every number is read as, written into the operations that care, before anything looks at the program.
     const mixes = typeNumbers(emitted.program);
+    // The values each number can take, for the lowering to take only the bits a value has.
+    if (options.ranges !== false) rangeNumbers(emitted.program);
+    syncSlots += numberSyncSlots(emitted.program, syncSlots);
     markRecursion(emitted.program);
+    // A function that calls itself keeps its variables on the stack, and an environment's references would not be counted there.
+    if (emitted.envVars) for (const f of emitted.program.functions ?? []) {
+      if (f.recursive && declarations(f.body).some((d) => emitted.envVars!.has(d.id))) diagnostics.push({ file: f.at.file, line: f.at.line, column: f.at.column, endLine: f.at.line, endColumn: f.at.column + 1, message: `${f.name} calls itself, and a function kept as a value uses one of its variables: that is not supported yet. Keep the variable in the program, or hand it to the kept function as an argument.`, source: "compiler" });
+    }
     const index = programs.length;
     ir.push(emitted.program);
     programs.push({ ...(emitted.program.name ? { name: emitted.program.name } : {}), owner, owners, perPlayer: entry.options.perPlayer, source: at });
-    for (const d of programDeclarations(emitted.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}) });
+    for (const d of programDeclarations(emitted.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}), ...(d.fixed ? { fixed: true } : {}) });
     // What would freeze the game or cannot be built is a fault of the script, said where it is.
     const check = checkProgram(emitted.program);
+    // What only one computer knows, kept from what changes the game (B5).
+    const local = checkLocal(emitted.program);
     // Checked as the script wrote it; only then is a function that calls itself taken apart into what a backend can re-enter.
     const recursion = settleRecursion(emitted.program);
-    for (const d of [...mixes, ...check.errors, ...recursion]) {
+    // The loops the emitter takes, lowered to triggers of its own (the statements kept for the simulator).
+    if (options.emitter !== false) emitGraphs(emitted.program, options.emitterReport);
+    for (const d of [...mixes, ...check.errors, ...local.errors, ...recursion]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }
@@ -388,7 +564,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   }
   let input: InputPlan | null = null;
   try {
-    input = inputPlan(ir, names.locations, names.units);
+    input = inputPlan(ir, names.locations, names.units, [...collector.reserved.values()]);
   } catch (err) {
     // No room in the map for what carries input: said where the first input is asked for.
     const at = inputsOf(ir).at ?? ir[0]?.at;
@@ -401,7 +577,17 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests)
       : { list: listTests(registry).list, results: [], only: [], ms: 0 };
   }
-  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints, tests });
+  // A map of our own asked whether it takes the programs: on a copy, since its passes rewrite what they read.
+  let ownRefusal: string | undefined;
+  if (options.own && ir.length && diagnostics.length === 0) {
+    try {
+      const own = emitOwn({ ir: structuredClone(ir), triggers, strings: collector.strings, input }, options.own.players, 1, { humans: options.own.humans, width: options.own.width, height: options.own.height, cuwp: 64 });
+      if (typeof own === "string") ownRefusal = own;
+    } catch (err) {
+      ownRefusal = `the build failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  return result({ ir, input, triggers, sources, strings: collector.strings, sounds: [...collector.sounds.values()], variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }), ...(ownRefusal !== undefined ? { ownRefusal } : {}) });
 }
 
 /**

@@ -183,7 +183,8 @@ describe("text with the program's values in it", () => {
     expect(prints[0]).toMatchObject({ to: 13, position: "chat", parts: [{ kind: "color", player: 1 }, { kind: "name", player: 1 }, { kind: "text", text: " wins" }] });
     expect(prints[1]).toMatchObject({ parts: [{ kind: "name", player: 13 }, { kind: "text", text: " has " }, { kind: "number" }] });
     const sim = simulatePrograms(r.ir, 1, { strings: r.strings, playerName: (p) => ["Ann", "Bob"][p] ?? "?" });
-    expect(sim.events.map((e) => e.text)).toEqual(["Bob wins", "Ann has 1"]);
+    // (Bob's colour, P2's blue when nothing changes it: its code, 14, is a character of the text, as in the game.)
+    expect(sim.events.map((e) => e.text)).toEqual(["\x0eBob wins", "Ann has 1"]);
     // Nothing of a program's text is left for the map's string table to take.
     expect(r.triggers).toEqual([]);
   });
@@ -195,7 +196,8 @@ describe("text with the program's values in it", () => {
   it("what a text cannot hold is said", () => {
     const errors = (src: string) => compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB }).diagnostics.map((d) => `${d.line}:${d.message}`);
     expect(errors("trigger(P1, [always()], [displayText(`${name(P1)} wins`)]);")[0]).toMatch(/^1:name\(\) and color\(\) are filled in by a program while the game runs/);
-    expect(errors("program(() => {\n  let flag = true;\n  displayText(`${flag}`);\n});")[0]).toMatch(/^3:A boolean has no text of its own/);
+    // A boolean is "true" or "false" (tests/small-gaps.test.ts).
+    expect(errors("program(() => {\n  let flag = true;\n  displayText(`${flag}`);\n});")).toEqual([]);
     // The objectives take a text that is made (3.9); the name of the next scenario is looked up by the game, and does not.
     expect(errors("program(() => {\n  let n = 1;\n  setMissionObjectives(`${n} left`);\n});")).toEqual([]);
     expect(errors("program(() => {\n  let n = 1;\n  setNextScenario(`map ${n}`);\n});")[0]).toMatch(/^3:setNextScenario's text is one the game looks up by number/);
