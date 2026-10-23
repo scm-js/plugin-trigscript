@@ -5250,7 +5250,8 @@ key begins to repeat (MSQC's grace hid this). Fixed: the send pass keeps a bit u
 when it was up the two frames before (`@in.raw1`, `@in.raw2`), so a release goes one frame late and a one-frame gap
 is passed over; a tap of one frame is still one frame. The probe's "held 5 frames" reads 6 now; a hold of three
 seconds is the re-test. A chat line stays on screen longer than a printed line in Remastered (older `-help` lines
-stood alone while their answers had faded).
+stood alone while their answers had faded). **Re-test played (recording 10.44.13):** a hold of F7 one press and
+"held 56 frames", two quick taps two presses, `-help` answered. Step 12 played out.
 
 
 ### Triggers stacked (2026-10-20)
