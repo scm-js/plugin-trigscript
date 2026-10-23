@@ -5324,8 +5324,10 @@ trigger not preserved switched off after its run, Player 2's copy of an All Play
 1's set the same frame, the program after every player's triggers; a player not in the game left out); the ledger;
 `probes/own-triggers.ts` both ways in the lifted game: every line "ok" and at the same frame as eudplib's build without
 `hyperTriggers()` — but E, where eudplib runs the disabled trigger — and as the same triggers in a plain classic map.
-Not played in Remastered yet: `Maps/TrigScript/own-step13-triggers.scx` is to settle whether Remastered runs the
-payload's nodes as its TRIG section's (a Wait, a trigger switched off, a disabled condition).
+Played in Remastered (2026-10-23, recording 12.37.25, `own-step13-triggers.scx`): all ten lines in order, each "ok";
+the first two groups on screen as the view fades in, D 10 game frames after them, G one after D, A2 31 after D — the
+lifted game's spacing to the frame; a clean quit. Remastered runs the payload's nodes as its TRIG section's: a Wait in
+the player's slot, a trigger switched off after its run, a disabled condition passed over, a disabled trigger not run.
 
 ### The watch's gate (2026-10-23)
 
