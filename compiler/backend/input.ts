@@ -93,7 +93,7 @@ const AT0: At = { file: "", line: 0, column: 0 };
 
 /* ── the cells ── */
 const CARRIERS = "@in.carrier", TAGS = "@in.tag", WRITE = "@in.wr", READ = "@in.rd";
-const STATE = "@in.state", PRESSED = "@in.pressed", SENT = "@in.sent";
+const STATE = "@in.state", PRESSED = "@in.pressed", SENT = "@in.sent", READ_1 = "@in.raw1", READ_2 = "@in.raw2";
 const MX = "@in.mx", MY = "@in.my", SENT_MX = "@in.smx", SENT_MY = "@in.smy";
 const EXPECT = "@in.expect", SLOT = "@in.slot";
 const SYNC = "@in.sync", PENDING = "@in.pend";
@@ -118,7 +118,7 @@ export function inputArrays(plan: OwnInputPlan): ArrayDecl[] {
   const chats = plan.chats.length, captures = plan.captures, units = plan.units.hashes.length;
   return [
     a(CARRIERS, SLOTS * plan.rings * plan.ring), a(TAGS, SLOTS * plan.rings * plan.ring), a(WRITE, SLOTS * plan.rings), a(READ, SLOTS * plan.rings),
-    a(STATE, SLOTS), a(PRESSED, SLOTS), a(SENT, SLOTS), a(EXPECT, SLOTS), a(SLOT, SLOTS),
+    a(STATE, SLOTS), a(PRESSED, SLOTS), a(SENT, SLOTS), a(READ_1, SLOTS), a(READ_2, SLOTS), a(EXPECT, SLOTS), a(SLOT, SLOTS),
     ...(plan.mouse ? [a(MX, SLOTS), a(MY, SLOTS), a(SENT_MX, SLOTS), a(SENT_MY, SLOTS)] : []),
     ...(plan.syncs ? [a(SYNC, SLOTS * plan.syncs), a(PENDING, plan.syncs)] : []),
     ...(chats ? [a(CHAT, SLOTS), a(CHAT_FLAG, SLOTS * chats), a(CHAT_PENDING, SLOTS), a(CAPTURE_AT, SLOTS), a(NAME, NAME_MOST + 3), a(LINE, MAX_CHAT_BYTES + 1)] : []),
@@ -674,6 +674,16 @@ export function inputValues(program: Program, plan: OwnInputPlan, passes: boolea
         body.push(...when(cmp("==", peek(k(TYPING)), k(0)), plan.keys.flatMap((key, i) => when(cmp(">=", byteAt(KEYS + virtualKey(key)!), k(1)), [set(now, bin("+", V(now), k(2 ** i)))]))));
       }
       plan.buttons.forEach((b, i) => body.push(...when(cmp(">=", peek(k(BUTTONS), BUTTON_BITS[b]), k(1)), [set(now, bin("+", V(now), k(2 ** (plan.keys.length + i))))])));
+      // A bit that was up the two frames before is kept up for one frame it reads down: in Remastered the key table
+      // drops a held key for a frame when it begins to repeat (played 2026-10-23: a hold of F7 gave a second press
+      // after 17 frames), so a release goes one frame late and a one-frame gap goes unseen.
+      const raw = fresh("raw"), kept = fresh("kept");
+      body.push(
+        dec(raw, V(now), 2 ** (plan.bits - 2) - 1),
+        dec(kept, bin("&", element(READ_1, k(h)), element(READ_2, k(h))), 2 ** (plan.bits - 2) - 1),
+        set(now, bin("+", V(now), bin("&", V(kept), bin("^", V(now), k(2 ** (plan.bits - 2) - 1))))),
+        store(READ_2, k(h), element(READ_1, k(h))), store(READ_1, k(h), V(raw)),
+      );
       const st = fresh("st");
       body.push(...when(cmp("!=", V(now), element(SENT, k(h))), [
         dec(st, k(0), 1),

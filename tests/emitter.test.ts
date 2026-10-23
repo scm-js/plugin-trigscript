@@ -2273,6 +2273,29 @@ describe("a map of our own, input", () => {
     expect(got.sent).toEqual([]);
   });
 
+  it("a key that reads up for one frame of a hold stays held: no second press", () => {
+    const got = run([
+      "program(async () => {",
+      "  let held = 0;",
+      "  while (true) {",
+      "    if (keyPressed(P1, \"F7\")) print(`pressed after ${held}`);",
+      "    if (keyHeld(P1, \"F7\")) held += 1;",
+      "    await nextFrame();",
+      "  }",
+      "});",
+    ].join("\n"), 16, (f, world) => {
+      if (f === 2) world.keys.set(vk("F7"), 1);
+      if (f === 6) world.keys.set(vk("F7"), 0);
+      if (f === 7) world.keys.set(vk("F7"), 1);
+      if (f === 10) world.keys.set(vk("F7"), 0);
+      if (f === 11) world.keys.set(vk("F7"), 0);
+      if (f === 12) world.keys.set(vk("F7"), 1);
+    });
+    // (Down 2–5, up for 6 alone, down 7–9, up 10–11, down from 12: one gap passed over, the two-frame one a release.)
+    expect(got.sent.filter((s) => s.includes("move"))).toEqual(["2 move 5,1", "11 move 1,1", "12 move 5,1"]);
+    expect(got.lines).toEqual(["4 pressed after 0", "14 pressed after 9"]);
+  });
+
   it("sends a key the frame it goes down and the frame it comes up, and the press arrives two frames on", () => {
     const got = run([
       "program(async () => {",
@@ -2291,8 +2314,9 @@ describe("a map of our own, input", () => {
       if (f === 10) world.keys.set(vk("Space"), 0);
     });
     // (The ring's carriers in the order Player 12's list holds them: the last given first.)
-    expect(got.sent).toEqual(["3 select 1605", "3 move 5,1", "3 select ", "6 select 1604", "6 move 1,1", "6 select ", "9 select 1603", "9 move 9,1", "9 select ", "10 select 1602", "10 move 1,1", "10 select "]);
-    expect(got.lines).toEqual(["5 pressed", "11 space 3"]);
+    // (A release goes a frame late: a bit up the two frames before is kept through one frame it reads down.)
+    expect(got.sent).toEqual(["3 select 1605", "3 move 5,1", "3 select ", "7 select 1604", "7 move 1,1", "7 select ", "9 select 1603", "9 move 9,1", "9 select ", "10 select 1602", "10 move 1,1", "10 select "]);
+    expect(got.lines).toEqual(["5 pressed", "11 space 4"]);
   });
 });
 

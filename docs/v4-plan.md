@@ -5238,6 +5238,20 @@ Remastered's emulator (0x640B58 "read back"), and the line's bytes write-allowed
   The probe's payload 3.08 MB with the four patterns and the name table (2.14 without).
 - The ledger: step 12's 5 chat rows and `on.chat` taken; **26 of 26**.
 
+**Played in Remastered (2026-10-23, recording 10.29.27, single player).** Every line of the sheet as expected: the
+sync corners, presses two frames on, clicks at the pixel (the corner click at 87,65), `underMouse()` a Marine and
+the Command Center, `local.selected`, two quick taps two presses, the Marines moving on right-clicks with the
+selection kept, no stray unit, no error — and every typed line: `-help`, `-give 42 gas`, `-spawn Terran Marine`,
+`-ping 7` through `on.chat`, `hello there` nothing, `-give 99999999 ORE` as 1,048,575, `-spawn zerg zergling` as 37,
+and thirteen more `-help` each answered at once as the text ring went round, the typed line showing unchanged after
+the mark. So the text ring's byte moves in Remastered too. **One fault:** a hold of F7 of about a second gave "F7
+pressed 2, held 17 frames before" during the hold — Remastered's key table drops a held key for one frame when the
+key begins to repeat (MSQC's grace hid this). Fixed: the send pass keeps a bit up through one frame it reads down
+when it was up the two frames before (`@in.raw1`, `@in.raw2`), so a release goes one frame late and a one-frame gap
+is passed over; a tap of one frame is still one frame. The probe's "held 5 frames" reads 6 now; a hold of three
+seconds is the re-test. A chat line stays on screen longer than a printed line in Remastered (older `-help` lines
+stood alone while their answers had faded).
+
 
 ### Triggers stacked (2026-10-20)
 
