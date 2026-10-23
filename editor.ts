@@ -1044,7 +1044,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const got = await prepareInGame({}, "trace");
       if (!got || cancelled) return;
       const { engine, a, names, variables, triggers, module, bytes, built } = got;
-      if (!triggers) { setStatus("error", t("Not looked up: the build did not say where its triggers are. Update the eudplib plugin.")); return; }
+      if (!triggers) { setStatus("error", t("Not looked up: the build did not say where its triggers are. Update the eudplib plugin, or save once more.")); return; }
       setStatus("busy", t("Playing the map in the game, writing down what each line reads and writes…"));
       allowlist ??= fetch(allowlistUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`allowlist.json: ${r.status}`); return r.json() as Promise<Allowlist>; });
       const [report, list] = await Promise.all([

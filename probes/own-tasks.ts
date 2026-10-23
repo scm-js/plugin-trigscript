@@ -1,11 +1,11 @@
-// TrigScript 4, the backend: tasks and Promise.all / race in a map of our own (scripts/build-own.mts) — step 11 of the
+// TrigScript 4, the backend: tasks and Promise.all / race in a map of our own (scripts/build-fixture.mts) — step 11 of the
 // way off eudplib, part 2. The program, each task's slot and each branch of a Promise.all or race is a coroutine: a
 // trigger that wakes it once the map's count of frames reaches the frame its sleep wrote. The tasks have their turn
 // after the program's, a start's slots in order; a slot with nothing in it is passed by as done.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the same
 // frames; every line should end "ok", and a line ending "WRONG" names the check that failed. The frames after "Weighed"
 // are to weigh. One line says in red that a task did not start, as a start whose tasks all run says it.
-//   npx tsx scripts/build-own.mts probes/own-tasks.ts /tmp/own-tasks.scx
+//   npx tsx scripts/build-fixture.mts probes/own-tasks.ts /tmp/own-tasks.scx
 //   npx tsx scripts/build-fixture.mts probes/own-tasks.ts /tmp/own-tasks-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 import { every, after } from "trigscript/timers";

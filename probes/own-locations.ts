@@ -1,10 +1,10 @@
-// TrigScript 4, the backend: a location moved in a map of our own (scripts/build-own.mts) — step 5 of the way off
+// TrigScript 4, the backend: a location moved in a map of our own (scripts/build-fixture.mts) — step 5 of the way off
 // eudplib, part 4. `centerLocation` writes the four sides where the game keeps them (MRGN), each a Set Deaths whose
 // amount is a place of the side, then throws Bring's counts away (the game keeps them for a location whose sides are
 // written); without a size, the sides are read first and the size kept. Built both ways (through eudplib, and as a map
 // of our own), the lifted game should print the same lines at the same frames; every line should end "ok", and a line
 // ending "WRONG" names the check that failed. Frame 2 (the lifted game's 4) is 200 moves, to weigh.
-//   npx tsx scripts/build-own.mts probes/own-locations.ts /tmp/own-locations.scx
+//   npx tsx scripts/build-fixture.mts probes/own-locations.ts /tmp/own-locations.scx
 //   npx tsx scripts/build-fixture.mts probes/own-locations.ts /tmp/own-locations-eud.scx
 // Location 5 is one the map does not use (a location is its number where the map's names are not known).
 import { program, print, sleep, frames } from "trigscript";

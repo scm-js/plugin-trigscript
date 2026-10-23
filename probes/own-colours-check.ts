@@ -2,7 +2,7 @@
 // the code `color(P)` comes out as is the one nearest the first shade the game keeps for the player (8 bytes a player
 // at 0x581D76), through eudplib's table. Built both ways (`build-own`, `build-fixture`), to tell a colour the game keeps
 // from one either build picks.
-//   npx tsx scripts/build-own.mts probes/own-colours-check.ts /tmp/own-colours-check.scx
+//   npx tsx scripts/build-fixture.mts probes/own-colours-check.ts /tmp/own-colours-check.scx
 //   npx tsx scripts/build-fixture.mts probes/own-colours-check.ts /tmp/own-colours-check-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

@@ -1,11 +1,11 @@
-// TrigScript 4, the backend: texts printed with numbers in them, in a map of our own (scripts/build-own.mts). Each text
+// TrigScript 4, the backend: texts printed with numbers in them, in a map of our own (scripts/build-fixture.mts). Each text
 // is laid out when the map is built, a field of 12 bytes for each number padded with 0x0D — a carriage return, which
 // StarCraft draws as nothing — and a routine shared by every print writes the number's digits into it. Built both ways (through eudplib,
 // and as a map of our own), the lifted game should print the same lines at the same frames once the 0x0D are left out;
 // in the game, both should look the same: no gaps, boxes or marks where the padding is. The values are variables, so
 // nothing here is worked out when the map is built. (A byte from a value — a colour from JSX — is checked by the
 // emitter's random programs, not here.)
-//   npx tsx scripts/build-own.mts probes/own-print.ts /tmp/own-print.scx
+//   npx tsx scripts/build-fixture.mts probes/own-print.ts /tmp/own-print.scx
 //   npx tsx scripts/build-fixture.mts probes/own-print.ts /tmp/own-print-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

@@ -1,9 +1,9 @@
-// TrigScript 4, the backend: what stands on the heap in a map of our own (scripts/build-own.mts) — rows that grow inside
+// TrigScript 4, the backend: what stands on the heap in a map of our own (scripts/build-fixture.mts) — rows that grow inside
 // an array, arrays of texts that grow (each cell's text a block of a pool), closures, an array in a function that calls
 // itself, signals, and two programs whose arrays share the one heap.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the
 // same frames; every line should end "ok", and a line ending "WRONG" names the check that failed.
-//   npx tsx scripts/build-own.mts probes/own-heap-values.ts /tmp/own-heap-values.scx
+//   npx tsx scripts/build-fixture.mts probes/own-heap-values.ts /tmp/own-heap-values.scx
 //   npx tsx scripts/build-fixture.mts probes/own-heap-values.ts /tmp/own-heap-values-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 import { Signal } from "trigscript/signals";

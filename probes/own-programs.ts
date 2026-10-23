@@ -1,10 +1,10 @@
-// TrigScript 4, the backend: programs, owners and players in a map of our own (scripts/build-own.mts) — step 7 of the
+// TrigScript 4, the backend: programs, owners and players in a map of our own (scripts/build-fixture.mts) — step 7 of the
 // way off eudplib. Several programs in one map, each with variables of its own; a program for each of several players,
 // each run with its own variables and the `shared` ones in common, `CurrentPlayer` the player it runs as; a print to a
 // force; `hasLeft`. Built both ways (through eudplib, and as a map of our own), the lifted game should print the same
 // lines at the same frames; every line should end "ok", and a line ending "WRONG" names the check that failed. Player 1
 // is the person, Player 2 a computer in a force of its own (B prints how many runs there were: both builds should agree).
-//   npx tsx scripts/build-own.mts probes/own-programs.ts /tmp/own-programs.scx
+//   npx tsx scripts/build-fixture.mts probes/own-programs.ts /tmp/own-programs.scx
 //   npx tsx scripts/build-fixture.mts probes/own-programs.ts /tmp/own-programs-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

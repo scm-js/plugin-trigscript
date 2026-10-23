@@ -1,9 +1,9 @@
 // TrigScript 4, the backend: texts known when the map is built, chosen while the game runs, in a map of our own
-// (scripts/build-own.mts) — step 8 of the way off eudplib, part 1. A text that is one of a few the script wrote is a
+// (scripts/build-fixture.mts) — step 8 of the way off eudplib, part 1. A text that is one of a few the script wrote is a
 // number there: its place in the script's pool of texts, which the map's strings hold in order. Built both ways
 // (through eudplib, and as a map of our own), the lifted game should print the same lines at the same frames; every
 // line ending "ok" says so, and the lines that show a chosen text say what they should show.
-//   npx tsx scripts/build-own.mts probes/own-texts.ts /tmp/own-texts.scx
+//   npx tsx scripts/build-fixture.mts probes/own-texts.ts /tmp/own-texts.scx
 //   npx tsx scripts/build-fixture.mts probes/own-texts.ts /tmp/own-texts-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

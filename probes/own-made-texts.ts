@@ -1,9 +1,9 @@
-// TrigScript 4, the backend: texts made while the game runs, in a map of our own (scripts/build-own.mts) — step 8 of
+// TrigScript 4, the backend: texts made while the game runs, in a map of our own (scripts/build-fixture.mts) — step 8 of
 // the way off eudplib, part 2. A made text is in a block of its own (a string of the map's: printed alone, it is shown
 // as it is), made at a cursor and read a byte at a time where it is. Built both ways (through eudplib, and as a map of
 // our own), the lifted game should print the same lines at the same frames; every line should end "ok", and the lines
 // that show a made text say what they should show.
-//   npx tsx scripts/build-own.mts probes/own-made-texts.ts /tmp/own-made-texts.scx
+//   npx tsx scripts/build-fixture.mts probes/own-made-texts.ts /tmp/own-made-texts.scx
 //   npx tsx scripts/build-fixture.mts probes/own-made-texts.ts /tmp/own-made-texts-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 import { clock, thousands } from "trigscript/ui";

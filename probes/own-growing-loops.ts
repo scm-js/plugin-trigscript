@@ -3,7 +3,7 @@
 // filtered in place. Loops over an array test nothing at its counter and keep each cell's place beside it.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the
 // same frames; every line should end "ok", and a line ending "WRONG" names the check that failed.
-//   npx tsx scripts/build-own.mts probes/own-growing-loops.ts /tmp/own-growing-loops.scx
+//   npx tsx scripts/build-fixture.mts probes/own-growing-loops.ts /tmp/own-growing-loops.scx
 //   npx tsx scripts/build-fixture.mts probes/own-growing-loops.ts /tmp/own-growing-loops-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

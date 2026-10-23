@@ -11,6 +11,9 @@ import { buildOwnMap, isRefused, type OwnBuild } from "../compiler/backend/build
 import { Sections, freeCuwpSlot, intern, readFacts, readStrings, readTriggers, writeChunks, writeStrings } from "../compiler/backend/chk";
 import { STRINGS } from "../compiler/backend/layout";
 import { ActionType, PlayerGroup, decodeTriggers, emptyAction, emptyTrigger, encodeTriggers, type TriggerRecord } from "../vendor/triggers";
+import { programVariables, readTriggerMap, readVariableMap } from "../compiler/gameVariables";
+import { simulatePrograms } from "../compiler/simulateIr";
+import { walkBuiltMap } from "./ownWalk";
 import { defaultLib } from "../bundle/lib.mjs";
 
 let lib: ReturnType<typeof defaultLib> | undefined;
@@ -195,6 +198,59 @@ describe("the build in the editor", () => {
     // A smaller heap and a shallower stack are smaller in the payload.
     const whole = buildOwnMap({ chk: scenario(), compiled: r });
     expect(!isRefused(whole) && !isRefused(ok) && ok.stats.payloadBytes < whole.stats.payloadBytes).toBe(true);
+  });
+
+  it("says where every trigger and every variable is, in the rows the tools read", () => {
+    const r = compile(`program(() => {\n  let n = 0;\n  let title = "Probe";\n  let seen: number[] = [];\n  let fixed = [1, 2, 3];\n  while (true) {\n    n++;\n    seen.push(n);\n    fixed[n % 3] = n;\n    displayText(\`\${title} \${n} \${seen.length} \${fixed[0]}\`);\n    sleep(seconds(1));\n  }\n}, { name: "counting" });`);
+    const out = buildOwnMap({ chk: scenario(), compiled: r, maps: true });
+    if (isRefused(out)) throw new Error(out.refused);
+    const { triggers, variables, lines } = out.maps!;
+    // Every trigger of the payload once, by rising offset, the programs' with the line they came from.
+    expect(triggers.payload).toBe(out.stats.payloadBytes);
+    expect(triggers.triggers.length).toBeGreaterThan(out.stats.graphTriggers);
+    expect(triggers.triggers.every(([o], i, xs) => i === 0 || o > xs[i - 1][0])).toBe(true);
+    expect(triggers.triggers.every(([o]) => o >= 0 && o < triggers.payload)).toBe(true);
+    const origins = new Set(triggers.triggers.map((t) => t[3]));
+    expect([...origins].some((o) => /^main\.ts:(7|8|9|10):\d+$/.test(o))).toBe(true);
+    expect(origins.has("")).toBe(true);
+    // The same rows read back from the log's lines, as the lifted game's scripts read them.
+    expect(readTriggerMap(lines)).toEqual(triggers);
+    expect(readVariableMap(lines)).toEqual(variables);
+    // The program's variables and arrays, each with a cell in the payload (an EPD's address); the heap's cells named.
+    expect(variables.strings).toBe(STRINGS);
+    expect(variables.cells).not.toBeNull();
+    const [p] = variables.programs;
+    expect(p).toMatchObject({ index: 0, name: "counting", perPlayer: false, owners: [0] });
+    const byName = (id: string) => p.vars.find((v) => v.id === id || v.id.startsWith(`${id}#`))!;
+    expect(byName("n").cells.value).toBeGreaterThanOrEqual(out.stats.address);
+    expect(byName("title")).toMatchObject({ kind: "text", text: "id" });
+    const seen = p.arrays.find((a) => a.id.startsWith("seen"))!, fixed = p.arrays.find((a) => a.id.startsWith("fixed"))!;
+    expect(seen).toMatchObject({ dynamic: true });
+    expect(seen.ptr).toBeGreaterThanOrEqual(out.stats.address);
+    expect(fixed).toMatchObject({ length: 3, stride: 72 });
+    expect(fixed.at).toBeGreaterThanOrEqual(out.stats.address);
+  });
+
+  it("the built file walked as the game walks it prints what the simulator prints, and its variables read as the simulator's", () => {
+    const source = `program(() => {\n  let n = 0;\n  let seen: number[] = [];\n  let fixed = [10, 20, 30];\n  let title = "Probe";\n  while (true) {\n    n++;\n    seen.push(n * 2);\n    fixed[n % 3] += n;\n    if (n === 2) title = "Second";\n    displayText(\`\${title} \${n} \${seen.length} \${fixed[1]}\`);\n    sleep(frames(1));\n  }\n}, { name: "counting" });\nprogram(() => {\n  let mine = 0;\n  while (true) { mine += 3; displayText(\`mine \${mine}\`); sleep(frames(1)); }\n}, { owner: AllPlayers, name: "each" });`;
+    const r = compile(source);
+    const out = buildOwnMap({ chk: scenario(), compiled: r, maps: true });
+    if (isRefused(out)) throw new Error(out.refused);
+    const frames = 4;
+    const walked = walkBuiltMap(out.chk, out.stats.players, out.stats.entries, frames);
+    const sim = simulatePrograms(r.ir, frames, { strings: r.strings });
+    const want = sim.events.filter((e) => e.text !== undefined).map((e) => `${e.cycle}:${e.text}`);
+    // (A line every player's run showed in one frame is one line, as the lifted game and the simulator have it.)
+    const got = [...new Set(walked.printed.map((p) => `${p.frame - 1}:${p.text}`))];
+    expect(got).toEqual(want);
+    // The variables through the map, as sim.program() reads them in the lifted game.
+    const v = (name: string | number, player?: number) => programVariables({ ...walked.memory, unitAt: () => null }, out.maps!.variables, name, player) as Record<string, unknown>;
+    expect(v("counting").n).toBe(frames);
+    expect(v("counting").seen).toEqual([2, 4, 6, 8]);
+    expect(v("counting").fixed).toEqual([10 + 3, 20 + 1 + 4, 30 + 2]);
+    expect(v("counting").title).toBe("Second");
+    expect(v("each", 0).mine).toBe(3 * frames);
+    expect(v("each", 1).mine).toBe(3 * frames);
   });
 
   it("reads and writes the string table and the chunks faithfully", () => {

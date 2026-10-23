@@ -1,10 +1,10 @@
-// TrigScript 4, the backend: numbers with a fraction (fixed, 16.16) in a map of our own (scripts/build-own.mts) — step 4
+// TrigScript 4, the backend: numbers with a fraction (fixed, 16.16) in a map of our own (scripts/build-fixture.mts) — step 4
 // of the way off eudplib, part 3: a product and a quotient by a constant, a constant over a value, and a product and a
 // quotient of two values, and fixed numbers printed. Built both ways (through eudplib, and as a map of our own), the
 // lifted game should print the same lines at the same frames; every line should end "ok", and a line ending "WRONG"
 // names the check that failed. Line G should read "G: -2.5 0.75 30000 0 0 1 0.3333 -0.3333 -2500".
 // Frames 2 to 10 (the lifted game's 4 to 12) are each one kind of work, 200 times, to weigh.
-//   npx tsx scripts/build-own.mts probes/own-fixed.ts /tmp/own-fixed.scx
+//   npx tsx scripts/build-fixture.mts probes/own-fixed.ts /tmp/own-fixed.scx
 //   npx tsx scripts/build-fixture.mts probes/own-fixed.ts /tmp/own-fixed-eud.scx
 import { program, print, sleep, frames, fixed, type fixed as Fixed } from "trigscript";
 

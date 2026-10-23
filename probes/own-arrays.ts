@@ -1,8 +1,8 @@
-// TrigScript 4, the backend: arrays in a map of our own (scripts/build-own.mts) — each array a region of cell triggers
+// TrigScript 4, the backend: arrays in a map of our own (scripts/build-fixture.mts) — each array a region of cell triggers
 // the layout makes, a read at an index a jump into its cell, a store one action whose destination follows the index.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the
 // same frames; every line should end "ok", and a line ending "WRONG" names the check that failed.
-//   npx tsx scripts/build-own.mts probes/own-arrays.ts /tmp/own-arrays.scx
+//   npx tsx scripts/build-fixture.mts probes/own-arrays.ts /tmp/own-arrays.scx
 //   npx tsx scripts/build-fixture.mts probes/own-arrays.ts /tmp/own-arrays-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

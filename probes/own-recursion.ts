@@ -1,9 +1,9 @@
-// TrigScript 4, the backend: functions that call themselves in a map of our own (scripts/build-own.mts) — each call that
+// TrigScript 4, the backend: functions that call themselves in a map of our own (scripts/build-fixture.mts) — each call that
 // may come back keeps the function's variables and where it goes back to on a stack of its own, cell triggers the
 // layout makes. Built both ways (through eudplib, and as a map of our own), the lifted game should print the same
 // lines at the same frames; every line should end "ok", a line ending "WRONG" names the check that failed. The last
 // part goes past the stack's depth (1024 calls, the default setting): the program says so in red and stops for good.
-//   npx tsx scripts/build-own.mts probes/own-recursion.ts /tmp/own-recursion.scx
+//   npx tsx scripts/build-fixture.mts probes/own-recursion.ts /tmp/own-recursion.scx
 //   npx tsx scripts/build-fixture.mts probes/own-recursion.ts /tmp/own-recursion-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

@@ -306,9 +306,11 @@ export class ScriptService {
       const chk = await this.api.document.sections.chkOf(input.map);
       const { heapCells, stackDepth } = this.settings();
       log(this.t("Built by TrigScript itself: {n, plural, one {# program} other {# programs}} laid out into the map, no eudplib", { n: artifact.compiled.ir.length }));
-      const out = await this.builder({ chk, compiled: { ir: artifact.compiled.ir, strings: artifact.compiled.strings, input: artifact.compiled.input, triggers: [] }, settings: { heapCells, stackDepth } }, this.dist());
+      // (With the maps of where the triggers and the variables are, for a test run in the lifted game: `withVariableMap`.)
+      const out = await this.builder({ chk, compiled: { ir: artifact.compiled.ir, strings: artifact.compiled.strings, input: artifact.compiled.input, triggers: [] }, settings: { heapCells, stackDepth }, ...(this.variableMaps ? { maps: true } : {}) }, this.dist());
       if (isRefused(out)) throw new Error(this.t("TrigScript's own build does not take the script: {reason}. Apply the script again to build it through eudplib.", { reason: out.refused }));
       for (const line of out.lines) log(line);
+      for (const line of out.maps?.lines ?? []) log(line);
       say({ kind: "done", purpose: input.purpose, contributors, log: lines.join("\n"), chkBytes: out.chk.length, ms: Date.now() - started });
       return out.chk;
     } catch (err) {

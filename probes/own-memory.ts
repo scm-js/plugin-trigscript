@@ -1,11 +1,11 @@
-// TrigScript 4, the backend: the game's tables read and written in a map of our own (scripts/build-own.mts) — step 6
+// TrigScript 4, the backend: the game's tables read and written in a map of our own (scripts/build-fixture.mts) — step 6
 // of the way off eudplib. A cell of `stats()` or `memory.*` is at an address known when the map is built: read, its
 // bits of the dword it is in moved down; written, a Set Deaths into that dword — masked for a byte, a word or a bit —
 // its amount a place of the value. Built both ways (through eudplib, and as a map of our own), the lifted game should
 // print the same lines at the same frames; every line should end "ok", and a line ending "WRONG" names the check that
 // failed (line G prints what it read: both builds should agree). Frames 2 and 4 (the lifted game's 4 and 6) are each
 // 200 reads or writes, to weigh.
-//   npx tsx scripts/build-own.mts probes/own-memory.ts /tmp/own-memory.scx
+//   npx tsx scripts/build-fixture.mts probes/own-memory.ts /tmp/own-memory.scx
 //   npx tsx scripts/build-fixture.mts probes/own-memory.ts /tmp/own-memory-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

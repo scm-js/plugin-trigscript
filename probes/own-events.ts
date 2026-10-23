@@ -1,4 +1,4 @@
-// TrigScript 4, the backend: unit events in a map of our own (scripts/build-own.mts) — step 11 of the way off eudplib,
+// TrigScript 4, the backend: unit events in a map of our own (scripts/build-fixture.mts) — step 11 of the way off eudplib,
 // part 3. The map's events pass, before the programs' turns each frame: a trigger for each unit place the game has
 // handed out, whose conditions hold what it saw there last (the uniqueness byte, whether the unit is alive or its
 // order); a place that changed goes to the handler, which lists what came on, died or took up an order. A listener is
@@ -6,7 +6,7 @@
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the same
 // frames; every line should end "ok", and a line ending "WRONG" names the check that failed. The frames after "Weighed"
 // are to weigh.
-//   npx tsx scripts/build-own.mts probes/own-events.ts /tmp/own-events.scx
+//   npx tsx scripts/build-fixture.mts probes/own-events.ts /tmp/own-events.scx
 //   npx tsx scripts/build-fixture.mts probes/own-events.ts /tmp/own-events-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

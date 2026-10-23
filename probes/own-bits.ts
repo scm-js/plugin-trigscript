@@ -1,10 +1,10 @@
-// TrigScript 4, the backend: bits and shifts in a map of our own (scripts/build-own.mts) — step 4 of the way off
+// TrigScript 4, the backend: bits and shifts in a map of our own (scripts/build-fixture.mts) — step 4 of the way off
 // eudplib, part 2. `&` `|` with a constant are a masked write of a copy; `^` with a constant and the three of two values
 // a trigger a bit; a shift left by a value doublings in a doubling trigger, a shift right Horner's way over the bits
 // that stay. Built both ways, the lifted game should print the same lines at the same frames; every line should end
 // "ok", and a line ending "WRONG" names the check that failed. Frames 2, 4 and 6 (the lifted game's 4, 6 and 8) are
 // each one kind of work, 200 times, to weigh.
-//   npx tsx scripts/build-own.mts probes/own-bits.ts /tmp/own-bits.scx
+//   npx tsx scripts/build-fixture.mts probes/own-bits.ts /tmp/own-bits.scx
 //   npx tsx scripts/build-fixture.mts probes/own-bits.ts /tmp/own-bits-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

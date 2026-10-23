@@ -27,6 +27,8 @@ export interface OwnRun {
   /** The player it runs as, 0-based: the current player while it runs. */
   player: number;
   graph: Graph;
+  /** A variable's or an array's id as this run's graph names it (the first run keeps the program's; each other has its own, but for what is shared). */
+  rename: (id: string) => string;
 }
 
 export interface Own {
@@ -175,7 +177,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & 
       const of = (i: number) => (i ? r.strings[i - 1] : undefined);
       for (const t of g.triggers) for (const a of t.acts) if (a.record && (a.record.text || a.record.wav)) a.strings = { text: of(a.record.text), wav: of(a.record.wav) };
       for (const a of program.arrays ?? []) if (a.values) values.set(name(a.id), a.values);
-      runs.push({ program: k, player, graph: g });
+      runs.push({ program: k, player, graph: g, rename: name });
     }
   }
   if (!runs.length) return "a script with no program";

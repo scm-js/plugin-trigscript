@@ -3584,7 +3584,7 @@ found what they left out; where a step moved, its old number is given.
     (stack depth, heap) passed; a refusal shown as a Problem while the script is typed, naming what it refuses; the
     changeover (below); Magenta and TrigScript in one map; the payload's size (triggers stacked as eudplib stacks
     its objects: done early, below; what is left is the routing, a trigger a place).
-15. **The tools on maps of our own** (new). The trigger map and the variable map from the layout, in the rows scm-sim
+15. **The tools on maps of our own** ✓ (new; "The tools on maps of our own (2026-10-23)" below). The trigger map and the variable map from the layout, in the rows scm-sim
     reads — A1 to A5, Find an EUD Error, cost by line, the desync detector and `sim.program()` name lines with them;
     `build-fixture` moved onto the own build (the `trigger()` records, Home/Away/Pixel, PEOPLE, the settings);
     the allowlist's evidence traced again; the lowering bench's baseline anew; a built map tested end to end in CI.
@@ -3976,6 +3976,13 @@ the ledger is the list it can be written again from at 4.0.
   (`tests/events.test.ts`). A raw number is a second signature, the action's own.
 
 *Open:*
+- Step 15's leftovers (2026-10-23). *Two bench lines slower* than the Python side's: REF_FIELD_WRITE 43 → 51 ns,
+  DIV_CONST_R 261 → 293. *The allowlist* is not made anew from own-build traces (`scripts/allowlist.mts`); the
+  probes' traces say nothing outside it is touched, which is what the list is for. *`game-check`'s line checks*
+  hold only a line that says in brackets what it expects ("A: 7 30 (expect 7 30)", the lifted game's rule): the own
+  probes say "ok" instead, so "0 as expected" — their answer sheets are what holds them.
+  *A probe through eudplib* (`EUDPLIB=1`) still needs the plugin-eudplib checkout and the Python: step 16's gate is
+  the last use of it.
 - Step 14's leftovers (2026-10-23). *Magenta.* A map with Magenta's member goes through eudplib with TrigScript's
   programs in its build; Magenta on the own layout, or two payloads behind each other, is for later. *Protection.*
   The own build scrambles nothing (eudplib's MRGN, shuffle and fake ISOM): the user's call. *The fixes' lines.*
@@ -5468,6 +5475,48 @@ worker), registered with the host's `document.buildSteps.add` beside the `before
   with file and line, the settings' effect), `tests/service.test.ts` (the step applies and the contribution does not
   and the other way round, the manifest's refusal, Magenta's member, the events, no second compile), the suite 1,362
   green, the ledger unchanged.
+
+### The tools on maps of our own (2026-10-23)
+
+Step 15: everything that read a built map through the Python build's log reads a map of our own the same way, and
+every probe is built our way by default.
+
+- **The two maps from the layout** (`compiler/backend/maps.ts`, `buildOwnMap`'s `maps`): the trigger map — every
+  trigger of the payload by rising offset from the string section's end, its conditions and actions counted off the
+  bytes as the game counts them, the statement it was made for as "file:line:column", each action's own where a
+  trigger of the emitter's holds several lines' work, nothing for a cell trigger, a route, a wake or the gate — and the
+  variable map, a row a run (a per-player program's runs each with their owner, the run's renaming undone), each
+  variable's cell out of the layout's `vars`: a unit its EPD and uniqueness byte (`epd`, the reader makes the address
+  and the word), a made text its block's EPD and length, a text of the table its number in the pool (`textBase`, the
+  reader adds it), an array that grows its handle's cells and the heap's region as `cells` (72 bytes a cell), a fixed
+  array its region's value field, a list known when built its data. Said in the Python's own lines
+  (`TRIGSCRIPT-MAP`/`-ROWS`/`-VARS`/`-PROGRAM`), so `readTriggerMap`, `readVariableMap`, `programVariables`, the cost
+  by line, the desync detector, Find an EUD Error and the debugger are unchanged; the editor's build logs them under
+  `withVariableMap`.
+- **`build-fixture` on the own build.** The default now: the prepared map (players, a base each, Home/Away/Pixel, the
+  script's records in TRIG, MAP_NAME, KEEP_TRIGGERS, STACK_DEPTH/HEAP_CELLS, OWN_FREE) through `buildOwnMap`, the maps
+  beside it with TRIGGER_MAP/VARIABLE_MAP; `EUDPLIB=1` builds through plugin-eudplib as before (the second build a step
+  is held against). The compile is without the emitter's graphs for the own path (they are the Python side's). So
+  `test-game`, `game-check`, `debug-game`, `lifted-weigh` and `bench-lowering` run on maps of our own with nothing
+  changed in them; `build-own.mts` is gone.
+- **Held in the lifted game:** `probes/game-program.ts` (sim.program(): numbers, booleans, texts of the table, a
+  record, arrays fixed and growing, a unit held, a per-player program by player) 3 of 3 in the game, after two faults
+  the first run found — a text of the table read as its pool number (the reader needed `textBase`), a unit's
+  uniqueness byte kept as the byte where eudplib keeps the word (`epd` shifts it); `probes/game-debug.ts` through
+  `debug-game` ("every check held": the record against pictures of frames, variables agreeing); `game-check` on
+  `own-triggers` and `game-emitter` with lines named by the map and the allowlist: 0 ending the game, 0 never seen —
+  the evidence holds for our builds without the list being made anew.
+- **The lowering bench's baseline anew** (`probes/lowering-bench.baseline.json`): all lines 42,936 ns against the
+  Python side's 90,559 (−53 %); UNITS −56 %, LIST_WRITE −88 %, LIST_LOOP_WRITE −78 %, ARRAY_LOOP_WRITE −72 %,
+  DIV_VAR_THRESHOLDS −70 %, LIST_READ −79 %. Slower: REF_FIELD_WRITE +20 % (43 → 51 ns), DIV_CONST_R +12 %
+  (261 → 293): for the Open list.
+- **End to end in CI** (`tests/ownWalk.ts`): the built file's STRx payload walked as the game walks the lists —
+  each player's entry every frame, the current player theirs, Deaths and Set Deaths masked and not, Always, Never,
+  Switch, Display Text read from the file's own string table — against the IR simulator's lines frame by frame, and the
+  variables read back through the map with `programVariables` over the walked memory (a number, a growing array, a
+  fixed array, a text of the table reassigned, a per-player program's by player). No lifted game needed: CI runs it.
+- **Tests:** `tests/own-build.test.ts` +2 (the maps' rows and the lines read back; the walk), `tests/service.test.ts`
+  (the maps logged under `withVariableMap`), `tests/game-variables.test.ts` as before.
 
 ## Part C — the game, pushed
 
