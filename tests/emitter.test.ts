@@ -4,7 +4,7 @@
 // conditions compare memory with their own numbers, actions write memory, the walk follows next pointers), from the
 // same random values, every variable compared after. The game probe probes/game-emitter.ts does the same in the
 // lifted game, for fewer loops.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarDecl } from "../compiler/ir";
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
@@ -1764,5 +1764,181 @@ describe("a map of our own, units", () => {
       "  best?.kill();",
       "  if (best) print(\"alive\"); else print(\"gone\");",
     ].join("\n"), UNITS, HOME);
+  });
+});
+
+describe("a map of our own, errors", () => {
+  /** What a script prints as the simulator runs it, and as its payload does, walked from its bytes (one pass). */
+  const both = (script: string): { want: string[]; got: string[] } => {
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
+    const want = simulatePrograms(r.ir, 1, { strings: r.strings }).events.filter((e) => e.text !== undefined && e.action.type === 9).map((e) => hex(e.text!));
+    const o = emitOwn(r);
+    if (typeof o === "string") throw new Error(o);
+    PRINTED.got = [];
+    runOwn(o.runs[0].graph, undefined, o.values);
+    return { want, got: PRINTED.got };
+  };
+  const same = (script: string, lines?: string[]) => {
+    const r = both(script);
+    expect(r.want.length).toBeGreaterThan(0);
+    expect(r.got).toEqual(r.want);
+    if (lines) expect(r.want).toEqual(lines.map((l) => shown([...new TextEncoder().encode(l)])));
+  };
+  /** A program whose `k` is 2, not known when built. */
+  const program = (body: string, before = "") => `${before}\nprogram(() => {\n  let k = 0;\n  while (k < 2) k += 1;\n${body}\n});\n`;
+
+  it("goes to the catch of the try around a throw, and on after it", () => {
+    same(program([
+      "  try {",
+      "    if (k > 1) throw new Error(\"too many\");",
+      "    print(\"fine\");",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`caught ${e.message}`);",
+      "  }",
+      "  try { print(\"no throw\"); } catch { print(\"never\"); }",
+      "  print(\"after\");",
+    ].join("\n")), ["caught too many", "no throw", "after"]);
+  });
+
+  it("tells classes of error apart, the script's own with fields among them, and makes a message while the game runs", () => {
+    same(program([
+      "  for (let i = 0; i < 4; i++) {",
+      "    try {",
+      "      if (i == 0) throw new Late(k * 5);",
+      "      if (i == 1) throw new RangeError(`i is ${i}, k ${k}`);",
+      "      if (i == 2) throw new TypeError(\"type\");",
+      "      print(`${i} went through`);",
+      "    } catch (e) {",
+      "      if (e instanceof Late) print(`late by ${e.by}: ${e.message}`);",
+      "      else if (e instanceof RangeError) print(`range: ${e.message}`);",
+      "      else if (e instanceof Error) print(`other: ${e.message}`);",
+      "    }",
+      "  }",
+    ].join("\n"), "class Late extends Error {\n  by: number;\n  constructor(by: number) {\n    super(\"late\");\n    this.by = by;\n  }\n}"), ["late by 10: late", "range: i is 1, k 2", "other: type", "3 went through"]);
+  });
+
+  it("throws a caught error again, to the try further out, and finally runs however the try is left", () => {
+    same(program([
+      "  let cleaned = 0;",
+      "  try {",
+      "    try {",
+      "      if (k > 1) throw new Error(\"inner\");",
+      "    } catch (e) {",
+      "      print(\"seen inside\");",
+      "      throw e;",
+      "    } finally {",
+      "      cleaned += 1;",
+      "    }",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`caught outside: ${e.message}, cleaned ${cleaned}`);",
+      "  }",
+      "  for (let i = 0; i < 4; i++) {",
+      "    try {",
+      "      if (i == 1) continue;",
+      "      if (i == 2) break;",
+      "    } finally {",
+      "      cleaned += 10;",
+      "    }",
+      "  }",
+      "  print(`${cleaned}`);",
+    ].join("\n")), ["seen inside", "caught outside: inner, cleaned 1", "31"]);
+  });
+
+  it("comes out of called functions to the try around the call, and a function's own try keeps its errors", () => {
+    same(program([
+      "  let total = 0, n = 0;",
+      "  try {",
+      "    while (n < 5) {",
+      "      total += outer(n);",
+      "      n += 1;",
+      "    }",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`stopped at ${n}: ${e.message}`);",
+      "  }",
+      "  try { total += check(k + 7); } catch { total += 1000; }",
+      "  print(`${total} ${safe(1)} ${safe(7)}`);",
+    ].join("\n"), [
+      "function check(n: number) {",
+      "  if (n > 2) throw new Error(`too big: ${n}`);",
+      "  return n + 1;",
+      "}",
+      "function outer(n: number) {",
+      "  return check(n) * 2;",
+      "}",
+      "function safe(n: number) {",
+      "  try {",
+      "    return check(n);",
+      "  } catch {",
+      "    return -1;",
+      "  }",
+      "}",
+    ].join("\n")), ["stopped at 3: too big: 3", "1012 2 -1"]);
+  });
+
+  it("says an error nothing catches in red, where it was thrown, and stops the program there", () => {
+    same(program([
+      "  print(\"before\");",
+      "  if (k > 1) explode(k);",
+      "  print(\"after\");",
+    ].join("\n"), "function explode(k: number) {\n  throw new RangeError(`k is ${k}`);\n}"), ["before", "\x06TrigScript: uncaught RangeError: k is 2, line 2."]);
+  });
+
+  it("comes up through a function that calls itself, its frames taken back on the way", () => {
+    same(program([
+      "  try {",
+      "    print(`${down(k + 3)}`);",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`caught ${e.message}`);",
+      "  }",
+      "  print(`${halves(k * 20)}`);",
+    ].join("\n"), [
+      "function down(n: number): number {",
+      "  if (n == 0) throw new Error(\"bottom\");",
+      "  return down(n - 1) + 1;",
+      "}",
+      // (Each level keeps `n` and `half` around the call; the catch reads them after the frame is taken back.)
+      "function halves(n: number): number {",
+      "  const half = n >> 1;",
+      "  try {",
+      "    if (n < 3) throw new Error(\"small\");",
+      "    return halves(half) + n;",
+      "  } catch {",
+      "    return half * 100 + n;",
+      "  }",
+      "}",
+    ].join("\n")), ["caught bottom", `${40 + 20 + 10 + 5 + 102}`]);
+  });
+
+  it("prints what the simulator prints for each of the ledger's scripts of errors", () => {
+    for (const name of ["try-catch", "try-finally", "rethrow", "error-class", "error-fields", "error-stack", "throw-from-function", "throw-through-recursion", "finally-on-return", "throw-uncaught", "uncaught-in-function", "stack-overflow-caught"]) {
+      const r = both(readFileSync(`ledger/language/${name}.ts`, "utf8"));
+      expect([name, r.want.length > 0]).toEqual([name, true]);
+      expect([name, r.got]).toEqual([name, r.want]);
+    }
+  });
+
+  it("lays a loop out the same on an error's way, a throw after it", () => {
+    // (Only what runs once before a throw is cold, its reads refreshed from their cells: a loop may turn many times.)
+    const lines = (end: string) => {
+      const r = compileScript(ts, { "main.ts": `program(() => {\n  let i = 0, s = 0;\n  while (i < 100) {\n    s += i * 3;\n    i += 1;\n  }\n  ${end}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+      const o = emitOwn(r);
+      if (typeof o === "string") throw new Error(o);
+      return o.runs[0].graph.triggers.filter((t) => t.at && t.at.line >= 3 && t.at.line <= 5).map((t) => [t.conds.length, t.acts.length, !!t.copy]);
+    };
+    expect(lines(`throw new Error("done");`)).toEqual(lines(`print("done");`));
+    // (And one whose message reads the sum: its read is refreshed where it is made, no place the loop keeps.)
+    expect(lines(`throw new Error(\`\${s}\`);`)).toEqual(lines(`print("done");`));
+  });
+
+  it("throws a RangeError where a function that calls itself runs out of stack", () => {
+    same(program([
+      "  try {",
+      "    print(`${forever(k)}`);",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`${e instanceof RangeError} ${e.message}`);",
+      "  }",
+    ].join("\n"), "function forever(n: number): number {\n  if (n > 1000000) return 0;\n  return forever(n + 1) + 1;\n}"), ["true Maximum call stack size exceeded"]);
   });
 });

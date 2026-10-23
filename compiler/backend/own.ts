@@ -16,6 +16,7 @@ import type { Act, Cond, Dword, Graph, Num, Trigger, Value } from "./graph";
 import { TextPool, knownTexts } from "./texts";
 import { HEAP_GLOBALS, growingArrays, heldVariables, isHeapGlobal, loopScoped } from "./heap";
 import { UNIT_GLOBALS, unitValues } from "./units";
+import { ownErrors } from "./errors";
 
 export interface OwnRun {
   /** The program's index among the script's. */
@@ -59,8 +60,9 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
   const runs: OwnRun[] = [];
   const values = new Map<string, number[]>();
   // Every program's texts known when built first: the pool is numbered once they are all in, before any is lowered.
+  // (What an error needs texts for — an uncaught one said, a stack that ran out — written out before: `errors.ts`.)
   const pool = new TextPool();
-  const known = r.ir.map((p) => knownTexts(p, pool, textBase));
+  const known = r.ir.map((p) => knownTexts(ownErrors(p), pool, textBase));
   const texts = pool.finish();
   // Units as two numbers each (`units.ts`), then arrays that grow on the heap (`heap.ts`), once the texts' numbers are
   // in: those passes copy what they rewrite.
@@ -89,7 +91,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
     for (const player of program.perPlayer ? [...slots].sort((a, b) => a - b) : slots.slice(0, 1)) {
       const n = runs.length;
       // (The first run keeps the emitter's names; each other one's are its own, but for what its program shares.)
-      const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players);
+      const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players, program.errors);
       if (typeof graph === "string") return graph;
       const name = (id: string) => (!n || isHeapGlobal(id) || UNIT_GLOBALS.some((d) => d.id === id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
       const g = n ? renamed(graph, `#${n}`, name) : graph;

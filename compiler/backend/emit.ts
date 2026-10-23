@@ -18,11 +18,12 @@
  * falls through one trigger whose conditions failed (13.4 ns); a branch is a trigger that sets its own next pointer to
  * where it goes, put back by an action at the place it went to.
  */
-import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type ReadSource, type Stmt, type TableCell, type TextPart, type VarDecl, type At } from "../ir";
+import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type ProgramErrors, type ReadSource, type Stmt, type TableCell, type TextPart, type VarDecl, type At } from "../ir";
 import { PACK_FROM } from "../eud";
 import type { Range } from "../ranges";
 import { PlayerGroup, type ActionRecord, type ConditionRecord } from "../../vendor/triggers";
 import { actionDef } from "../../vendor/triggerDefs";
+import { OVERFLOW_FN, errorLine } from "./errors";
 import { END, MOST_ACTS, MOST_CONDS, STACK, SWITCHES, TRIGGER_BYTES, checkGraph, nextOf, type Act, type ActPart, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
@@ -668,6 +669,8 @@ class Scope {
   returning: string[] = [];
   /** Whether a call that may come back into its own function is taken: the program then keeps a stack. */
   recursion = false;
+  /** A map of our own whose program throws or catches: where the error in flight is kept (`ownErrors`). */
+  errors?: ProgramErrors;
 
   /**
    * A call in a map of our own: its arguments written into the function's parameters, which are variables like any
@@ -680,6 +683,11 @@ class Scope {
       if (c.saves.arrays.length) return this.no(`a growing array declared in ${c.saves.within}, which calls itself`);
       for (const id of c.saves.vars) if (!this.ok(id)) return this.no(`the variable ${this.decls.get(id)?.name ?? id} of ${c.saves.within}, which calls itself`);
       this.recursion = true;
+      // (A program that keeps errors throws a RangeError where the stack runs out: the function that sets it.)
+      if (this.errors) {
+        if (!this.function(OVERFLOW_FN)) return false;
+        this.written.add(errorLine(this.errors));
+      }
     }
     for (const p of c.params) {
       const d = p.decl;
@@ -1079,6 +1087,9 @@ class Scope {
         return true;
       }
       case "return": return (this.native && this.returning.length > 0 && this.returned(s)) || this.island(s);
+      // (Where a `throw` goes is the emitter's, `Emitter.handler`: the program keeps the error in flight.)
+      case "try": return (this.native && !!this.errors && this.stmts(s.body, inLoop) && this.stmts(s.catch, inLoop)) || this.island(s);
+      case "throw": return (this.native && !!this.errors) || this.island(s);
       default: return this.island(s);
     }
   }
@@ -1111,7 +1122,8 @@ class Scope {
 // ── the layout ──
 
 /** A write of a variable, laid out where the statement was, expanded once every place of the variable is known. */
-interface Write { target: string; value: Linear; at?: At }
+/** `cold`: written where only an error goes (`Emitter.cold`): what it reads is refreshed from its cell before it, never a place of it. */
+interface Write { target: string; value: Linear; at?: At; cold?: boolean }
 /** An action of an expanded write: it writes `into`; a variable it reads plus a constant is in its own number. */
 interface WriteAct { into: Place; modifier: "set" | "add"; value: Num; reads?: Read }
 /**
@@ -1162,7 +1174,7 @@ type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: st
  * conditions, its statements' actions), which may be followed by the copies of what it writes — a copy whether or not
  * the conditions held, which writes back what the places hold when they did not.
  */
-interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean; guarded?: boolean; guardOf?: Stmt }
+interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean; guarded?: boolean; guardOf?: Stmt; cold?: boolean }
 
 /**
  * A place of a variable: a dword that holds it times `scale` plus `add` (wrapping) — known (its cell, a home, a
@@ -1286,12 +1298,29 @@ class Emitter {
    * it starts, and the trigger it ends at, whose next pointer every call sets to where it goes on — and those still
    * to lay out. `depth`: the most loops around a call of it, which its triggers count as theirs.
    */
-  fns = new Map<string, { entry: string; exit: string; depth: number }>();
+  fns = new Map<string, { entry: string; exit: string; depth: number; thrown?: string }>();
   pending: string[] = [];
   /** The loops around the function being laid out, at its deepest call. */
   depthBase = 0;
   /** The function or inlined call being laid out, innermost last: the variable its `return` writes, where it goes. */
   frames: { result?: { id: string; kind: string }; end: string }[] = [];
+  /** Where an error thrown here goes: the `catch` of each `try` around, in the function being laid out, innermost last. */
+  handlers: string[] = [];
+  /**
+   * Inside statements only an error goes through — those that end in a `throw`, and a `catch` (a map of our own): what
+   * they read of a variable is refreshed from its cell where it is read, as a routed variable's is, never a place that
+   * every write of the variable keeps — a throw's message made from a parameter cost every call of the function an
+   * action and a copy, for an error that seldom comes.
+   */
+  cold = 0;
+  /**
+   * Of each function an error comes out of from a trigger of its own (`thrown`), the actions of the calls that point
+   * that trigger's next pointer at where the error goes from each: where every call names the same place, the
+   * trigger is given it when built, and the calls set nothing (`settleThrown`).
+   */
+  thrownSets = new Map<string, { items: Item[]; item: Item; to: string }[]>();
+  thrownProtos = new Map<string, Proto>();
+  private throwing?: Set<string>;
   /**
    * A map of our own whose functions call themselves: a stack each, by function — its id, the variable of the
    * emitter's own that holds the cells in use (`sp`: what addresses the stack — a store's destination, a cell's
@@ -1357,7 +1386,7 @@ class Emitter {
   }
 
   push(p: Omit<Proto, "label"> & { label?: string }): Proto {
-    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}), ...(p.guarded ? { guarded: true } : {}), ...(p.guardOf ? { guardOf: p.guardOf } : {}) };
+    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}), ...(p.guarded ? { guarded: true } : {}), ...(p.guardOf ? { guardOf: p.guardOf } : {}), ...(this.cold ? { cold: true } : {}) };
     this.protos.push(t);
     return t;
   }
@@ -1379,7 +1408,7 @@ class Emitter {
   }
 
   write(target: string, value: Linear, copy = true, into: Item[] = this.open().items, copies = into): void {
-    const w: Write = { target, value, ...(this.at ? { at: this.at } : {}) };
+    const w: Write = { target, value, ...(this.at ? { at: this.at } : {}), ...(this.cold ? { cold: true } : {}) };
     // (The copy is there for a variable that turns out to need one: the rest leave it out.)
     into.push({ write: w });
     if (copy) copies.push({ copy: target, ...(this.at ? { at: this.at } : {}) });
@@ -1594,16 +1623,25 @@ class Emitter {
   // ── statements ──
 
   stmts(list: Stmt[]): void {
-    for (const s of list) this.stmt(s);
+    const cold = this.scope.native && !!this.scope.errors && throwsAtEnd(list);
+    if (cold) this.cold++;
+    try {
+      for (const s of list) this.stmt(s);
+    } finally {
+      if (cold) this.cold--;
+    }
   }
 
   stmt(s: Stmt): void {
-    const outer = this.at;
+    const outer = this.at, cold = this.cold;
     if (s.at) this.at = s.at;
+    // (A loop may turn many times on an error's way too: it, its test and its body, are not cold.)
+    if (s.kind === "while" || s.kind === "for" || s.kind === "do") this.cold = 0;
     try {
       this.statement(s);
     } finally {
       this.at = outer;
+      this.cold = cold;
     }
   }
 
@@ -1800,6 +1838,23 @@ class Emitter {
         return this.left(s);
       case "break": return this.goto(this.loops[this.loops.length - 1].exit);
       case "continue": return this.goto(this.loops[this.loops.length - 1].cont);
+      case "try": {
+        // The body, with its `catch` as where an error thrown in it goes; the `catch` after it, reached only that way.
+        // (Nothing of it is done while the game runs until an error is thrown.)
+        const caught = this.label("catch"), end = this.label("tend");
+        this.handlers.push(caught);
+        this.stmts(s.body);
+        this.handlers.pop();
+        this.goto(end);
+        this.land(caught);
+        this.cold++;
+        this.stmts(s.catch);
+        this.cold--;
+        this.land(end);
+        return;
+      }
+      // (The error in flight is set by the statements before it, the line it was thrown at among them: `ownErrors`.)
+      case "throw": return this.goto(this.handler());
       default: return this.left(s);
     }
   }
@@ -2107,6 +2162,12 @@ class Emitter {
       }
       fn.depth = Math.max(fn.depth, this.depthBase + this.loops.length);
       const back = this.label("back");
+      // An error out of a function that never comes back into itself goes on from a trigger of the function's own,
+      // whose next pointer the call points at where the error goes from here: nothing is looked at on the way back.
+      // After a call of one that may come back, and after a call that keeps a frame — which takes it back first — the
+      // error in flight is looked at.
+      const throws = this.mayThrow(c.fn), routed = throws && !f.recursive;
+      if (routed && !fn.thrown) fn.thrown = this.label("fthrow");
       // (A function that calls itself also keeps where it goes back to in a variable, which a frame keeps: the frame
       // of a call that may come back is the function's the call is in.)
       const ra = f.recursive ? this.returnOf(c.fn, fn.exit) : null;
@@ -2114,10 +2175,19 @@ class Emitter {
       if (c.saves && !within) throw new Error(`emitter: a call of ${f.name} that keeps a frame, outside a function`);
       const kept = c.saves ? this.keep(c, this.returnOf(this.current!, within!.exit)) : null;
       if (kept) this.arguments(c);
-      this.open().items.push(ra ? { label: { target: ra, to: back } } : { act: { dword: nextOf(fn.exit), modifier: "set", value: { label: back } } });
+      const items = this.open().items;
+      items.push(ra ? { label: { target: ra, to: back } } : { act: { dword: nextOf(fn.exit), modifier: "set", value: { label: back } } });
+      if (routed) {
+        const to = kept ? back : this.handler(), item: Item = { act: { dword: nextOf(fn.thrown!), modifier: "set", value: { label: to } } };
+        items.push(item);
+        let sets = this.thrownSets.get(c.fn);
+        if (!sets) this.thrownSets.set(c.fn, (sets = []));
+        sets.push({ items, item, to });
+      }
       this.goto(fn.entry);
       this.land(back);
       if (kept) this.bringBack(kept);
+      if (throws && (!routed || kept)) this.jump(this.inFlight(), true, this.handler(), this.at);
       if (c.result && f.result) {
         // What the function gives back goes into its cell alone, and each call reads it from there: as places, a
         // return would write every call's, and each of those actions would be a place of what the return reads —
@@ -2185,11 +2255,19 @@ class Emitter {
     const room = this.label("room");
     this.jump({ kind: "compare", op: "<", left: { kind: "var", id: this.depth }, right: { kind: "const", value: this.stackDepth }, unsigned: true, at: this.at!, label: "" }, true, room, this.at);
     const line = this.at?.line ?? "?";
-    this.open().items.push(
-      { act: { dword: { game: 0 }, modifier: "set", value: 0, display: `\x06TrigScript: stack overflow in ${c.saves!.within}, line ${line} - ${this.stackDepth} calls deep. The program has stopped.` } },
-      { act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } },
-    );
-    this.goto(END);
+    if (this.scope.errors) {
+      // A program that keeps errors throws a RangeError, as JavaScript does: where the call is, before anything of it
+      // is kept.
+      this.call({ fn: OVERFLOW_FN, name: "(stack overflow)", params: [], body: [], at: this.at!, label: "" });
+      this.write(errorLine(this.scope.errors), { c: this.at?.line ?? 0, terms: [] });
+      this.goto(this.handler());
+    } else {
+      this.open().items.push(
+        { act: { dword: { game: 0 }, modifier: "set", value: 0, display: `\x06TrigScript: stack overflow in ${c.saves!.within}, line ${line} - ${this.stackDepth} calls deep. The program has stopped.` } },
+        { act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } },
+      );
+      this.goto(END);
+    }
     this.land(room);
     // (Each variable through one of the emitter's own, written just before: a store's number is a place no refresh
     // reaches, and the variable itself may have to be read from its cell where it is used.)
@@ -2529,6 +2607,72 @@ class Emitter {
   }
 
   /**
+   * Where an error thrown here goes: the `catch` of the nearest `try` around it, or out of the function being laid out
+   * — from its trigger for errors (`thrown`), or, for one that may come back into itself, from its end, where the call
+   * looks at the error in flight. (A program's body is all inside a `try` of the front end's.)
+   */
+  handler(): string {
+    const h = this.handlers[this.handlers.length - 1];
+    if (h !== undefined) return h;
+    const fn = this.current !== undefined ? this.fns.get(this.current) : undefined;
+    if (!fn) throw new Error("emitter: an error with nothing to go to");
+    return fn.thrown ?? fn.exit;
+  }
+
+  /** Whether a variable has a cell its reads can be refreshed from where they are (a map of our own: all but a function's arguments). */
+  hasCell(id: string): boolean {
+    const d = this.placesOf(id)[0].dword;
+    return !!d && "var" in d;
+  }
+
+  /** Whether an error is in flight: its class's code is not 0. */
+  inFlight(): BoolExpr {
+    return { kind: "compare", op: ">=", left: { kind: "var", id: this.scope.errors!.thrown }, right: { kind: "const", value: 1 }, unsigned: true, at: this.at!, label: "" };
+  }
+
+  /**
+   * Whether an error may come out of a called function: one with a `throw` outside every `try` of its own, or a call
+   * that may run out of stack, or a call of such a function — worked out for every function the program reaches at
+   * once, until nothing more comes in.
+   */
+  mayThrow(fn: string): boolean {
+    if (!this.scope.errors) return false;
+    if (!this.throwing) {
+      const out = new Set<string>();
+      const escapes = (x: unknown): boolean => {
+        if (!x || typeof x !== "object") return false;
+        if (Array.isArray(x)) return x.some(escapes);
+        const o = x as Record<string, unknown>;
+        if (o.kind === "throw" || o.saves) return true;
+        // (What the body of a `try` throws, its `catch` takes; what the `catch` throws goes on.)
+        if (o.kind === "try") return escapes(o.catch);
+        if (typeof o.fn === "string" && Array.isArray(o.params) && out.has(o.fn)) return true;
+        return Object.values(o).some((v) => v && typeof v === "object" && escapes(v));
+      };
+      const ids = [...this.scope.taken.keys()];
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const id of ids) if (!out.has(id) && escapes(this.scope.bodyOf!(id))) { out.add(id); grew = true; }
+      }
+      this.throwing = out;
+    }
+    return this.throwing.has(fn);
+  }
+
+  /**
+   * A function whose calls all point its trigger for errors at the same place: that trigger goes there as built, and
+   * the calls' actions go.
+   */
+  settleThrown(): void {
+    for (const [id, sets] of this.thrownSets) {
+      const proto = this.thrownProtos.get(id);
+      if (!proto || new Set(sets.map((x) => x.to)).size !== 1) continue;
+      for (const x of sets) x.items.splice(x.items.indexOf(x.item), 1);
+      proto.next = sets[0].to;
+    }
+  }
+
+  /**
    * The functions the calls reached, each laid out once after the program (which never falls into them): its body,
    * what it gives back off its end (0), and the trigger it ends at — empty, kept, its next pointer the call's. A
    * function called inside loops counts its triggers as that deep, for what weighs a variable's reads.
@@ -2543,13 +2687,22 @@ class Emitter {
       this.land(fn.entry);
       const result = f.result ? { id: f.result.decl.id, kind: f.result.kind } : undefined;
       this.frames.push({ ...(result ? { result } : {}), end: fn.exit });
+      // (No `try` of the caller's is around the function's body: an error leaves it first. Nor is it cold for its call.)
+      const handlers = this.handlers, cold = this.cold;
+      this.handlers = [];
+      this.cold = 0;
       this.stmts(body);
+      this.handlers = handlers;
+      this.cold = cold;
       this.frames.pop();
       const last = body.filter((s) => s.kind !== "remark").at(-1);
       if (result && last?.kind !== "return") this.write(result.id, { c: 0, terms: [] });
       this.push({ label: fn.exit, conds: [], items: [], keep: true, at: f.at });
+      // (Its trigger for errors, its next pointer the call's, as the end's is.)
+      if (fn.thrown) this.thrownProtos.set(id, this.push({ label: fn.thrown, conds: [], items: [], keep: true, at: f.at }));
       this.depthBase = outer;
     }
+    this.settleThrown();
   }
 
   /**
@@ -3713,7 +3866,8 @@ class Emitter {
       const self = w.value.terms.filter((t) => t.id === target);
       if (self.length && self[0].k !== 1) copied.add(target);
       for (const t of w.value.terms) {
-        if (t.id === target) continue;
+        // (A write only an error goes through reads its values from their cells: no place of them, `cold`.)
+        if (t.id === target || (w.cold && this.hasCell(t.id))) continue;
         if (!readers.has(t.id)) readers.set(t.id, new Set());
         readers.get(t.id)!.add(target);
       }
@@ -3854,9 +4008,14 @@ class Emitter {
 
   graph(entries: string[]): Graph | string {
     // A comparison's number is a place of what it reads: its trigger keeps its label and the condition its index.
+    // (In a trigger only an error goes through, refreshed from the variable's cell before it instead: `coldConds`.)
+    const coldConds = new Map<string, Map<string, Place[]>>();
     for (const p of this.protos) p.conds.forEach((c, k) => {
       const r = this.condReads.get(c);
-      if (r) this.placesOf(r.id).push({ dword: { at: p.label, field: { cond: k } }, scale: r.scale, add: r.add });
+      if (r && p.cold && this.hasCell(r.id)) {
+        const of = coldConds.get(p.label) ?? new Map<string, Place[]>();
+        coldConds.set(p.label, of.set(r.id, [...(of.get(r.id) ?? []), { dword: { at: p.label, field: { cond: k } }, scale: r.scale, add: r.add }]));
+      } else if (r) this.placesOf(r.id).push({ dword: { at: p.label, field: { cond: k } }, scale: r.scale, add: r.add });
       const q = this.condPlayers.get(c);
       if (q) this.placesOf(q.id).push({ dword: { at: p.label, field: { cond: k, part: "player" } }, scale: q.scale, add: q.add, base: q.base });
     });
@@ -3896,10 +4055,16 @@ class Emitter {
     // Each target's writes expanded once all its places are known — the writes that read it come first in the
     // order, and each action that reads a variable is a place of it.
     const expanded = new Map<Write, WriteAct[]>();
+    /** The actions of writes only an error goes through that read a variable: refreshed from its cell before them. */
+    const coldActs = new Set<WriteAct>();
     for (const v of order) for (const w of this.writes.get(v) ?? []) {
       const acts = this.expand(w, copied.has(v));
       expanded.set(w, acts);
-      for (const a of acts) if (a.reads) this.placesOf(a.reads.id).push({ act: a, scale: a.reads.scale, add: a.reads.add, ...(a.reads.base ? { base: a.reads.base } : {}) });
+      for (const a of acts) {
+        if (!a.reads) continue;
+        if (w.cold && this.hasCell(a.reads.id)) coldActs.add(a);
+        else this.placesOf(a.reads.id).push({ act: a, scale: a.reads.scale, add: a.reads.add, ...(a.reads.base ? { base: a.reads.base } : {}) });
+      }
     }
     // Every fall-through said, so that dropping a trigger leaves the one before it going where it went.
     this.protos.forEach((p, i) => { if (p.next === undefined) p.next = this.protos[i + 1]?.label ?? END; });
@@ -3946,7 +4111,7 @@ class Emitter {
     }
     // What a trigger's conditions read of routed variables: the places refreshed before it.
     const condReads = (p: Proto): Map<string, Place[]> => {
-      const out = new Map<string, Place[]>();
+      const out = new Map<string, Place[]>(coldConds.get(p.label) ?? []);
       for (const id of routed) for (const pl of this.places.get(id)!.slice(1)) {
         const d = pl.dword;
         const here = d && (("at" in d && d.at === p.label && typeof d.field === "object" && "cond" in d.field) || ("data" in d && p.conds.some((c) => "data" in c.dword && c.dword.data === d.data)));
@@ -4033,6 +4198,7 @@ class Emitter {
       for (const piece of pieces) {
         if (!("acts" in piece) || p.conds.length) { cut.push(piece); continue; }
         let cur: (Act | WriteAct)[] = [], need = new Map<string, WriteAct[]>(), dirty = new Set<string>();
+        const coldRead = new Set([...piece.acts].filter((a): a is WriteAct => coldActs.has(a as WriteAct)).map((a) => a.reads!.id));
         const flush = () => {
           for (const [id, list] of need) cut.push({ refresh: id, places: list });
           if (cur.length) cut.push({ acts: cur });
@@ -4050,7 +4216,7 @@ class Emitter {
           else groups.push([a]);
         }
         for (const group of groups) {
-          const reads = group.filter((a): a is WriteAct => "into" in a && !!a.reads && routed.has(a.reads.id));
+          const reads = group.filter((a): a is WriteAct => "into" in a && !!a.reads && (routed.has(a.reads.id) || coldActs.has(a as WriteAct)));
           // (A refresh is a trigger before the actions it is for: not before an action whose fields are places, which
           // keeps the label.)
           if (reads.some((a) => dirty.has(a.reads!.id)) || (reads.length && cur.some((a) => fixed.has(a as Act)))) flush();
@@ -4058,7 +4224,7 @@ class Emitter {
           cur.push(...group);
           for (const a of group) {
             const owner = "into" in a ? cellOf.get(a.into) : undefined;
-            if (owner && routed.has(owner)) dirty.add(owner);
+            if (owner && (routed.has(owner) || coldRead.has(owner))) dirty.add(owner);
           }
         }
         flush();
@@ -4322,8 +4488,8 @@ function joinRuns(triggers: Trigger[], keep: Set<string>): void {
 
 export function liveAfterCalls(body: Stmt[]): Map<Call, Set<string>> {
   const out = new Map<Call, Set<string>>();
-  /** What is live where a `break`, a `continue` and a `return` go. */
-  type Flow = { brk: Set<string>; cont: Set<string>; ret: Set<string> };
+  /** What is live where a `break`, a `continue`, a `return` and an error go. */
+  type Flow = { brk: Set<string>; cont: Set<string>; ret: Set<string>; thr: Set<string> };
   const union = (...xs: Set<string>[]) => new Set(xs.flatMap((x) => [...x]));
   const reads = (e: unknown) => (e && typeof e === "object" ? readIn(e as NumExpr) : new Set<string>());
   const seq = (list: Stmt[], after: Set<string>, flow: Flow): Set<string> => {
@@ -4355,17 +4521,20 @@ export function liveAfterCalls(body: Stmt[]): Map<Call, Set<string>> {
       case "call": {
         const c = s.call;
         // (Recorded on every pass of a loop around it: the last is the one that holds.)
-        if (c.saves) out.set(c, new Set(after));
+        // (What the `catch` it may throw into reads, too: the frame is taken back before the error goes there.)
+        if (c.saves) out.set(c, union(after, flow.thr));
         let live = new Set(after);
         if (c.result) live.delete(c.result.decl.id);
         // An inlined call's body where it is: its `return` goes on to what follows the call.
-        if (c.fn === undefined) live = seq(c.body, live, { brk: live, cont: live, ret: live });
+        if (c.fn === undefined) live = seq(c.body, live, { brk: live, cont: live, ret: live, thr: flow.thr });
         // (A call that may come back sets parameters that are this function's own, and takes back after it what it
         // keeps: what was live after it is so before it too.)
         if (!c.saves) for (const p of c.params) live.delete(p.decl.id);
-        return union(live, ...c.params.map((p) => reads(p.init)));
+        return union(live, flow.thr, ...c.params.map((p) => reads(p.init)));
       }
       case "return": return union(reads(s.value), flow.ret);
+      case "throw": return flow.thr;
+      case "try": return seq(s.body, after, { ...flow, thr: seq(s.catch, after, flow) });
       case "if": return union(reads(s.cond), seq(s.then, after, flow), seq(s.else ?? [], after, flow));
       case "block": return seq(s.body, after, flow);
       case "while": return loop(s.cond, s.body, [], after, true, flow);
@@ -4391,7 +4560,7 @@ export function liveAfterCalls(body: Stmt[]): Map<Call, Set<string>> {
     }
   };
   const none = new Set<string>();
-  seq(body, none, { brk: none, cont: none, ret: none });
+  seq(body, none, { brk: none, cont: none, ret: none, thr: none });
   return out;
 }
 
@@ -4438,6 +4607,12 @@ function writtenIn(list: Stmt[], into = new Set<string>()): Set<string> {
     for (const v of Object.values(s)) if (Array.isArray(v) && v.length && typeof v[0] === "object" && v[0] && "kind" in v[0]) writtenIn(v as Stmt[], into);
   }
   return into;
+}
+
+/** Whether statements end in a `throw`: all they do is on an error's way. */
+function throwsAtEnd(list: Stmt[]): boolean {
+  const last = list.filter((s) => s.kind !== "remark").at(-1);
+  return last?.kind === "throw" || (last?.kind === "block" && throwsAtEnd(last.body));
 }
 
 /** Whether a value or a test reads a cell of an array. */
@@ -5470,6 +5645,7 @@ class Rewriter {
         return [{ ...s, body: this.stmts(s.body), ...(this.own && !pre.length ? { cond } : {}) }];
       }
       case "unrolled": return [{ ...s, iterations: s.iterations.map((it) => this.stmts(it)) }];
+      case "try": return [{ ...s, body: this.stmts(s.body), catch: this.stmts(s.catch) }];
       case "switch": {
         const pre: Stmt[] = [];
         // (Tested against each case: one variable plus a constant — bits under a mask computed first.)
@@ -5554,7 +5730,7 @@ export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0, products: 0
  * call of a function of the Python side's, and nothing read that the body did not write first (there is no one to
  * copy it in; a copy within the body is made of triggers by the layout). Returns the graph, or why it cannot be.
  */
-export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number, players: MapPlayers = ANY_PLAYERS): Graph | string {
+export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number, players: MapPlayers = ANY_PLAYERS, errors?: ProgramErrors): Graph | string {
   // (Every statement must be the emitter's here, so a rewriting it would not take is refused whichever way it goes:
   // no trial is needed.)
   const take = () => true;
@@ -5590,6 +5766,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     scope.functions = functions;
     scope.arrays = arrays;
     scope.bodyOf = bodyOf;
+    scope.errors = errors;
   };
   const rw = new Rewriter(key, take, true, functions);
   rw.arrays = arrays;

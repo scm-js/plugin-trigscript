@@ -3566,9 +3566,10 @@ found what they left out; where a step moved, its old number is given.
 10. **Units** (was 5) ✓ — "Units on our own backend". Every unit value, unit loops, fields, flags, writes and verbs,
     picks, `select()` and the game command it sends (the events' rows are step 11's, `underMouse`'s step 12's); the
     queries scheduled (ideas 6, 7) still to come.
-11. **Tasks, `async` and errors** (was 6; errors new). `start`, `cancel`, `running`, `Promise.all`/`race`/`any`,
-    `every`, `after`, `on.*` handlers, on the walk as the scheduler (idea 2). `try`, `catch`, `finally`, `throw`,
-    `uncaught`, a program's `errors`, the error classes.
+11. **Tasks, `async` and errors** (was 6; errors new). Part 1 ✓: `try`, `catch`, `finally`, `throw`, `uncaught`, a
+    program's `errors`, the error classes — "Errors on our own backend". Part 2: `start`, `cancel`, `running`,
+    `Promise.all`/`race`/`any`, `every`, `after`, a task's error awaited, on the walk as the scheduler (idea 2). Part 3:
+    the `on.*` handlers and the pass that finds what they are handed.
 12. **Input** (was 7; idea 13). Keys, clicks, the mouse, typed lines, sync channels, the `local.*` reads and the user's
     player id. The test harness types and presses through chatEvent's and MSQC's addresses (`GameSim`): it moves with
     them, and the map stops needing what MSQC takes (a location, the Valkyrie's entry, Player 12's units).
@@ -3898,7 +3899,7 @@ Bad Apple: 5, 6, 7, as the fog library. The bullets: 5 (a death count read), 9. 
 
 ### The ledger (2026-10-19)
 
-`ledger/` holds a script for each feature of the language and the library — 843 of them, in folders by area — whose
+`ledger/` holds a script for each feature of the language and the library — 849 of them, in folders by area — whose
 first line says which step of the way off eudplib makes it a map of our own's, and whether a map of our own takes it
 today, in the words of its refusal:
 
@@ -3926,7 +3927,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 8 Texts as values | 48 of 48 |
 | 9 Arrays that grow, the heap | 27 of 27 |
 | 10 Units | 99 of 99 |
-| 11 Tasks, `async` and errors | 0 of 44 |
+| 11 Tasks, `async` and errors | 12 of 50 |
 | 12 Input | 0 of 26 |
 | 13 The map's own triggers | 0 of 13 |
 
@@ -4003,6 +4004,22 @@ the ledger is the list it can be written again from at 4.0.
   are, and a loop's body is written up to three times (place 0, two places a turn). `give()` leaves the game's counts
   as they were (both builds: eudplib's `cgive`), so `command()` after it reads the old owner's; the game's own Give
   Units does not.
+- **Errors on a map of our own (step 11, part 1), what is left:** a call in a loop of a function that may throw is
+  about eudplib's (W1, 0.18 ms to 0.21 for 300): the error costs it one action, but the call itself does not keep step
+  1's lead (1.5×) — the argument is copied into each place of the parameter (here three: its cell, the home a signed
+  comparison reads, the action that adds 1; about 170 ns), and the result is copied out (75 ns). Value ranges carried
+  through calls would let a parameter never below zero be compared without a home; the result could be read where it
+  is. A throw is 3.2× eudplib's (W2), and most of what is left is its message, made where it is thrown (7.3 µs of 8.7
+  when the message has a number in it): the throw could keep where it was thrown and its values, and the message be
+  made only where it is read — a `catch` that reads `e.message`, an uncaught error said — about 1.3 µs a throw, 20×
+  eudplib's, for the many catches that read nothing. In code only an error goes through, a signed comparison still
+  reads its variable's home (the variable plus 2³¹), a place every write keeps. The map is bigger (1.52 MB to 1.05).
+- A variable set from a constant less itself (`j = 1 - j`) is copied a bit at a time — 32 triggers, about 0.5 µs, where
+  eudplib's is two actions: the game's subtract stops at 0, so the emitter copies a variable read times −1 (found
+  weighing the errors probe, 2026-10-22).
+- A call worked out when the script is built that throws is a compile error even inside a `try` (both builds):
+  `try { total += check(9); } catch { … }` says "too big: 9 — this expression is computed when the script is built";
+  JavaScript would catch it. Found writing `tests/emitter.test.ts` ("a map of our own, errors").
 - A map of our own: JSX inside a program was "made while the game runs" even when it held nothing of the program's —
   taken since step 8's part 3;
   (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
@@ -4889,6 +4906,63 @@ Played in Remastered (2026-10-22, recording 18.56.36): all 19 lines word for wor
 game's (193 units, 3 Marines, 115 Zerglings), T about 4.2 s after the first group; the Marine ordered away walks off, the
 one given to Player 2 is shot by Player 1's own, two Marines are in the panel after `select()`, the walked Marine ends
 at the right of the row; no hitch.
+
+### Errors on our own backend (2026-10-22)
+
+Step 11, part 1 (`compiler/backend/errors.ts`, a pass before the texts'; the emitter's `try`, `throw` and `handler`).
+The ledger's rows of errors are taken, 12 of 12 (six added for what they did not reach: an error up through a function
+that calls itself, a stack that runs out caught, `finally` on a `return`, a class's own field and `name`, `e.stack`, an
+uncaught error thrown in a called function). The two rows of a task's error awaited wait for the tasks (part 2).
+
+- **What the front end does already** (B4): before a `throw` it puts the error in flight — its class's code into
+  `Program.errors.thrown`, its message into `message` — copies `finally` before every way out, and makes a program's
+  body a `try` whose `catch` is `uncaught`. `errors.ts` writes out what the emitter would need texts for, before the
+  texts are lowered: the line each error is thrown at into a variable of the program's (one thrown again keeps it),
+  `uncaught` as the print the Python side makes ("TrigScript: uncaught RangeError: …, line N." in red, and the code
+  back to 0), and for a program with a function that calls itself, a function that sets the RangeError of a stack
+  that ran out.
+- **A throw is a jump**: to the `catch` of the nearest `try` around it. In a called function with no `try` around it,
+  out of the function: one that never calls itself goes out through a trigger of its own for errors, whose next
+  pointer each call points at where an error goes from that call, in the trigger that sets where it goes back to — so
+  nothing is looked at on the way back, where eudplib looks at the error in flight after every call of a function
+  that may throw. When every call names the same place, that trigger is given it when the map is built, and the calls
+  set nothing. A function that calls itself goes out from its end, as a `return` does: each call takes its frame back
+  and then looks at the error in flight (a frame keeps what a `catch` after the call reads, too). A `try` costs
+  nothing while nothing is thrown.
+- **A stack that runs out throws a RangeError** ("Maximum call stack size exceeded", at the line of the call), as
+  JavaScript, the simulator and the Python side's build do; a map of our own stopped the program there before, and
+  still does in a program that neither throws nor catches.
+- **What only an error goes through is cold**: statements that end in a `throw`, and a `catch`. What they read of a
+  variable is refreshed from its cell just before it is read, as a routed variable's is, and is never a place of it
+  that every write keeps. Without it, a message made from a parameter cost every call of the function an action and a
+  copy (about 75 ns), and each throw wrote the error's code and its message's lengths into every place a `catch` read
+  them from (about 90 actions a throw in the probe). The payload went from 1.88 MB to 1.21; a throw from 11.4 µs to 8.7.
+  A loop is never cold, its test and its body: it may turn many times on an error's way too (`while (alive()) { … }`
+  and a `throw` after it, the whole body of a program, laid out its reads refreshed at every turn before).
+
+| Lifted game, Remastered's weights (`probes/own-errors.ts`) | Ours | eudplib |
+| --- | ---: | ---: |
+| A–B: a throw caught, classes told apart, messages made while the game runs | **0.211 ms** | 1.492 ms |
+| C–D: thrown again, `finally`, out of called functions | **0.080 ms** | 0.125 ms |
+| E–F: up through a function that calls itself; a stack run out at 1,024 calls, caught | **0.611 ms** | 2.412 ms |
+| W1: 300 calls of a function that may throw, none thrown | **0.183 ms** | 0.208 ms |
+| W2: 100 errors thrown in a called function, each caught (a number in the message) | **0.876 ms** | 2.846 ms |
+| W3: an error up through 40 frames, four times | **0.096 ms** | 0.364 ms |
+| W4: 200 turns through a `try` with a `finally`, one in two left by `continue` | **0.029 ms** | 0.058 ms |
+| the uncaught error said | **0.023 ms** | 0.057 ms |
+| the map | 1.52 MB | 1.05 MB |
+
+W1 is where the call is, not the error: the error costs one action a call. What is left is in the ledger's *Open* list.
+
+Checked: `tests/emitter.test.ts` ("a map of our own, errors": try and catch, the classes and a field, a rethrow and
+`finally` on every way out, out of called functions and a function's own `try`, uncaught, through recursion and its
+frames, the stack run out — and every one of the ledger's scripts of errors — the payload walked from its bytes against
+the simulator); the 30 scripts of `tests/errors.test.ts` a map of our own takes, the same way (once, not kept as a
+test); the probe both ways in the lifted game, every line the same at the same frame and "ok".
+
+Played in Remastered (2026-10-22, recording 20.07.15): all 10 lines word for word and in order, the uncaught error in
+red and nothing after it; the groups 2, 2, 4, 18 and 2 game frames apart, as in the lifted game — the frame a stack runs
+out 1,024 calls deep and the frame of 100 throws among them; no hitch.
 
 ### Triggers stacked (2026-10-20)
 

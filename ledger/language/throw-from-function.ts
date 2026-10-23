@@ -1,4 +1,4 @@
-// ledger: step 11, refused: try
+// ledger: step 11, takes
 // An error thrown in a called function, caught by the `try` around the call.
 function check(n: number) {
   if (n > 2) throw new Error("too big");

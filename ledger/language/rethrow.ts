@@ -1,4 +1,4 @@
-// ledger: step 11, refused: try
+// ledger: step 11, takes
 // An error caught and thrown again, `catch (e) { …; throw e; }`, to a `try` further out.
 program(() => {
   let k = 0;
