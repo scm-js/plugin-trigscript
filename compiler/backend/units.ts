@@ -17,7 +17,7 @@
  * What it does not take — a unit an event gives (step 11), a pick near the mouse and the selection read (step 12) —
  * it leaves as it was, for the emitter to refuse in a script's words.
  */
-import type { At, BoolExpr, Call, CompareOp, FuncDecl, NumExpr, Program, Stmt, UnitExpr, UnitFilter, UnitFlag, UnitNumField, VarDecl } from "../ir";
+import type { ArrayDecl, At, BoolExpr, Call, CompareOp, FuncDecl, NumExpr, Program, Stmt, UnitExpr, UnitFilter, UnitFlag, UnitNumField, VarDecl } from "../ir";
 import type { ActionRecord, ConditionRecord } from "../../vendor/triggers";
 import { STATEMENT_KINDS } from "./emit";
 
@@ -82,6 +82,37 @@ const ME_ID = "@u.me";
  * whole map, as the heap's are, read and moved down by every walk (`scan`).
  */
 export const UNIT_END = "@unit.end";
+
+/**
+ * The frame's events pass (TrigScript 4, step 11, part 3), the map's one, before the programs' turns: a watch of every
+ * unit place (`emit.ts`'s `watch`), whose handler lists this frame's units, each an EPD — what came on, what died, what
+ * took up an order or turned into another type (with what it was) — and how many of each.
+ */
+const MADE = "@ev.made", GONE = "@ev.gone", TURNED = "@ev.turned", TURNED_WAS = "@ev.turnedWas", CHANGED = "@ev.changed", CHANGED_WAS = "@ev.changedWas";
+const MADE_N = "@ev.madeN", GONE_N = "@ev.goneN", TURNED_N = "@ev.turnedN", CHANGED_N = "@ev.changedN";
+/**
+ * What the watch hands its handler: the record's EPD, and the number of the watch trigger's first condition (its next
+ * ones five dwords on); the distance from place 0 of the place the game hands out next.
+ */
+const EV_RECORD = "@ev.e", EV_FIELDS = "@ev.wf", EV_BOUNDARY = "@ev.be";
+const AT0 = { file: "", line: 0, column: 0 };
+/** The pass's variables, one each for the map, which no program declares; and its lists, the map's (a program's events read them). */
+export const EVENT_GLOBALS: readonly VarDecl[] = [MADE_N, GONE_N, TURNED_N, CHANGED_N, EV_RECORD, EV_BOUNDARY, EV_FIELDS].map((id) => ({ id, name: "(events)", kind: "number", shared: true, ...(id === EV_FIELDS ? {} : { routed: true }), global: true, at: AT0 }));
+export const isEventGlobal = (id: string): boolean => id.startsWith("@ev.");
+/** A unit's hit points (256ths, 0 when it died in a fight) and the last player whose attack hurt it. */
+const HP_DWORD = 0x08 >> 2, LAST_ATTACKER = word(0x90, 1);
+/** The most units of each kind a pass hands on in a frame, as the Python side's. */
+const EVENT_CAP = 512;
+type EventSource = "created" | "died" | "killed" | "ordered" | "morphed";
+/** The sources a piece of the IR loops over the events pass's units of. */
+export function eventSources(x: unknown, out = new Set<EventSource>()): Set<EventSource> {
+  if (Array.isArray(x)) { x.forEach((y) => eventSources(y, out)); return out; }
+  if (!x || typeof x !== "object") return out;
+  const o = x as { kind?: string; source?: EventSource };
+  if (o.kind === "unitLoop" && o.source) out.add(o.source);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eventSources(v, out);
+  return out;
+}
 export const UNIT_GLOBALS: readonly VarDecl[] = [{ id: UNIT_END, name: "(units)", kind: "number", shared: true, routed: true, global: true, at: { file: "", line: 0, column: 0 } }];
 /**
  * Each player's list of units: its first unit (a pointer a player, 0 for none), and a unit's place in its owner's list —
@@ -146,7 +177,11 @@ function isStmtList(x: unknown): x is Stmt[] {
  * The program with its units as numbers: `unitValues` (see the file's comment). `owner`: the player the program runs
  * as, when it is one player known when built (the current player of a filter); otherwise read where the game keeps it.
  */
-export function unitValues(program: Program): Program {
+/**
+ * `events`: the sources the map's programs' events loop over, and whether this program lays out the map's one events
+ * pass (`Program.pass`) — the first program that has any.
+ */
+export function unitValues(program: Program, events?: { sources: Set<EventSource>; pass: boolean }): Program {
   if (!hasUnits(program)) return program;
   let here: At = program.at;
   let made = 0;
@@ -372,6 +407,117 @@ export function unitValues(program: Program): Program {
         { kind: "for", cond: pairs ? cmp(">=", q, lim) : cmp(">=", q, ranged(V(LOW), UNIT_TABLE + STRIDE, top + STRIDE)), update: [set(Q, bin("-", V(Q), k(pairs ? 2 * STRIDE : STRIDE)))], body: turns, ...at() } as Stmt,
       ]),
     ];
+  };
+
+  // ── the events pass's units ──
+  const back = (): Stmt => poke(k(CURRENT), ME);
+  const store = (array: string, index: NumExpr, value: NumExpr): Stmt => ({ kind: "store", array, index, value, ...at() });
+  const element = (array: string, index: NumExpr): NumExpr => ({ kind: "element", array, index, ...at() } as NumExpr);
+  /**
+   * A loop over the units this frame's events pass found (`on.*`'s), in the order it found them, the filter asked of
+   * each: one that came on, took up an order or turned into another type and is gone since is passed over; one that died
+   * is its record as it died (the game gives its place to no other unit before the next frame's dying pass).
+   */
+  const eventLoop = (s: Extract<Stmt, { kind: "unitLoop" }>): Stmt[] => {
+    const source = s.source as EventSource;
+    const list = { created: MADE, died: GONE, killed: GONE, ordered: TURNED, morphed: CHANGED }[source];
+    const count = { created: MADE_N, died: GONE_N, killed: GONE_N, ordered: TURNED_N, morphed: CHANGED_N }[source];
+    const was = source === "ordered" ? TURNED_WAS : source === "morphed" ? CHANGED_WAS : undefined;
+    const type = s.filter.type;
+    if (type !== undefined && type >= 228 && GROUP_BITS[type] === undefined) throw new Leave();
+    const pre: Stmt[] = [];
+    const I = fresh("ei"), E = fresh("ee");
+    const e = V(E);
+    const who = s.filter.owner !== undefined ? playerOf(s.filter.owner, pre) : undefined;
+    const box = s.filter.at ? sides(s.filter.at, pre) : undefined;
+    const by = s.event?.by !== undefined ? playerOf(s.event.by, pre) : undefined;
+    const asks: BoolExpr[] = [];
+    if (source !== "died" && source !== "killed") asks.push(cmp(">=", peek(of(e, SPRITE)), k(1)), cmp(">=", bits(e, ORDER), k(0x100)));
+    // (Died in a fight: no hit points, the last attack one of the eight players'.)
+    if (source === "killed") asks.push(cmp("==", peek(of(e, HP_DWORD)), k(0)), cmp("<=", read(e, LAST_ATTACKER), k(7)));
+    if (by) asks.push(cmp("==", read(e, LAST_ATTACKER), by));
+    if (s.event?.order !== undefined) asks.push(cmp("==", bits(e, ORDER), k(s.event.order * 256)));
+    if (who) asks.push(cmp("==", read(e, OWNER), who));
+    if (type !== undefined && type < 228) asks.push(cmp("==", read(e, TYPE), k(type)));
+    if (box) {
+      const [l, t, r, b] = box;
+      const xy = (mask: number) => peek(of(e, POSITION), mask);
+      asks.push(cmp(">=", xy(0xffff), l), cmp("<=", xy(0xffff), r), cmp(">=", xy(0xffff0000), ranged(bin("*", t, k(0x10000)), 0, 0xffff0000)), cmp("<=", xy(0xffff0000), ranged(bin("*", b, k(0x10000)), 0, 0xffff0000)));
+    }
+    let inner: Stmt[];
+    turns.set(s.decl.id, { q: e, killed: mayKill(s.body) });
+    try {
+      inner = stmts(s.body);
+    } finally {
+      turns.delete(s.decl.id);
+    }
+    if (s.was) inner = [{ kind: "declare", decl: s.was, init: source === "killed" ? k(0) : element(was!, V(I)), ...at() }, ...(source === "killed" ? readInto(s.was.id, e, LAST_ATTACKER) : []), ...inner];
+    if (type !== undefined && GROUP_BITS[type] !== undefined) {
+      // (A trigger's class: the type's group byte, read where units.dat keeps it.)
+      const ty = fresh("ty"), qt = fresh("tq"), bit = GROUP_BITS[type], tyv = ranged(V(ty), 0, 0xffff);
+      inner = [dec(ty, k(0), 0xffff), ...readInto(ty, e, TYPE), dec(qt, bin(">>>", tyv, k(2)), 0x3fff),
+        ...when(any([0, 1, 2, 3].map((r) => all([cmp("==", bin("&", tyv, k(3)), k(r)), cmp(">=", peek(bin("+", k(GROUPS), V(qt)), (bit * 2 ** (8 * r)) >>> 0), k(1))]))), inner)];
+    }
+    return [...pre, dec(I, k(0)), { kind: "for", cond: cmp("<", V(I), V(count)), update: [set(I, bin("+", V(I), k(1)))], body: [dec(E, element(list, V(I))), ...when(all(asks), inner)], ...at() } as Stmt];
+  };
+
+  /**
+   * The frame's events pass: the counts back to 0, and the watch of every unit place (`emit.ts`), whose conditions read
+   * the place's record where it is against what it saw there last — its uniqueness byte, and as the program's events
+   * need them its order (whether it is alive, or which) and its type. The handler, for a place
+   * that changed: what the watch saw, read from its conditions' numbers through the current player pointed at the
+   * first, and the record as it is now; a unit of another uniqueness byte that is alive came on, the one seen
+   * alive and alive no more died, one that took up another order or turned into another type did; and what it sees now
+   * written back into the conditions' numbers. As the simulator, newest first: the places walked so.
+   */
+  const pass = (sources: Set<EventSource>): Stmt[] => {
+    here = AT0;
+    const died = sources.has("died") || sources.has("killed"), ordered = sources.has("ordered"), morphed = sources.has("morphed");
+    type Field = { name: string; dword: number; mask?: number; compare: "atLeast" | "exactly"; read: number };
+    // (The uniqueness byte first: the watch of a place whose unit is not alive ends there. The game hands a place's
+    // first unit a byte above 0, and every unit dies through the order Die, its sprite still there.)
+    const fields: Field[] = [{ name: "uid", dword: UID.dword, mask: 0xff00, compare: "exactly", read: 0xff00 }];
+    if (ordered) fields.push({ name: "order", dword: ORDER.dword, mask: 0xff00, compare: "exactly", read: 0xff00 });
+    else if (died) fields.push({ name: "alive", dword: ORDER.dword, mask: 0xff00, compare: "atLeast", read: 0x100 });
+    if (morphed) fields.push({ name: "type", dword: TYPE.dword, mask: 0xffff, compare: "exactly", read: 0xffff });
+    const old = (name: string) => `@ev.was.${name}`, now = (name: string) => `@ev.now.${name}`;
+    const e = V(EV_RECORD);
+    const step = (by: number): Stmt => ({ kind: "action", record: { location: 0, text: 0, wav: 0, time: 0, player: 0, target: by, unitId: 0, type: 45, modifier: 8, flags: 0, padding: 0, mask: 0 }, variables: [{ field: "player", bits: 32, name: "at", expr: k(CURRENT) }], ...at() } as Stmt);
+    const out: Stmt[] = [set(MADE_N, k(0))];
+    if (died) out.push(set(GONE_N, k(0)));
+    if (ordered) out.push(set(TURNED_N, k(0)));
+    if (morphed) out.push(set(CHANGED_N, k(0)));
+    const h: Stmt[] = [];
+    // What the watch saw, its conditions' numbers five dwords apart.
+    h.push(poke(k(CURRENT), V(EV_FIELDS)));
+    fields.forEach((f, i) => { if (i) h.push(step(5)); h.push(dec(old(f.name), peek(k(CURRENT_PLAYER), f.read))); });
+    h.push(back());
+    // What the place holds now.
+    // (Read into a variable only what is compared or written back; whether it is alive asked of the record.)
+    h.push(dec(now("uid"), peek(of(e, UID.dword), 0xff00)));
+    if (ordered) h.push(dec(now("order"), peek(of(e, ORDER.dword), 0xff00)));
+    if (morphed) h.push(dec(now("type"), peek(of(e, TYPE.dword), 0xffff)));
+    const ALIVE = "@ev.alive";
+    h.push(dec(ALIVE, k(0), 1), ...when(all([cmp(">=", peek(of(e, SPRITE)), k(1)), cmp(">=", ordered ? V(now("order")) : peek(of(e, ORDER.dword), 0xff00), k(0x100))]), [set(ALIVE, k(1))]));
+    const listed = (list: string, n: string, extra: Stmt[] = []): Stmt[] => when(cmp("<", V(n), k(EVENT_CAP)), [store(list, V(n), e), ...extra, set(n, bin("+", V(n), k(1)))]);
+    const same: Stmt[] = [];
+    if (died) same.push(...when(all([cmp(">=", V(old(ordered ? "order" : "alive")), k(0x100)), cmp("==", V(ALIVE), k(0))]), listed(GONE, GONE_N)));
+    if (ordered) same.push(...when(all([cmp("==", V(ALIVE), k(1)), cmp("!=", V(now("order")), V(old("order")))]), listed(TURNED, TURNED_N, [store(TURNED_WAS, V(TURNED_N), bin(">>>", V(old("order")), k(8)))])));
+    if (morphed) same.push(...when(all([cmp("==", V(ALIVE), k(1)), cmp("!=", V(now("type")), V(old("type")))]), listed(CHANGED, CHANGED_N, [store(CHANGED_WAS, V(CHANGED_N), V(old("type")))])));
+    h.push(...when(cmp("!=", V(now("uid")), V(old("uid"))), when(cmp("==", V(ALIVE), k(1)), listed(MADE, MADE_N)), same));
+    // What it sees now, into the watch's numbers: whether it is alive, or its order. For a unit not alive, only another
+    // in its place is news: the second condition's kind (the top byte of its dword after the number) is 0 then, and
+    // the game reads no further.
+    const seen: Record<string, NumExpr> = { uid: V(now("uid")), order: ordered ? V(now("order")) : k(0), alive: bin("*", V(ALIVE), k(0x100)), type: morphed ? V(now("type")) : k(0) };
+    h.push(poke(k(CURRENT), V(EV_FIELDS)));
+    fields.forEach((f, i) => {
+      if (i) h.push(step(i === 2 ? 4 : 5));
+      h.push(poke(k(CURRENT_PLAYER), seen[f.name]));
+      if (i === 1) h.push(step(1), poke(k(CURRENT_PLAYER), bin("*", V(ALIVE), k(0x0f000000)), 0xff000000));
+    });
+    h.push(back());
+    out.push({ kind: "watch", fields: fields.map(({ dword, mask, compare }) => ({ dword, ...(mask !== undefined ? { mask } : {}), compare })), handler: h, ...at() } as Stmt);
+    return out;
   };
 
   /** A pick: the first unit the filter matches, the nearest to a location's centre, or one drawn at random. */
@@ -801,7 +947,7 @@ export function unitValues(program: Program): Program {
         return [...pre, { kind: "assign", target: p.e, value: u.e, at: s.at, label: s.label }, { kind: "assign", target: p.k, value: kv, at: s.at, label: s.label }];
       }
       case "unitLoop": {
-        if (s.source) throw new Leave();
+        if (s.source) return [...pre, ...eventLoop(s)];
         const killed = mayKill(s.body);
         const out = scan(s.filter, pre, (q) => {
           turns.set(s.decl.id, { q, killed });
@@ -812,6 +958,12 @@ export function unitValues(program: Program): Program {
           }
         });
         return [...pre, ...out];
+      }
+      // (A task's call as an inlined call's: a unit among its parameters two numbers, its body rewritten.)
+      case "start": {
+        callOf(s.call, pre);
+        const made = pre.pop() as Extract<Stmt, { kind: "call" }>;
+        return [...pre, { ...s, call: made.call }];
       }
       case "unitWrite": write(s, pre); return pre;
       case "unitDo": verb(s, pre); return pre;
@@ -869,6 +1021,11 @@ export function unitValues(program: Program): Program {
   });
   here = program.at;
   const body = stmts(program.body);
+  // The map's events pass, and its lists, in the program that lays it out; the lists in every program that reads them.
+  const sources = events?.sources ?? new Set<EventSource>();
+  const passed = events?.pass && sources.size ? { pass: pass(sources) } : {};
+  const lists = sources.size ? [MADE, ...(sources.has("died") || sources.has("killed") ? [GONE] : []), ...(sources.has("ordered") ? [TURNED, TURNED_WAS] : []), ...(sources.has("morphed") ? [CHANGED, CHANGED_WAS] : [])] : [];
+  const arrays = [...(program.arrays ?? []), ...lists.map((id): ArrayDecl => ({ id, name: "(events)", kind: "number", length: EVENT_CAP, shared: true, at: AT0 }))];
   if (usesMe) body.unshift(dec(ME_ID, peek(k(CURRENT))));
-  return { ...program, body, ...(program.functions ? { functions: rewritten } : {}) };
+  return { ...program, body, ...(program.functions ? { functions: rewritten } : {}), ...passed, ...(lists.length ? { arrays } : {}) };
 }

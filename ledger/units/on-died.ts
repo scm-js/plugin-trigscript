@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an event handled (on.died)
+// ledger: step 11, takes
 // Every unit that dies or is removed, handed to a function as it was: `on.died((u) => …)`.
 program(async () => {
   let n = 0;

@@ -695,6 +695,13 @@ export type Stmt =
   | { kind: "textBlock"; decl: VarDecl; block: string; bytes: number; text?: string; data?: boolean; at: At }
   /** A map of our own only: Display Text of block `block` as it is now, to `to` as a print's is. */
   | { kind: "showText"; block: string; bytes: number; to: number; at: At }
+  /**
+   * A map of our own only (`compiler/backend/units.ts`): the events pass's watch of the game's unit places — a trigger
+   * for each, whose conditions read `fields` of the unit record where it is (`dword` into it, `mask`) against what the
+   * trigger saw there last, its own numbers. A place as it was goes on to the next; one that changed runs `handler`,
+   * with `@ev.e` the record's EPD and the current player at the trigger's first condition's number (`emit.ts`).
+   */
+  | { kind: "watch"; fields: { dword: number; mask?: number; compare: "atLeast" | "exactly" }[]; handler: Stmt[]; at: At; label: string }
   /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */
   | { kind: "graph"; graph: Graph; original: Stmt[]; at: At; label: string };
 
@@ -710,6 +717,11 @@ export interface Program {
   functions?: FuncDecl[];
   /** Present when the program throws or catches anything (B4): where an error in flight is kept. */
   errors?: ProgramErrors;
+  /**
+   * A map of our own only (`compiler/backend/units.ts`): the frame's events pass — what came onto the map, died, took up
+   * an order or turned into another type since the pass before — run before the programs' turns, once for the map.
+   */
+  pass?: Stmt[];
   body: Stmt[];
   at: At;
 }

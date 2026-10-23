@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an event handled (on.created)
+// ledger: step 11, takes
 // An event's listening stopped by the task it gives back: `const t = on.created(…); t.cancel()`.
 program(async () => {
   const t = on.created((u) => {

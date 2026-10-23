@@ -3568,8 +3568,8 @@ found what they left out; where a step moved, its old number is given.
     queries scheduled (ideas 6, 7) still to come.
 11. **Tasks, `async` and errors** (was 6; errors new). Part 1 ✓: `try`, `catch`, `finally`, `throw`, `uncaught`, a
     program's `errors`, the error classes — "Errors on our own backend". Part 2 ✓: `start`, `cancel`, `running`,
-    `Promise.all`/`race`/`any`, `every`, `after`, a task's error awaited — "Tasks on our own backend". Part 3: the
-    `on.*` handlers and the pass that finds what they are handed.
+    `Promise.all`/`race`/`any`, `every`, `after`, a task's error awaited — "Tasks on our own backend". Part 3 ✓: the
+    `on.*` handlers and the pass that finds what they are handed — "Unit events on our own backend".
 12. **Input** (was 7; idea 13). Keys, clicks, the mouse, typed lines, sync channels, the `local.*` reads and the user's
     player id. The test harness types and presses through chatEvent's and MSQC's addresses (`GameSim`): it moves with
     them, and the map stops needing what MSQC takes (a location, the Valkyrie's entry, Player 12's units).
@@ -3927,7 +3927,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 8 Texts as values | 48 of 48 |
 | 9 Arrays that grow, the heap | 27 of 27 |
 | 10 Units | 99 of 99 |
-| 11 Tasks, `async` and errors | 35 of 50 |
+| 11 Tasks, `async` and errors | 50 of 50 |
 | 12 Input | 0 of 26 |
 | 13 The map's own triggers | 0 of 13 |
 
@@ -4023,6 +4023,16 @@ the ledger is the list it can be written again from at 4.0.
   is a condition that fails each frame (13 ns), one with nothing in it a trigger passed by as done: a timer wheel
   (idea 2) would make a sleeper cost nothing until its frame. "did not start" is said in red by the game, as the Python
   side's build says it, where the simulator notes a fault (both builds).
+- **Unit events on a map of our own (step 11, part 3), what is left:** the watch costs every place the game has handed
+  out 48–60 ns a frame, so a frame where nothing comes on and nothing is dying grows with the map's units, where
+  eudplib's build without `on.order` looks at its lists' heads alone: 9.3 µs against 5.2 with 128 places, and at the
+  full table about 90 against 5. The way out is a gate that passes the watch by when nothing can have changed: the head
+  of the game's list of free places (it moves when a unit is handed a place or one is freed) and a count that moves
+  when a unit starts to die (a player's losses), a dozen conditions — to be read in both games first, since Remastered
+  links its lists otherwise. Without `on.order` or `on.morphed` only.
+  The handler reads a changed place's values a bit at a time, about 4 µs for a unit made: through the current player,
+  pointed at the record once, instead of a copy of the record's EPD for every read. The 1,700 places are two triggers
+  each (1.84 MB against eudplib's 1.27 for the probe without `on.order`): a stub of fewer actions packs tighter.
 - A variable set from a constant less itself (`j = 1 - j`) is copied a bit at a time — 32 triggers, about 0.5 µs, where
   eudplib's is two actions: the game's subtract stops at 0, so the emitter copies a variable read times −1 (found
   weighing the errors probe, 2026-10-22).
@@ -5032,6 +5042,63 @@ line the same at the same frame and "ok".
 Played in Remastered (2026-10-22, recording 20.57.34): all 9 lines word for word and in order, "did not start" in red;
 each group at the lifted game's frame (2, 14, 22, 29, 40, 43, 47, 75), the frames where 32 tasks start among them; no
 hitch.
+
+### Unit events on our own backend (2026-10-22)
+
+Step 11, part 3 (`compiler/backend/units.ts`: the events pass's handler and the loops over what it found; the emitter's
+`watch`; the pass before the run's `@wake` in the layout). The ledger's 15 rows of `on.*` are taken: step 11 is done,
+50 of 50.
+
+- **The map's events pass**, once for the map before every program's turn (laid out by the first program with events,
+  for what all of them loop over), is a watch of the game's unit places: a trigger for each, whose conditions read the
+  place's record where it is against what the trigger saw there last, its own conditions' numbers — the uniqueness
+  byte, and as the events need them whether the unit is alive or its order, and its type. A place as it was is that
+  one trigger: its conditions hold, and its two actions put the trigger before it back and go on to the next. One that
+  changed goes to its stub (the record's EPD, where the trigger's numbers are, where to go on) and to the handler, laid
+  out once: a unit of another uniqueness byte that is alive came on, the one seen alive and alive no more died, one
+  that took up another order or turned into another type did; and what it sees now goes back into the trigger's
+  numbers.
+- **A place whose unit is dead or gone is watched by its uniqueness byte alone:** the handler writes 0 into the kind of
+  the trigger's second condition, and the game reads no further (48 ns a place against 60 for one alive). Every unit
+  dies through the order Die, its sprite still there, and the game hands a place's first unit a uniqueness byte above
+  0, so the sprite is not watched.
+- **The places are walked newest first**, as the simulator hands units on: from the place the game will hand out next
+  (the boundary) up to place 1 699, then place 0. The game hands places out in that order and never-used ones last, so
+  the boundary only moves down: when the handler sees it handed out, the walk starts at the next one from then on, and
+  goes on from there in the same frame.
+- **A listener** is a task that loops over what the pass found, as the front end writes it; a handler that waits starts
+  a task for each unit it is handed. What was on the map before the first pass is not handed on: a listener sleeps a
+  frame before it first looks (eudplib's build is the same).
+- **Built first, the eudplib build's way:** walking the game's lists by their pointers. A record cost about 3.2 µs a
+  frame against eudplib's 1.9 (the pointer read a bit at a time and copied into the places that read it): 46 units
+  dying cost 146 µs a frame against 89, and `on.order` 221 against 164. It was replaced before the merge.
+- **Found on the way:** an action whose number is a place is found by its index in its trigger, counted over the
+  trigger's actions — a write before it in the same trigger moved it. A unit's place in a task's call (`start`) was
+  rewritten as an expression, not as statements. An empty trigger whose next pointer is written must be kept.
+
+| Lifted game, Remastered's weights, µs a frame (`probes/own-events.ts`; without `on.order` beside it) | Ours | eudplib |
+| --- | ---: | ---: |
+| nothing coming or going, `on.order` among the events | **7.2** | 164 |
+| forty-six units dying, `on.order` among the events | **9.0** | 224 |
+| forty units made / killed in a frame, `on.order` among the events | **227 / 228** | 506 / 528 |
+| without `on.order`: forty-six units dying | **8.7** | 89 |
+| without `on.order`: forty units made / killed in a frame | **188 / 180** | 248 / 392 |
+| without `on.order`: nothing coming or going, about 80 places handed out | 6.7 | **5.1** |
+| without `on.order`: the same, 128 places handed out | 9.3 | **5.2** |
+| the first frame (the listeners started) | **249** | 1,272 |
+| the map, `on.order` among the events / without | 1.96 / 1.84 MB | **1.78 / 1.27 MB** |
+
+eudplib's build without `on.order` looks at its lists' heads alone when nothing comes on and nothing is dying: on such
+a frame it is ahead, by 60 ns for each place the game has handed out (Open, below). Every other frame is ours.
+
+Checked: `tests/emitter.test.ts` ("a map of our own, unit events": a unit table laid out as the game keeps it, changed
+between frames — a unit handed out, an order taken up, a type changed, a unit dying in a fight, its place handed to
+another — the payload walked from its bytes frame after frame, each line at its frame; a handler that waits, a task
+each); `probes/own-events.ts` and the same without `on.order`, both ways in the lifted game, every line the same at
+the same frame and "ok".
+
+Played in Remastered (2026-10-22, recording 21.59.29, the lists' build): all 7 lines word for word and in order, each at
+the lifted game's frame (2, 4, 6, 12, 15, 29); the Marines made and killed as the script says; no hitch.
 
 ### Triggers stacked (2026-10-20)
 

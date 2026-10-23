@@ -30,7 +30,7 @@
  * went on — a trigger of a few conditions and actions in a little over 200 bytes, not 2,408. A row a doubling trigger
  * walks (`Graph.rows`) is stacked as one, its triggers 2,408 bytes apart.
  */
-import { END, NOW, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
+import { END, NOW, PASS_END, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { TRIGGER_LISTS, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 import type { ScriptString } from "../runtime";
 
@@ -281,11 +281,13 @@ export function layout(input: LayoutInput): OwnMap {
   // past the program once woken.
   const wake = (i: number) => (i ? `@wake#${i}` : "@wake"), init = (i: number) => (i ? `@init#${i}` : "@init");
   const stop = "@stop", run = "@run", entry = (p: number) => `@entry${p}`, gate = (p: number) => `@gate${p}`;
-  const after = (i: number) => (i + 1 < runs.length ? wake(i + 1) : stop);
+  // (A run whose graph holds the map's events pass goes through it first.)
+  const first = (i: number) => runs[i].graph.pass ?? wake(i);
+  const after = (i: number) => (i + 1 < runs.length ? first(i + 1) : stop);
   const list = (p: number) => TRIGGER_LISTS + 12 * p;
   const listEnd = (p: number) => u(~(list(p) + 4));
   // (Where each run's graph ends: the next run.)
-  const ends = new Map<string, string>(runs.map((_, i) => [i ? `${END}#${i}` : END, after(i)]));
+  const ends = new Map<string, string>(runs.flatMap((_, i): [string, string][] => [[i ? `${END}#${i}` : END, after(i)], [i ? `${PASS_END}#${i}` : PASS_END, wake(i)]]));
   const endOf = (l: string) => ends.get(l) ?? l;
   type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number; off?: boolean };
   const triggers: T[] = runs.flatMap(({ graph, owner }, i) => [
@@ -323,7 +325,7 @@ export function layout(input: LayoutInput): OwnMap {
       next: listEnd(p),
     })),
     // Every entry and gate back to ending at its list's end, the count of frames one more, then the first run.
-    { label: run, conds: [], acts: [...players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), { dword: { var: NOW }, modifier: "add", value: 1 }], next: wake(0) },
+    { label: run, conds: [], acts: [...players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), { dword: { var: NOW }, modifier: "add", value: 1 }], next: first(0) },
   );
   for (const t of runs.flatMap((r) => r.graph.triggers)) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
   // The triggers stacked, a row as one.

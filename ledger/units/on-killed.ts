@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an event handled (on.killed)
+// ledger: step 11, takes
 // Every unit killed in a fight, with the player whose attack killed it: `on.killed((u, by) => …)`.
 program(async () => {
   on.killed((u, by) => {

@@ -840,7 +840,7 @@ export function growingArrays(program: Program, cells = HEAP_CELLS): Program {
 /** The statements whose bodies run again and again. */
 const LOOPS = new Set(["while", "do", "for", "unitLoop", "textLoop", "unrolled"]);
 /** The kinds of statement (a `call` and a `pop` with a label: an expression of either has none). */
-const STMT_KINDS = new Set(["action", "assign", "assignBool", "assignText", "assignUnit", "block", "break", "buildText", "call", "cancel", "centerLocation", "continue", "declare", "declareArray", "do", "for", "graph", "if", "parallel", "pop", "print", "push", "releaseText", "remark", "return", "select", "setLength", "sleep", "start", "store", "storeText", "switch", "syncSend", "tableWrite", "textLoop", "throw", "try", "uncaught", "unitDo", "unitLoop", "unitWrite", "unrolled", "while"]);
+const STMT_KINDS = new Set(["action", "assign", "assignBool", "assignText", "assignUnit", "block", "break", "buildText", "call", "cancel", "centerLocation", "continue", "declare", "declareArray", "do", "for", "graph", "if", "parallel", "pop", "print", "push", "releaseText", "remark", "return", "select", "setLength", "sleep", "start", "store", "storeText", "switch", "syncSend", "tableWrite", "textLoop", "throw", "try", "uncaught", "unitDo", "unitLoop", "unitWrite", "unrolled", "watch", "while"]);
 
 /**
  * The variables the closures count (`VarDecl.held`: a reference to an environment, a row of the front end's arrays — the
