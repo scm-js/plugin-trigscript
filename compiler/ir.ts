@@ -695,6 +695,12 @@ export type Stmt =
   | { kind: "textBlock"; decl: VarDecl; block: string; bytes: number; text?: string; data?: boolean; at: At }
   /** A map of our own only: Display Text of block `block` as it is now, to `to` as a print's is. */
   | { kind: "showText"; block: string; bytes: number; to: number; at: At }
+  /**
+   * A map of our own only (`compiler/backend/units.ts`): the current player pointed at the dword of `table` — a table of
+   * the events pass's, a dword for each of the game's unit places, 336 bytes apart as they are — that is the unit's whose
+   * record's EPD `of` is: `of` plus the distance from the unit table to the table, which the layout knows.
+   */
+  | { kind: "pointAt"; of: NumExpr; table: string; at: At; label: string }
   /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */
   | { kind: "graph"; graph: Graph; original: Stmt[]; at: At; label: string };
 
@@ -710,6 +716,11 @@ export interface Program {
   functions?: FuncDecl[];
   /** Present when the program throws or catches anything (B4): where an error in flight is kept. */
   errors?: ProgramErrors;
+  /**
+   * A map of our own only (`compiler/backend/units.ts`): the frame's events pass — what came onto the map, died, took up
+   * an order or turned into another type since the pass before — run before the programs' turns, once for the map.
+   */
+  pass?: Stmt[];
   body: Stmt[];
   at: At;
 }

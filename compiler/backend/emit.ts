@@ -24,7 +24,7 @@ import type { Range } from "../ranges";
 import { PlayerGroup, type ActionRecord, type ConditionRecord } from "../../vendor/triggers";
 import { actionDef } from "../../vendor/triggerDefs";
 import { OVERFLOW_FN, errorLine } from "./errors";
-import { END, MOST_ACTS, MOST_CONDS, NOW, STACK, SWITCHES, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, checkGraph, nextOf, type Act, type ActPart, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
+import { END, MOST_ACTS, MOST_CONDS, NOW, PASS_END, STACK, SWITCHES, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, checkGraph, nextOf, type Act, type ActPart, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
 export const GAME_TICK = 0x57f23c;
@@ -409,6 +409,8 @@ const CENTRE_LINE = 0x640b60 + 218 * 12, CENTRE_BYTES = 218, FIRST_FREE_UNIT = 0
 export const TRIGGER_LISTS = 0x51a280;
 /** Where the game keeps the current player: whom Display Text shows to, and what "the current player" names. */
 const CURRENT_PLAYER_ADDRESS = 0x6509b0;
+/** The game's unit table: its places, how far apart, the first one's EPD (a table of the events pass's is laid out as it). */
+const UNIT_PLACES = 1700, UNIT_STRIDE = 336, UNIT_TABLE_EPD = (0x59cca8 - 0x58a364) / 4;
 /**
  * The map's player settings, as a map of our own needs them (TrigScript 4, step 7): the slots a human or a computer
  * plays (0-based, P1 to P8), and each slot's force (0 to 3). Who a program runs for, who All Players and a force are,
@@ -490,7 +492,7 @@ function gameConds(r: ConditionRecord, when: boolean): Cond[] | "true" | "false"
 }
 
 /** The kinds of statement, told apart from the expressions of the same name (`pop`, `call`). */
-export const STATEMENT_KINDS = new Set(["declare", "assignText", "storeText", "releaseText", "textLoop", "assign", "declareArray", "store", "push", "setLength", "assignBool", "assignUnit", "unitLoop", "unitWrite", "unitDo", "tableWrite", "if", "while", "do", "for", "unrolled", "switch", "break", "continue", "return", "sleep", "parallel", "start", "cancel", "action", "syncSend", "select", "centerLocation", "print", "buildText", "block", "try", "throw", "uncaught", "remark", "graph"]);
+export const STATEMENT_KINDS = new Set(["declare", "assignText", "storeText", "releaseText", "textLoop", "assign", "declareArray", "store", "push", "setLength", "assignBool", "assignUnit", "unitLoop", "unitWrite", "unitDo", "tableWrite", "if", "while", "do", "for", "unrolled", "switch", "break", "continue", "return", "sleep", "parallel", "pointAt", "start", "cancel", "action", "syncSend", "select", "centerLocation", "print", "buildText", "block", "try", "throw", "uncaught", "remark", "graph"]);
 
 // ── what the emitter takes ──
 
@@ -1111,12 +1113,13 @@ class Scope {
         return true;
       }
       case "return": return (this.native && this.returning.length > 0 && this.returned(s)) || this.island(s);
-      // (A map of our own: the slots `planTasks` made; listening — `on.*` — is part 3's.)
+      // (A map of our own: the slots `planTasks` made — a listener's, `on.*`'s, as any other's.)
       case "start": {
-        const slots = this.native && !s.listen ? this.slots.get(s) : undefined;
+        const slots = this.native ? this.slots.get(s) : undefined;
         return (!!slots && slots.every((slot) => this.taskCall(slot.call))) || this.island(s);
       }
       case "cancel": return (this.native && this.lowers(s.task) && (this.num(s.task), true)) || this.island(s);
+      case "pointAt": return (this.native && this.lowers(s.of) && (this.num(s.of), true)) || this.island(s);
       case "parallel": return (this.native && s.branches.every((b) => this.stmts(b, false))) || this.island(s);
       // (Where a `throw` goes is the emitter's, `Emitter.handler`: the program keeps the error in flight.)
       case "try": return (this.native && !!this.errors && this.stmts(s.body, inLoop) && this.stmts(s.catch, inLoop)) || this.island(s);
@@ -1892,6 +1895,7 @@ class Emitter {
       case "break": return this.goto(this.loops[this.loops.length - 1].exit);
       case "continue": return this.goto(this.loops[this.loops.length - 1].cont);
       case "start": return this.scope.islands.has(s) ? this.left(s) : this.start(s);
+      case "pointAt": return this.pointAt(s);
       case "cancel": return this.scope.islands.has(s) ? this.left(s) : this.cancel(s);
       case "parallel": return this.scope.islands.has(s) ? this.left(s) : this.parallel(s);
       case "try": {
@@ -2671,6 +2675,20 @@ class Emitter {
     this.open().items.push({ route: { from: NOW, into: [co.tick], add: frames } }, { act: { dword: co.at, modifier: "set", value: { label: resume } } });
     this.goto(co.yieldTo);
     this.push({ label: resume, conds: [], items: [{ act: co.reset }], ...(then ? { next: then } : {}) });
+  }
+
+  /**
+   * The current player at a unit's dword of a table of the events pass's (`units.ts`): set to the unit's EPD (a place
+   * of it), then the distance from the unit table to the table added, as the layout has it. The table a region of
+   * plain dwords, one a unit place, 336 bytes apart.
+   */
+  pointAt(s: Extract<Stmt, { kind: "pointAt" }>): void {
+    if (!this.regions.has(s.table)) this.regions.set(s.table, { id: s.table, cells: UNIT_PLACES, stride: UNIT_STRIDE });
+    const l = linear(s.of)!;
+    const set: Act = { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "set", value: u(l.c) };
+    if (l.terms.length) this.actPlaces.set(set, { value: { id: l.terms[0].id, scale: l.terms[0].k, add: l.c } });
+    // (A trigger of its own, its actions first: an action whose number is a place is found by its index there.)
+    this.push({ conds: [], items: [{ act: set }, { act: { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "add", value: { epdOf: s.table, plus: u(-UNIT_TABLE_EPD) } } }] });
   }
 
   /** A trigger of a slot's or a branch's that says whether nothing runs in it (done) or something does. */
@@ -6093,7 +6111,7 @@ export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0, products: 0
  * call of a function of the Python side's, and nothing read that the body did not write first (there is no one to
  * copy it in; a copy within the body is made of triggers by the layout). Returns the graph, or why it cannot be.
  */
-export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number, players: MapPlayers = ANY_PLAYERS, errors?: ProgramErrors): Graph | string {
+export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number, players: MapPlayers = ANY_PLAYERS, errors?: ProgramErrors, pass?: Stmt[]): Graph | string {
   // (Every statement must be the emitter's here, so a rewriting it would not take is refused whichever way it goes:
   // no trial is needed.)
   const take = () => true;
@@ -6141,10 +6159,14 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   const planned = planTasks(block.length === 1 ? block[0] : ({ kind: "block", body: block, at: body[0]?.at } as Stmt), key, known, arrays);
   if (typeof planned === "string") return planned;
   const s = planned.root;
+  // (The map's events pass, its statements as the program's: laid out apart, before the run's `@wake`.)
+  const passed = pass?.length ? rw.stmt({ kind: "block", body: pass, at: pass[0].at } as Stmt) : [];
+  const passStmt: Stmt | undefined = passed.length ? { kind: "block", body: passed, at: pass![0].at } : undefined;
   const scope = new Scope(known);
   rules(scope);
   scope.slots = planned.slots;
   scope.once = planned.once;
+  if (passStmt && !scope.stmt(passStmt, false)) return scope.why || "the events pass";
   // (The map's own variables, which no program declares and no run's start sets: 0 as the map starts, one cell each.)
   for (const d of known.values()) if (d.global) scope.declared.add(d.id);
   if (!scope.stmt(s, false)) return scope.why || "?";
@@ -6188,6 +6210,13 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
       if (!e.pending.length && !e.pendingTasks.length) break;
     }
     const tasks = e.turnOfTasks();
+    // The events pass: in a trigger of its own, kept, which the layout sends the walk to before the run's `@wake`.
+    const passAt = `${key}:pass`;
+    if (passStmt) {
+      e.push({ label: passAt, conds: [], items: [], keep: true });
+      e.stmt(passStmt);
+      e.goto(PASS_END);
+    }
     e.settleThrown();
     e.emitDigits();
     if (start) {
@@ -6204,6 +6233,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     }
     if (typeof g !== "string" && e.templates.length) g.templates = e.templates;
     if (typeof g !== "string" && tasks) g.tasks = tasks;
+    if (typeof g !== "string" && passStmt) g.pass = passAt;
     if (typeof g !== "string" && e.regions.size) g.cells = [...e.regions.values(), ...(g.cells ?? [])];
     const cells = typeof g === "string" ? 0 : (g.cells ?? []).reduce((n, r) => n + r.cells, 0);
     if (cells > STACK_CELLS_MOST) return { e, g: `arrays and stacks of ${cells} cells, past the ${STACK_CELLS_MOST} a map of our own lays out (72 bytes a cell)` };

@@ -199,8 +199,19 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
  * `tasks`: where a run's tasks have their turn (a map of our own): the walk goes there after the program's turn, and when
  * the program's wake does not hold; it ends at `END`.
  */
-export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number; data?: boolean }[]; rows?: string[][]; tasks?: string }
-export interface Region { id: string; cells: number; values?: number[] }
+/**
+ * `pass`: where the map's events pass starts (a map of our own), which the walk goes through before the run's `@wake`;
+ * it ends at `PASS_END`.
+ */
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number; data?: boolean }[]; rows?: string[][]; tasks?: string; pass?: string }
+/** Where the events pass goes when it is done: its run's `@wake`. */
+export const PASS_END = "@passed";
+/**
+ * `stride`: a table of plain dwords this many bytes apart instead of cell triggers — a table of the events pass's, a
+ * dword for each of the game's unit places, 336 bytes apart as the places are (`epdOf` its first dword's EPD); the
+ * layout puts other things in between.
+ */
+export interface Region { id: string; cells: number; values?: number[]; stride?: number }
 
 /**
  * A region of cell triggers, as an array's id: `{ element }` is its first cell's number, `{ epdOf }` that number's EPD
@@ -231,7 +242,7 @@ export const actValue = (label: string, k: number): Dword => ({ at: label, field
 export function checkGraph(g: Graph): string[] {
   const labels = new Set(g.triggers.map((t) => t.label));
   const out: string[] = [];
-  const known = (l: string) => l === END || labels.has(l);
+  const known = (l: string) => l === END || l === PASS_END || labels.has(l);
   const dword = (d: Dword, where: string) => {
     if ("at" in d && !labels.has(d.at)) out.push(`${where}: no trigger ${d.at}`);
   };

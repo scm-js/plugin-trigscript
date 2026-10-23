@@ -15,7 +15,7 @@ import { ANY_PLAYERS, emitBody, groupSlots, type MapPlayers } from "./emit";
 import { NOW, type Act, type Cond, type Dword, type Graph, type Num, type Trigger, type Value } from "./graph";
 import { TextPool, knownTexts } from "./texts";
 import { HEAP_GLOBALS, growingArrays, heldVariables, isHeapGlobal, loopScoped } from "./heap";
-import { UNIT_GLOBALS, unitValues } from "./units";
+import { EVENT_GLOBALS, UNIT_GLOBALS, eventSources, isEventGlobal, unitValues } from "./units";
 import { ownErrors } from "./errors";
 
 export interface OwnRun {
@@ -66,7 +66,10 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
   const texts = pool.finish();
   // Units as two numbers each (`units.ts`), then arrays that grow on the heap (`heap.ts`), once the texts' numbers are
   // in: those passes copy what they rewrite.
-  const programs = known.map((p) => loopScoped(growingArrays(heldVariables(unitValues(p)))));
+  // (The map's events pass is one, laid out by the first program that has events, for what all of them loop over.)
+  const sources = eventSources(known);
+  const passer = known.findIndex((p) => eventSources(p).size);
+  const programs = known.map((p, k) => loopScoped(growingArrays(heldVariables(unitValues(p, { sources, pass: k === passer })))));
   for (const [k, program] of programs.entries()) {
     const slots = ownerSlots(program, players);
     if (typeof slots === "string") return slots;
@@ -81,19 +84,20 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
     };
     collect(program);
     // (The heap's own variables, which no program declares, and the count of frames: one cell each for the map.)
-    for (const d of [...HEAP_GLOBALS, ...UNIT_GLOBALS, NOW_DECL]) decls.set(d.id, d);
+    for (const d of [...HEAP_GLOBALS, ...UNIT_GLOBALS, ...EVENT_GLOBALS, NOW_DECL]) decls.set(d.id, d);
     const functions = new Map<string, FuncDecl>((program.functions ?? []).map((f) => [f.id, f]));
     const arrays = new Map<string, ArrayDecl>((program.arrays ?? []).map((a) => [a.id, a]));
     // The variables and arrays every run of the program has in common: one for every player of a per-player program.
     const shared = new Set<string>(program.perPlayer ? [...[...decls.values()].filter((d) => d.shared).map((d) => d.id), ...[...arrays.values()].filter((a) => a.shared).map((a) => a.id)] : []);
     // A program for one player runs as the first of its owners (the Python side's `slots[0]`), one for each player
     // as each of them, in the order of the slots.
+    const firstRun = runs.length;
     for (const player of program.perPlayer ? [...slots].sort((a, b) => a - b) : slots.slice(0, 1)) {
       const n = runs.length;
       // (The first run keeps the emitter's names; each other one's are its own, but for what its program shares.)
-      const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players, program.errors);
+      const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players, program.errors, runs.length === firstRun ? program.pass : undefined);
       if (typeof graph === "string") return graph;
-      const name = (id: string) => (!n || isHeapGlobal(id) || id === NOW || UNIT_GLOBALS.some((d) => d.id === id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
+      const name = (id: string) => (!n || isHeapGlobal(id) || id === NOW || isEventGlobal(id) || UNIT_GLOBALS.some((d) => d.id === id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
       const g = n ? renamed(graph, `#${n}`, name) : graph;
       // An action of the game's names its text and its sound file by the script's strings: given here, for the layout.
       const of = (i: number) => (i ? r.strings[i - 1] : undefined);
@@ -143,6 +147,7 @@ function renamed(g: Graph, suffix: string, name: (id: string) => string): Graph 
     ...(g.templates ? { templates: g.templates.map((t) => ({ ...t, id: t.id + suffix })) } : {}),
     ...(g.rows ? { rows: g.rows.map((r) => r.map(label)) } : {}),
     ...(g.tasks ? { tasks: label(g.tasks) } : {}),
+    ...(g.pass ? { pass: label(g.pass) } : {}),
   };
 }
 

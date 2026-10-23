@@ -1071,7 +1071,8 @@ const laidOut = new WeakMap<Graph, { arrays: Map<string, number[]>; own: ReturnT
  * `frames`: walked that many times, as the game walks the triggers once a frame — from `@run` (the map's count of frames
  * one more) when more than one, the memory kept from one to the next; each text shown noted with its frame.
  */
-function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[], frames = 1): Env {
+/** `between`: what the game does before each frame — memory written, as units come and go. */
+function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[], frames = 1, between?: (frame: number, write: (addr: number, value: number) => void) => void): Env {
   // (Laid out once a graph: a test may walk one many times.)
   let done = laidOut.get(g);
   if (!done || (done.arrays !== arrays && (done.arrays.size || arrays.size))) {
@@ -1097,10 +1098,11 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
   const at = (epd: number) => u(DEATHS + 4 * (epd === 13 ? rd(0x6509b0) : epd));
   PRINTED.frames = [];
   for (let frame = 1; frame <= frames; frame++) {
+  between?.(frame, wr);
   let pc = frames > 1 ? own.triggers.get("@run")! : own.address;
   const shownBefore = PRINTED.got.length;
   for (let steps = 0; !(pc & 0x80000000); steps++) {
-    if (steps > 200_000_000) throw new Error("the payload does not end");
+    if (steps > Number(process.env.OWN_STEPS ?? 200_000_000)) throw new Error("the payload does not end");
     if (!inside(pc)) throw new Error(`the walk left the payload: 0x${pc.toString(16)}`);
     let holds = (rd(pc + 2376) & 8) === 0;
     for (let k = 0; holds && k < 16; k++) {
@@ -2114,5 +2116,67 @@ describe("a map of our own, tasks", () => {
       "  }",
       "});",
     ].join("\n"));
+  });
+});
+
+describe("a map of our own, unit events", () => {
+  /**
+   * The game's unit table, its list of the units on the map and its dying list laid out as the game keeps them, two
+   * units to start with; each frame the world may change (`then`), and the payload is walked from its bytes.
+   */
+  const TABLE = 0x59cca8, place = (k: number) => TABLE + 336 * k;
+  const run = (script: string, frames: number, then: (frame: number, w: (addr: number, value: number) => void) => void): string[] => {
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r);
+    if (typeof o === "string") throw new Error(o);
+    const memory = new Map<number, number>();
+    const unit = (k: number, type: number, uid: number, order = 3) => {
+      memory.set(place(k) + 0x08, 40 * 256);
+      memory.set(place(k) + 0x0c, 0x700000 + k);
+      memory.set(place(k) + 0x4c, order * 256);
+      memory.set(place(k) + 0x64, type);
+      memory.set(place(k) + 0xa4, uid * 256);
+    };
+    unit(1699, 0, 9);
+    unit(1698, 37, 8);
+    memory.set(0x628430, place(1698));
+    memory.set(place(1698) + 4, place(1699));
+    PRINTED.got = [];
+    runOwn(o.runs[0].graph, memory, o.values, undefined, frames, then);
+    return PRINTED.got.map((t, i) => `${PRINTED.frames[i]} ${Buffer.from(t, "hex").toString()}`);
+  };
+
+  it("hands on what came on, died, was killed, took up an order and turned into another type, in the frame it did", () => {
+    const got = run([
+      "program(async () => {",
+      "  on.created((u) => { print(`made ${u.type}`); });",
+      "  on.died((u) => { print(`died ${u.type}`); });",
+      "  on.killed((u, by) => { print(`killed ${u.type} by ${by}`); });",
+      "  on.order((u, order, was) => { print(`order ${u.type} ${order} ${was}`); });",
+      "  on.morphed((u, was) => { print(`morphed ${u.type} from ${was}`); });",
+      "});",
+    ].join("\n"), 12, (f, w) => {
+      // Frame 3: a Marine at place 1697, linked in behind the head. Frame 5: the Marine at 1699 takes up order 6.
+      // Frame 7: the Zergling turns into type 38. Frame 9: the new Marine dies in a fight with Player 1's: no hit points,
+      // the order Die, out of the list and onto the dying one.
+      if (f === 3) { w(place(1697) + 0x08, 40 * 256); w(place(1697) + 0x0c, 0x700001); w(place(1697) + 0x4c, 0x0300); w(place(1697) + 0xa4, 7 * 256); w(place(1697) + 4, place(1699)); w(place(1698) + 4, place(1697)); }
+      if (f === 5) w(place(1699) + 0x4c, 0x0600);
+      if (f === 7) w(place(1698) + 0x64, 38);
+      if (f === 9) { w(place(1697) + 0x08, 0); w(place(1697) + 0x4c, 0x0000); w(place(1697) + 0x90, 0); w(place(1698) + 4, place(1699)); w(place(1697) + 4, 0); w(0x62842c, place(1697)); }
+    });
+    expect(got).toEqual(["3 made 0", "5 order 0 6 3", "7 morphed 38 from 37", "9 died 0", "9 killed 0 by 0"]);
+  });
+
+  it("starts a task for each unit a handler that waits is handed", () => {
+    const got = run([
+      "program(async () => {",
+      "  on.created(async (u) => { await sleep(frames(2)); print(`late ${u.type}`); });",
+      "});",
+    ].join("\n"), 8, (f, w) => {
+      if (f === 3) for (const [kk, uid] of [[1697, 7], [1696, 6]]) { w(place(kk) + 0x0c, 0x700001); w(place(kk) + 0x4c, 0x0300); w(place(kk) + 0x64, 5); w(place(kk) + 0xa4, uid * 256); }
+      if (f === 3) { w(place(1696) + 4, place(1697)); w(place(1697) + 4, place(1699)); w(place(1698) + 4, place(1696)); }
+    });
+    expect(got).toEqual(["5 late 5", "5 late 5"]);
   });
 });

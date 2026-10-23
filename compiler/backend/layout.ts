@@ -30,7 +30,7 @@
  * went on — a trigger of a few conditions and actions in a little over 200 bytes, not 2,408. A row a doubling trigger
  * walks (`Graph.rows`) is stacked as one, its triggers 2,408 bytes apart.
  */
-import { END, NOW, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
+import { END, NOW, PASS_END, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { TRIGGER_LISTS, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 import type { ScriptString } from "../runtime";
 
@@ -281,11 +281,13 @@ export function layout(input: LayoutInput): OwnMap {
   // past the program once woken.
   const wake = (i: number) => (i ? `@wake#${i}` : "@wake"), init = (i: number) => (i ? `@init#${i}` : "@init");
   const stop = "@stop", run = "@run", entry = (p: number) => `@entry${p}`, gate = (p: number) => `@gate${p}`;
-  const after = (i: number) => (i + 1 < runs.length ? wake(i + 1) : stop);
+  // (A run whose graph holds the map's events pass goes through it first.)
+  const first = (i: number) => runs[i].graph.pass ?? wake(i);
+  const after = (i: number) => (i + 1 < runs.length ? first(i + 1) : stop);
   const list = (p: number) => TRIGGER_LISTS + 12 * p;
   const listEnd = (p: number) => u(~(list(p) + 4));
   // (Where each run's graph ends: the next run.)
-  const ends = new Map<string, string>(runs.map((_, i) => [i ? `${END}#${i}` : END, after(i)]));
+  const ends = new Map<string, string>(runs.flatMap((_, i): [string, string][] => [[i ? `${END}#${i}` : END, after(i)], [i ? `${PASS_END}#${i}` : PASS_END, wake(i)]]));
   const endOf = (l: string) => ends.get(l) ?? l;
   type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number; off?: boolean };
   const triggers: T[] = runs.flatMap(({ graph, owner }, i) => [
@@ -323,11 +325,14 @@ export function layout(input: LayoutInput): OwnMap {
       next: listEnd(p),
     })),
     // Every entry and gate back to ending at its list's end, the count of frames one more, then the first run.
-    { label: run, conds: [], acts: [...players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), { dword: { var: NOW }, modifier: "add", value: 1 }], next: wake(0) },
+    { label: run, conds: [], acts: [...players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), { dword: { var: NOW }, modifier: "add", value: 1 }], next: first(0) },
   );
   for (const t of runs.flatMap((r) => r.graph.triggers)) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
-  // The triggers stacked, a row as one.
+  // The triggers stacked, a row as one — after the tables of plain dwords `stride` bytes apart, which they fill in
+  // between.
   const space = new Space();
+  const strided = new Map<string, number>();
+  for (const r of new Map(runs.flatMap((x) => x.graph.cells ?? []).filter((x) => x.stride).map((x) => [x.id, x])).values()) strided.set(r.id, base + 4 * space.stack(Array.from({ length: r.cells }, (_, k) => (k * r.stride!) / 4)));
   const at = new Map<string, number>();
   const rowOf = new Map<string, string[]>();
   for (const row of runs.flatMap((r) => r.graph.rows ?? [])) for (const l of row) rowOf.set(l, row);
@@ -345,7 +350,8 @@ export function layout(input: LayoutInput): OwnMap {
   const routes = [...routed];
   const graphs = runs.map((r) => r.graph);
   // (A region every run names — the heap's — is laid out once.)
-  const regionList = [...new Map(graphs.flatMap((g) => g.cells ?? []).map((r) => [r.id, r])).values()];
+  const allRegions = [...new Map(graphs.flatMap((g) => g.cells ?? []).map((r) => [r.id, r])).values()];
+  const regionList = allRegions.filter((r) => !r.stride);
   const cellCount = routes.length + regionList.reduce((n, r) => n + r.cells, 0);
   const cellBase = cellCount ? base + 4 * space.stack(Array.from({ length: cellCount }, (_, k) => CELL_HOLDS.map((d) => d + CELL_DWORDS * k)).flat(), space.top) : base;
   routes.forEach((id, k) => at.set(ROUTE_CELL + id, cellBase + 72 * k));
@@ -435,6 +441,7 @@ export function layout(input: LayoutInput): OwnMap {
     if ("addrOf" in v && regionOf(v.addrOf) !== undefined) return u(regionOf(v.addrOf)! + v.plus);
     if ("addrOf" in v) throw new Error(`a jump into ${v.addrOf}'s cells, which a map of our own does not lay out`);
     if (regionOf(v.epdOf) !== undefined) return u(epd(regionOf(v.epdOf)! + 348) + v.plus);
+    if (strided.has(v.epdOf)) return u(epd(strided.get(v.epdOf)!) + v.plus);
     const l = lists.get(v.epdOf);
     if (l === undefined) throw new Error(`no list ${v.epdOf}`);
     return u(epd(l) + v.plus);

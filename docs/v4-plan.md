@@ -3568,8 +3568,8 @@ found what they left out; where a step moved, its old number is given.
     queries scheduled (ideas 6, 7) still to come.
 11. **Tasks, `async` and errors** (was 6; errors new). Part 1 ✓: `try`, `catch`, `finally`, `throw`, `uncaught`, a
     program's `errors`, the error classes — "Errors on our own backend". Part 2 ✓: `start`, `cancel`, `running`,
-    `Promise.all`/`race`/`any`, `every`, `after`, a task's error awaited — "Tasks on our own backend". Part 3: the
-    `on.*` handlers and the pass that finds what they are handed.
+    `Promise.all`/`race`/`any`, `every`, `after`, a task's error awaited — "Tasks on our own backend". Part 3 ✓: the
+    `on.*` handlers and the pass that finds what they are handed — "Unit events on our own backend".
 12. **Input** (was 7; idea 13). Keys, clicks, the mouse, typed lines, sync channels, the `local.*` reads and the user's
     player id. The test harness types and presses through chatEvent's and MSQC's addresses (`GameSim`): it moves with
     them, and the map stops needing what MSQC takes (a location, the Valkyrie's entry, Player 12's units).
@@ -3927,7 +3927,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 8 Texts as values | 48 of 48 |
 | 9 Arrays that grow, the heap | 27 of 27 |
 | 10 Units | 99 of 99 |
-| 11 Tasks, `async` and errors | 35 of 50 |
+| 11 Tasks, `async` and errors | 50 of 50 |
 | 12 Input | 0 of 26 |
 | 13 The map's own triggers | 0 of 13 |
 
@@ -4023,6 +4023,15 @@ the ledger is the list it can be written again from at 4.0.
   is a condition that fails each frame (13 ns), one with nothing in it a trigger passed by as done: a timer wheel
   (idea 2) would make a sleeper cost nothing until its frame. "did not start" is said in red by the game, as the Python
   side's build says it, where the simulator notes a fault (both builds).
+- **Unit events on a map of our own (step 11, part 3), what is left:** walking a list of the game's is slower than
+  eudplib's: a record about 3.2 µs a frame against 1.9 — its pointer read a bit at a time (20 bits), then copied into
+  the places that read it — so a frame with 46 units dying costs 146 µs against 89, and `on.order` (every unit on the
+  map read each frame) 221 µs against 164 with 80 units. A frame where nothing comes or goes is the same (5 µs). The
+  way past both: a trigger for each unit place, laid out as a region, that holds the place's uniqueness byte and order
+  as it last saw them in its own conditions — a place unchanged costs one condition that fails (about 15 ns), and only
+  a place that changed reads anything — walked from place 0 and then 1,699 down to the lowest place ever handed out,
+  as a loop over units is. It would hand units on in the table's order, where the lists and the simulator hand them
+  newest first: the simulator to follow.
 - A variable set from a constant less itself (`j = 1 - j`) is copied a bit at a time — 32 triggers, about 0.5 µs, where
   eudplib's is two actions: the game's subtract stops at 0, so the emitter copies a variable read times −1 (found
   weighing the errors probe, 2026-10-22).
@@ -5032,6 +5041,47 @@ line the same at the same frame and "ok".
 Played in Remastered (2026-10-22, recording 20.57.34): all 9 lines word for word and in order, "did not start" in red;
 each group at the lifted game's frame (2, 14, 22, 29, 40, 43, 47, 75), the frames where 32 tasks start among them; no
 hitch.
+
+### Unit events on our own backend (2026-10-22)
+
+Step 11, part 3 (`compiler/backend/units.ts`: the events pass and the loops over what it found; the layout's table of
+plain dwords 336 bytes apart and the pass before the run's `@wake`; the emitter's `pointAt`). The ledger's 15 rows of
+`on.*` are taken: step 11 is done, 50 of 50.
+
+- **The map's events pass**, the Python side's `Events`, once for the map before every program's turn (laid out by the
+  first program with events, for what all of them loop over): the list of the units on the map from its head to the
+  record that was behind the head at the pass before — the units linked in since — each not seen before marked seen and
+  listed; the dying list both ways from its head (Remastered links it the other way round from 1.16.1), each unit seen
+  and not yet handed on listed; with `on.order` or `on.morphed`, every unit's order and type against what the pass
+  before found. A frame where nothing came on is two or three conditions; the lists hold 512 units each, as the Python
+  side's.
+- **What it keeps of each unit place** is a table of plain dwords 336 bytes apart, as the places are: a unit's dword of
+  it is its EPD plus the distance from the unit table to the table, which only the layout knows, so the current player
+  is set to the EPD and the distance added (`pointAt`). The layout lays such a table out before the triggers, which fill
+  the room between its dwords: the probe's map is 1.05 MB against eudplib's 1.78.
+- **A listener** is a task that loops over what the pass found, as the front end writes it; a handler that waits starts
+  a task for each unit it is handed. A walk points the current player at the record and reads it there; each walk has
+  its own variables (one shared by all three had places in each, and every pointer read copied into all of them:
+  idle with `on.order`, 423 µs → 221).
+- **Found on the way:** an action whose number is a place is found by its index in its trigger, counted over the
+  trigger's actions — a write before it in the same trigger moved it: `pointAt` lays out a trigger of its own, as a
+  store does. A unit's place in a task's call (`start`) was rewritten as an expression, not as statements.
+
+| Lifted game, Remastered's weights, µs a frame | Ours | eudplib |
+| --- | ---: | ---: |
+| nothing coming or going, `on.created`/`on.died`/`on.killed` (Binary Burghs, about 80 units) | **4.7** | 5.1 |
+| forty units made, handed to `on.created` the next frame | **210** | 248 |
+| forty-six units on the dying list | 146 | **89** |
+| nothing coming or going, with `on.order` too | 221 | **164** |
+| the map (`probes/own-events.ts`) | **1.05 MB** | 1.78 MB |
+
+The walks are slower than eudplib's, and the plan's *Open* list says how to be faster at all of it.
+
+Checked: `tests/emitter.test.ts` ("a map of our own, unit events": a unit table and the game's two lists laid out as
+the game keeps them, changed between frames — a unit linked in, an order taken up, a type changed, a unit dying in a
+fight — the payload walked from its bytes frame after frame, each line at its frame; a handler that waits, a task each);
+`probes/own-events.ts` both ways in the lifted game, every line the same at the same frame and "ok" (made, died, the
+handler that waits, an order).
 
 ### Triggers stacked (2026-10-20)
 

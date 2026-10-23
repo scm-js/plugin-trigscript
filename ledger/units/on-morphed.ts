@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an event handled (on.morphed)
+// ledger: step 11, takes
 // A unit that turns into another type and stays the same unit, with the type it was: `on.morphed((u, was) => …)`.
 program(async () => {
   on.morphed((u, was) => {
