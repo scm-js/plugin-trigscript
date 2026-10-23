@@ -41,6 +41,7 @@ const { parseScenario, serializeScenario, markDirty, setMapVersion, setScenarioN
 const { internString, patchPlayer, readPlayerSettings } = await import(join(EDITOR, "src", "editor", "settings.ts"));
 const { setString } = await import(join(EDITOR, "src", "formats", "chk", "sections", "strings.ts"));
 const { addUnits, applyUnitChanges, makeUnit, nextSerial } = await import(join(EDITOR, "src", "editor", "units.ts"));
+const { cuwpUsage, patchCuwp } = await import(join(EDITOR, "src", "editor", "cuwp.ts"));
 const loaded = await loadMap(new Uint8Array(readFileSync(map)));
 const scn = parseScenario(loaded.chk);
 setMapVersion(scn, "remastered");
@@ -57,7 +58,15 @@ const players: MapPlayers = { slots: [0, 1, 2, 3, 4, 5, 6, 7].filter((p) => sett
 // The texts the programs choose between while the game runs: the map's next strings, one after another, in the order
 // of their numbers (`compiler/backend/texts.ts`).
 const textBase = scn.strings.strings.length;
-const lowered = emitOwn(r, players, textBase);
+// The players' input, when a program reads it (`compiler/backend/input.ts`): the humans, the map in pixels, a
+// unit-properties slot the map does not use — written "in transit" below when the programs need carriers — and a
+// carrier type the map's units and triggers never name (the Valkyrie unless they do).
+const humans = [0, 1, 2, 3, 4, 5, 6, 7].filter((p) => settings.types[p] === 6);
+const cuwpFree = cuwpUsage(scn) as number[];
+const cuwp = 1 + Math.max(0, ...[...Array(64).keys()].filter((i) => !cuwpFree[i]));
+const used = new Set<number>([...scn.units.map((u: { unitId: number }) => u.unitId), ...scn.triggers.flatMap((t: { conditions: { unitId: number }[]; actions: { unitId: number }[] }) => [...t.conditions.map((c) => c.unitId), ...t.actions.map((a) => a.unitId)])]);
+const carrier = used.has(58) ? [...Array(228).keys()].find((t) => !used.has(t))! : 58;
+const lowered = emitOwn(r, players, textBase, { humans, width: scn.width * 32, height: scn.height * 32, cuwp, carrier });
 if (typeof lowered === "string") { console.error(`the emitter cannot lower this program: ${lowered}`); process.exit(1); }
 lowered.texts.forEach((text, i) => {
   if (setString(scn.strings, 0, text) !== textBase + i) throw new Error("the pool of texts did not go into the map's strings one after another");
@@ -96,6 +105,11 @@ for (const t of graphs.flatMap((g) => g.templates ?? [])) {
   if (t.at !== undefined || t.data) continue;
   const name = `(TrigScript text ${t.id})`;
   templates.set(t.id, internString(scn, name + "\r".repeat(Math.max(0, t.bytes.length + 3 - name.length))));
+}
+if (lowered.input) {
+  // (The slot written "in transit": the sections it touched are marked dirty by the editor's code.)
+  patchCuwp(scn, cuwp - 1, { inTransit: true }, true);
+  console.log(`input: ${lowered.input.keys.length} keys, ${lowered.input.mouse ? "the mouse, " : ""}${lowered.input.syncs} sync slots; carriers of type ${carrier}, ${lowered.input.ring} a ring, ${lowered.input.rings} rings, for players ${humans.map((h) => h + 1).join(", ")}; unit-properties slot ${cuwp}; ${lowered.input.bits} bits a value`);
 }
 markDirty(scn, "TRIG", "UNIT", "STRx");
 const chk = serializeScenario(scn);

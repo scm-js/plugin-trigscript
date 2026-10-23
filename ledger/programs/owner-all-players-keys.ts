@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (key)
+// ledger: step 12, takes
 // Each player's own keys in a program for every player: `keyPressed(CurrentPlayer, "Space")` with `{ owner: AllPlayers }`.
 program(async () => {
   while (true) {

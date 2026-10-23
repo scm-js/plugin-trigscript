@@ -16,6 +16,7 @@ import { NOW, type Act, type Cond, type Dword, type Graph, type Num, type Trigge
 import { TextPool, knownTexts } from "./texts";
 import { HEAP_GLOBALS, growingArrays, heldVariables, isHeapGlobal, loopScoped } from "./heap";
 import { EVENT_GLOBALS, UNIT_GLOBALS, eventSources, isEventGlobal, unitValues } from "./units";
+import { INPUT_GLOBALS, hasInput, inputValues, isInputGlobal, ownInputPlan, type OwnInputPlan, type OwnMap } from "./input";
 import { ownErrors } from "./errors";
 
 export interface OwnRun {
@@ -36,7 +37,12 @@ export interface Own {
    * their numbers: the map's strings from `textBase` on are to be these, one after another.
    */
   texts: string[];
+  /** The players' input the map carries itself (`input.ts`): what the build makes the carriers from; absent when no program reads the players. */
+  input?: OwnInputPlan;
 }
+
+/** What `emitOwn` takes the map for when the build gave none: the players' slots all human, a 128 by 128 map, the last unit-properties slot. */
+const ANY_MAP: OwnMap = { humans: ANY_PLAYERS.slots, width: 128 * 32, height: 128 * 32, cuwp: 64 };
 
 /** The players a program runs for, as the Python side's `owner_slots`: each owner's slots, in the order given. */
 function ownerSlots(program: Program, players: MapPlayers): number[] | string {
@@ -54,7 +60,7 @@ function ownerSlots(program: Program, players: MapPlayers): number[] | string {
  * `textBase`: the string the first of `Own.texts` is to be among the map's (the next one the map adds; 1 when there is
  * no map).
  */
-export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, players: MapPlayers = ANY_PLAYERS, textBase = 1): Own | string {
+export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & Partial<Pick<CompileResult, "input">>, players: MapPlayers = ANY_PLAYERS, textBase = 1, map: OwnMap = { ...ANY_MAP, humans: players === ANY_PLAYERS ? ANY_MAP.humans : players.slots }): Own | string {
   // (A map of our own is built without the map's triggers, so `trigger()` records would be lost without a word.)
   if (r.triggers.length) return `a map of our own keeps no trigger() or hyperTriggers() records yet; this script has ${r.triggers.length}`;
   const runs: OwnRun[] = [];
@@ -69,7 +75,14 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
   // (The map's events pass is one, laid out by the first program that has events, for what all of them loop over.)
   const sources = eventSources(known);
   const passer = known.findIndex((p) => eventSources(p).size);
-  const programs = known.map((p, k) => loopScoped(growingArrays(heldVariables(unitValues(p, { sources, pass: k === passer })))));
+  // (The players' input likewise: its passes laid out by the first program that reads them.)
+  // (The names a `{…:unit}` capture of a typed line knows: the ones the compile listed for eudplib's build.)
+  const planned = ownInputPlan(known, map, r.input?.unitNames);
+  if (typeof planned === "string") return planned;
+  const input = planned;
+  const reader = known.findIndex(hasInput);
+  const programs = known.map((p, k) => loopScoped(growingArrays(heldVariables(withInput(unitValues(p, { sources, pass: k === passer }, input?.carrier), k)))));
+  function withInput(p: Program, k: number): Program { return input && (hasInput(p) || k === reader) ? inputValues(p, input, k === reader) : p; }
   for (const [k, program] of programs.entries()) {
     const slots = ownerSlots(program, players);
     if (typeof slots === "string") return slots;
@@ -84,7 +97,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
     };
     collect(program);
     // (The heap's own variables, which no program declares, and the count of frames: one cell each for the map.)
-    for (const d of [...HEAP_GLOBALS, ...UNIT_GLOBALS, ...EVENT_GLOBALS, NOW_DECL]) decls.set(d.id, d);
+    for (const d of [...HEAP_GLOBALS, ...UNIT_GLOBALS, ...EVENT_GLOBALS, ...INPUT_GLOBALS, NOW_DECL]) decls.set(d.id, d);
     const functions = new Map<string, FuncDecl>((program.functions ?? []).map((f) => [f.id, f]));
     const arrays = new Map<string, ArrayDecl>((program.arrays ?? []).map((a) => [a.id, a]));
     // The variables and arrays every run of the program has in common: one for every player of a per-player program.
@@ -95,9 +108,9 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
     for (const player of program.perPlayer ? [...slots].sort((a, b) => a - b) : slots.slice(0, 1)) {
       const n = runs.length;
       // (The first run keeps the emitter's names; each other one's are its own, but for what its program shares.)
-      const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players, program.errors, runs.length === firstRun ? program.pass : undefined);
+      const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players, program.errors, runs.length === firstRun ? program.pass : undefined, runs.length === firstRun ? program.after : undefined);
       if (typeof graph === "string") return graph;
-      const name = (id: string) => (!n || isHeapGlobal(id) || id === NOW || isEventGlobal(id) || UNIT_GLOBALS.some((d) => d.id === id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
+      const name = (id: string) => (!n || isHeapGlobal(id) || id === NOW || isEventGlobal(id) || isInputGlobal(id) || UNIT_GLOBALS.some((d) => d.id === id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
       const g = n ? renamed(graph, `#${n}`, name) : graph;
       // An action of the game's names its text and its sound file by the script's strings: given here, for the layout.
       const of = (i: number) => (i ? r.strings[i - 1] : undefined);
@@ -107,7 +120,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
     }
   }
   if (!runs.length) return "a script with no program";
-  return { programs, runs, values, texts };
+  return { programs, runs, values, texts, ...(input ? { input } : {}) };
 }
 
 /**
@@ -148,6 +161,7 @@ function renamed(g: Graph, suffix: string, name: (id: string) => string): Graph 
     ...(g.rows ? { rows: g.rows.map((r) => r.map(label)) } : {}),
     ...(g.tasks ? { tasks: label(g.tasks) } : {}),
     ...(g.pass ? { pass: label(g.pass) } : {}),
+    ...(g.after ? { after: label(g.after) } : {}),
   };
 }
 

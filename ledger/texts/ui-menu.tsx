@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (key)
+// ledger: step 12, takes
 // A menu a player chooses from with W, S and Space, shown in the text lines, from `trigscript/ui`:
 // `await choose(P1, ITEMS.length, shop)` and `<MenuList items={ITEMS} selected={shop.selected} />`.
 import { MenuList, choose } from "trigscript/ui";

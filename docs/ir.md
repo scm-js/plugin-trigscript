@@ -754,6 +754,17 @@ clears its cells every frame, so an input lasts the frame it arrives in. It make
 command units of one unit type (58, the Valkyrie) owned by Player 12, which the map must
 leave alone.
 
+A map of our own (`compiler/backend/input.ts`, TrigScript 4, step 12) carries the same
+inputs itself, with no plugin: the `input` reads become reads of cells the map's receive
+pass fills before the programs' turns, from a ring of hidden carrier units a human player
+(a Select and a Move to a point each send, the point the value), and a send pass after the
+programs' turns (`Program.after`) queues what this computer's player did. Keys and clicks
+travel as a state that is sent when it changes and paid out a frame at a time; the mouse
+as a point of its own; `syncSend` leaves its value for the send pass. A typed line is read
+from the game's text lines on the computer it was typed on, matched there against the
+patterns, and sent as the pattern's number and its values. The trip is two frames in the
+lifted game.
+
 ## Numbers
 
 32 bits. A `number` reads them signed, −2³¹ to 2³¹ − 1; a `u32` (`VarDecl.unsigned`) from 0 up.

@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (key)
+// ledger: step 12, takes
 // A key held down, true on every frame it is down: `keyHeld(P1, "D")`.
 program(async () => {
   let x = 0;

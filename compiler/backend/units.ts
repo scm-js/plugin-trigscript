@@ -20,6 +20,7 @@
 import type { ArrayDecl, At, BoolExpr, Call, CompareOp, FuncDecl, NumExpr, Program, Stmt, UnitExpr, UnitFilter, UnitFlag, UnitNumField, VarDecl } from "../ir";
 import type { ActionRecord, ConditionRecord } from "../../vendor/triggers";
 import { STATEMENT_KINDS } from "./emit";
+import { MOUSE_CELLS } from "./input";
 
 /** The deaths table: what a condition's or an action's player field 0 is, an EPD a dword after it. */
 const DEATHS = 0x58a364;
@@ -181,7 +182,11 @@ function isStmtList(x: unknown): x is Stmt[] {
  * `events`: the sources the map's programs' events loop over, and whether this program lays out the map's one events
  * pass (`Program.pass`) — the first program that has any.
  */
-export function unitValues(program: Program, events?: { sources: Set<EventSource>; pass: boolean }): Program {
+/**
+ * `carrier`: the type of the input's carrier units (`input.ts`), which a walk of the table passes over — a hidden
+ * unit of Player 12's with a human's owner byte, which no script means.
+ */
+export function unitValues(program: Program, events?: { sources: Set<EventSource>; pass: boolean }, carrier?: number): Program {
   if (!hasUnits(program)) return program;
   let here: At = program.at;
   let made = 0;
@@ -366,6 +371,9 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
         inner = [dec(ty, k(0), 0xffff), ...readInto(ty, q, TYPE), dec(qt, bin(">>>", tyv, k(2)), 0x3fff),
           ...when(any([0, 1, 2, 3].map((r) => all([cmp("==", bin("&", tyv, k(3)), k(r)), cmp(">=", peek(bin("+", k(GROUPS), V(qt)), (bit * 2 ** (8 * r)) >>> 0), k(1))]))), inner)];
       }
+      // (The input's carriers, hidden units with a human's owner byte, are no script's: a unit the filter lets through
+      // is asked its type once more, unless the filter asks for one type already.)
+      if (carrier !== undefined && (type === undefined || type >= 228)) inner = when(cmp("!=", read(q, TYPE), k(carrier)), inner);
       // (With a filter the order is asked only of the units it lets through: a place the walk passes costs a condition
       // less, and every condition is a dword the walk's step moves on.)
       const ask = [...also, ...asks(q)];
@@ -522,20 +530,27 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
 
   /** A pick: the first unit the filter matches, the nearest to a location's centre, or one drawn at random. */
   const pick = (p: Extract<UnitExpr, { kind: "pick" }>, pre: Stmt[]): Unit => {
-    if (p.mouse !== undefined) throw new Leave();
     // (Kept in its cell alone: written at each unit found, the walk's address would otherwise be read into every place.)
     const R = fresh("pick");
     pre.push(dec(R, k(0), undefined, "routed"));
     const found = (q: NumExpr): Stmt => set(R, q);
     if (p.by === "first") pre.push(...scan(p.filter, pre, (q, stop) => [found(q), ...stop()]));
     else if (p.by === "nearest") {
-      if (p.near === undefined) throw new Leave();
-      const [l, t, r, b] = sides(p.near, pre);
+      if (p.near === undefined && p.mouse === undefined) throw new Leave();
       const cx = fresh("cx"), cy = fresh("cy"), least = fresh("least");
       const X0 = fresh("bx"), X1 = fresh("bx"), Y0 = fresh("by"), Y1 = fresh("by");
       const c = (id: string) => ranged(V(id), 0, 0xffff);
       // (Written seldom and read at every unit: kept in each place it is read, never copied there.)
-      pre.push(dec(cx, bin(">>>", bin("+", l, r), k(1)), 0xffff, "everywhere"), dec(cy, bin(">>>", bin("+", t, b), k(1)), 0xffff, "everywhere"), dec(least, k(0x20000), 0x20000, "everywhere"));
+      if (p.mouse !== undefined) {
+        // `underMouse()` (step 12): the player's mouse on the map as the receive pass keeps it (`input.ts`); `within` so
+        // many pixels, as |dx| + |dy|, or anywhere.
+        const who = playerOf(p.mouse, pre);
+        pre.push(dec(cx, { kind: "element", array: MOUSE_CELLS.x, index: who, at: here } as NumExpr, 0xffff, "everywhere"), dec(cy, { kind: "element", array: MOUSE_CELLS.y, index: who, at: here } as NumExpr, 0xffff, "everywhere"));
+      } else {
+        const [l, t, r, b] = sides(p.near!, pre);
+        pre.push(dec(cx, bin(">>>", bin("+", l, r), k(1)), 0xffff, "everywhere"), dec(cy, bin(">>>", bin("+", t, b), k(1)), 0xffff, "everywhere"));
+      }
+      pre.push(dec(least, k(p.within !== undefined ? Math.min(0x20000, p.within + 1) : 0x20000), 0x20000, "everywhere"));
       // A unit nearer than the nearest so far (by |dx| + |dy|) is inside the box |dx|, |dy| < that: four conditions on
       // its position, read through the current player, ask it of each unit; only one inside is measured. The box is
       // the whole map until the first.
@@ -596,6 +611,7 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
         return { e: ranged(V(p.e), 0, UNIT_TABLE + STRIDE * PLACES), k: ranged(V(p.k), 0, 255), none: true, killed: true };
       }
       case "pick": return pick(e, pre);
+      case "selected": return fix(e, pre) as Unit;
       case "unitAt": {
         const ptr = plain(fix(e.ptr, pre) as NumExpr, pre);
         fix(e.epd, pre);
@@ -904,7 +920,14 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
       case "unitAlive": return alive(held(unit((o as { unit: UnitExpr }).unit, pre), pre));
       case "unitFlag": { const e = o as unknown as Extract<BoolExpr, { kind: "unitFlag" }>; return flag(unit(e.unit, pre), e.flag, pre); }
       case "unitSame": { const e = o as unknown as Extract<BoolExpr, { kind: "unitSame" }>; return same(unit(e.left, pre), unit(e.right, pre), pre); }
-      case "selected": throw new Leave();
+      case "selected": {
+        // `local.selected` (step 12): the unit in a slot of this computer's selection, re-checked before use as a kept
+        // unit is (its uniqueness byte taken when read). The slot holds a pointer, or 0 for none.
+        const e = o as unknown as Extract<UnitExpr, { kind: "selected" }>;
+        const p = fresh("sel");
+        pre.push(dec(p, peek(k(SELECTION + e.index), POINTER, 2), 0x3fffffff), ...when(cmp(">=", V(p), k(IN_TABLE)), [set(p, bin("-", V(p), k(DEATHS / 4)))], [set(p, k(0))]));
+        return { e: ranged(V(p), 0, UNIT_TABLE + STRIDE * PLACES), k: null, none: true, killed: true };
+      }
     }
     // (A call inside an expression: a statement of its own first when it takes or gives back units.)
     if (o.kind === "call" && o.call && typeof o.call === "object") {

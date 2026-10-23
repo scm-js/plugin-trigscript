@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (key)
+// ledger: step 12, takes
 // Someone speaking to a player, the words typed in, closed with Space, from `trigscript/ui`:
 // `await say(P1, talk, "Raynor", "…")` and `<DialogBox box={talk} />`.
 import { DialogBox, say } from "trigscript/ui";

@@ -1,4 +1,4 @@
-// ledger: step 12, refused: a unit
+// ledger: step 12, takes
 // The unit nearest a player's mouse, or none: `underMouse(P1)`.
 program(async () => {
   while (true) {
