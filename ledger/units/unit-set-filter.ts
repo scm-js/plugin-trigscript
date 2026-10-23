@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // The units of a set that fit, kept in an array: `unitsOf(P1).filter((u) => u.hp < 20)`.
 program(() => {
   const weak = unitsOf(P1).filter((u) => u.hp < 20);

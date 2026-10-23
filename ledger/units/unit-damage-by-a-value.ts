@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit's verb (damage)
+// ledger: step 10, takes
 // A unit damaged by an amount the program worked out: `u.damage(n)`.
 program(() => {
   let n = 3;

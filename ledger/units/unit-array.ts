@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit kept in a variable
+// ledger: step 10, takes
 // Units kept in a fixed-length array: `const pair: (Unit | null)[] = [a, b]`.
 program(() => {
   const pair: (Unit | null)[] = [first({ owner: P1 }), first({ owner: P2 })];

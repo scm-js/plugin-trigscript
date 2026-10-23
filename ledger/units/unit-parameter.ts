@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit kept in a variable
+// ledger: step 10, takes
 // A function that takes a unit: `function hurt(u: Unit, n: number)`.
 function hurt(u: Unit, n: number) {
   u.damage(n);

@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over the units at a location: `for (const u of unitsAt(…))`.
 program(() => {
   let n = 0;

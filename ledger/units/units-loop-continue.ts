@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over units that passes some by: `continue` for a burrowed unit.
 program(() => {
   let n = 0;

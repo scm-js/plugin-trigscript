@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit's verb (kill)
+// ledger: step 10, takes
 // The first unit on the map, whatever it is: `first()`.
 program(() => {
   first()?.kill();

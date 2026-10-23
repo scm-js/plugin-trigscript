@@ -18,6 +18,8 @@ import { compileScript } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { emitOwn } from "../compiler/backend/own";
 import { simulatePrograms } from "../compiler/simulateIr";
+import { Simulation } from "../compiler/simulate";
+import type { SimBounds, SimUnitInit } from "../compiler/world";
 import { defaultLib } from "../bundle/lib.mjs";
 
 const U32 = 2 ** 32;
@@ -1609,4 +1611,158 @@ describe("a map of our own, functions that call themselves", () => {
     expect(deep).toBeGreaterThan(0.4 * seeds);
   // (A longer look, EMITTER_SEEDS, takes as long as it takes.)
   }, process.env.EMITTER_SEEDS ? 3_600_000 : RANDOM_PROGRAMS);
+});
+
+describe("a map of our own, units", () => {
+  const TABLE = 0x59cca8;
+  /** The groups a trigger's unit classes go by, as units.dat has them for the types these tests use (Men, Buildings, Factories). */
+  const GROUPS: Record<number, number> = { 0: 0x08, 1: 0x08, 37: 0x08, 106: 0x30, 109: 0x10 };
+  const MAX_HP: Record<number, number> = { 0: 40, 1: 45, 37: 35, 106: 1500, 109: 500 };
+  /**
+   * The units laid out where the game keeps them, in the places it hands out first — place 0, then 1 699 down — and the
+   * tables a unit's numbers come from; the simulator's world holds the same units, made in the same order.
+   */
+  const memoryOf = (units: SimUnitInit[], locations: Record<number, SimBounds>): Map<number, number> => {
+    const memory = new Map<number, number>();
+    const put = (addr: number, value: number, bytes = 4) => {
+      const a = addr & ~3, sh = 8 * (addr & 3), mask = bytes === 4 ? 0xffffffff : ((2 ** (8 * bytes) - 1) * 2 ** sh) >>> 0;
+      memory.set(a, (((memory.get(a) ?? 0) & ~mask) | ((value * 2 ** sh) & mask)) >>> 0);
+    };
+    units.forEach((u, i) => {
+      const slot = i === 0 ? 0 : 1700 - i, at = TABLE + 336 * slot;
+      put(at + 0x08, (u.hp ?? MAX_HP[u.type]) * 256);
+      put(at + 0x0c, 0x700000 + 4 * slot);
+      put(at + 0x28, u.x ?? 0, 2);
+      put(at + 0x2a, u.y ?? 0, 2);
+      put(at + 0x4c, u.owner, 1);
+      put(at + 0x4d, u.orderId ?? 3, 1);
+      put(at + 0x60, (u.shields ?? 0) * 256);
+      put(at + 0x64, u.type, 2);
+      put(at + 0x8f, u.kills ?? 0, 1);
+      put(at + 0xa2, (u.energy ?? 0) * 256, 2);
+    });
+    for (const [type, hp] of Object.entries(MAX_HP)) put(0x662350 + 4 * Number(type), hp * 256);
+    for (const [type, g] of Object.entries(GROUPS)) put(0x6637a0 + Number(type), g, 1);
+    for (const [n, b] of Object.entries(locations)) {
+      const at = 0x58dc60 + 20 * (Number(n) - 1);
+      [b.left, b.top, b.right, b.bottom].forEach((v, i) => put(at + 4 * i, v));
+    }
+    return memory;
+  };
+  /** What a program prints as the simulator runs it among these units, and as its payload does, walked from its bytes. */
+  const both = (body: string, units: SimUnitInit[], locations: Record<number, SimBounds> = {}): { want: string[]; got: string[] } => {
+    const r = compileScript(ts, { "main.ts": `program(() => {\n${body}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
+    const full = units.map((u) => ({ hp: MAX_HP[u.type], maxHp: MAX_HP[u.type], orderId: 3, ...u }));
+    const world = new Simulation([], { units: full, locations, strings: r.strings, unitClass: (type, cls) => cls === 229 || ((GROUPS[type] ?? 0) & ({ 230: 0x08, 231: 0x10, 232: 0x20 }[cls] ?? 0)) !== 0 });
+    // (The texts shown: a unit killed is an event of its own, with a text that says which.)
+    const want = simulatePrograms(r.ir, 1, { world, strings: r.strings }).events.filter((e) => e.text !== undefined && e.action.type === 9).map((e) => hex(e.text!));
+    const o = emitOwn(r);
+    if (typeof o === "string") throw new Error(o);
+    PRINTED.got = [];
+    runOwn(o.runs[0].graph, memoryOf(full, locations), o.values);
+    return { want, got: PRINTED.got };
+  };
+  const same = (body: string, units: SimUnitInit[], locations?: Record<number, SimBounds>) => {
+    const r = both(body, units, locations);
+    expect(r.want.length).toBeGreaterThan(0);
+    expect(r.got).toEqual(r.want);
+  };
+  // P1: a Command Center and three Marines; P2: four Zerglings, one a little hurt; P12: a Supply Depot.
+  const UNITS: SimUnitInit[] = [
+    { type: 106, owner: 0, x: 400, y: 300 },
+    { type: 0, owner: 0, x: 420, y: 340, kills: 2 },
+    { type: 0, owner: 0, x: 900, y: 900, shields: 10, energy: 50 },
+    { type: 37, owner: 1, x: 1000, y: 1000 },
+    { type: 37, owner: 1, x: 1040, y: 980, hp: 20 },
+    { type: 0, owner: 0, x: 430, y: 330 },
+    { type: 37, owner: 1, x: 300, y: 310 },
+    { type: 109, owner: 11, x: 1500, y: 100 },
+    { type: 37, owner: 1, x: 1020, y: 1060 },
+  ];
+  const HOME = { 1: { left: 380, top: 280, right: 460, bottom: 360 } };
+
+  it("counts the units a filter matches, oldest first, and stops at a break", () => {
+    same([
+      "  let all = 0, mine = 0, lings = 0, men = 0, buildings = 0, factories = 0, home = 0;",
+      "  for (const u of allUnits()) all += 1;",
+      "  for (const u of unitsOf(P1)) mine += 1;",
+      "  for (const u of unitsOf(P2, { type: units.ZergZergling })) lings += 1;",
+      "  for (const u of unitsOf(P1, { type: units.Men })) men += 1;",
+      "  for (const u of allUnits({ type: units.Buildings })) buildings += 1;",
+      "  for (const u of allUnits({ type: units.Factories })) factories += 1;",
+      "  for (const u of unitsAt(1 as Location)) home += 1;",
+      "  print(`${all} ${mine} ${lings} ${men} ${buildings} ${factories} ${home}`);",
+      "  let seen = 0, xs = 0;",
+      "  for (const u of allUnits()) { xs += u.x; seen += 1; if (seen == 4) break; }",
+      "  let skipped = 0;",
+      "  for (const u of unitsOf(P2)) { if (u.hp < 30) continue; skipped += u.hp; }",
+      "  print(`${seen} ${xs} ${skipped}`);",
+    ].join("\n"), UNITS, HOME);
+  });
+
+  it("reads a unit's numbers and flags, and finds none where none is", () => {
+    same([
+      "  const m = first({ owner: P1, type: units.TerranMarine });",
+      "  if (m) print(`${m.hp} ${m.maxHp} ${m.shields} ${m.energy} ${m.owner} ${m.type} ${m.kills} ${m.x} ${m.y} ${m.orderId} ${m.invincible} ${m.cloaked}`);",
+      "  const z = first({ owner: P2, type: units.ZergZergling });",
+      "  if (first({ owner: P3 }) == null && z && m != z && m == first({ owner: P1, type: units.TerranMarine })) print(`${z.hp} none ok`);",
+      "  const n = nearest(units.ZergZergling, 1 as Location, { owner: P2 });",
+      "  if (n) print(`nearest at ${n.x},${n.y}`);",
+    ].join("\n"), UNITS, HOME);
+  });
+
+  it("writes a unit's numbers, damages and heals it, and kills it", () => {
+    same([
+      "  const m = first({ owner: P1, type: units.TerranMarine })!;",
+      "  m.hp = 10;",
+      "  const a = m.hp;",
+      "  m.heal(5);",
+      "  const b = m.hp;",
+      "  m.damage(3);",
+      "  const c = m.hp;",
+      "  m.heal({ percent: 50 });",
+      "  m.kills = 300;",
+      "  m.energy = 70;",
+      "  m.invincible = true;",
+      "  print(`${a} ${b} ${c} ${m.hp} ${m.kills} ${m.energy} ${m.invincible}`);",
+      "  const z = first({ owner: P2, type: units.ZergZergling });",
+      "  z?.damage(100);",
+      "  if (z) print(\"still there\"); else print(\"killed\");",
+      "  let lings = 0;",
+      "  for (const u of unitsOf(P2)) { lings += 1; u.hp = u.maxHp / 2; }",
+      "  let hp = 0;",
+      "  for (const u of unitsOf(P2)) hp += u.hp;",
+      "  print(`${lings} ${hp}`);",
+    ].join("\n"), UNITS, HOME);
+  });
+
+  it("walks a table every place of which has been handed out once, place 0 among them, one place a turn and two", () => {
+    const full: SimUnitInit[] = Array.from({ length: 1700 }, (_, i) => ({ type: i % 3 ? 0 : 37, owner: i % 3 ? 0 : 1, x: 100 + (i % 50), y: 100 + Math.floor(i / 50) }));
+    same([
+      "  let all = 0, mine = 0, odd = 0;",
+      // (Two places a turn: a small body without a `continue`.)
+      "  for (const u of allUnits()) all += 1;",
+      // (One place a turn: a `continue` reaches the loop.)
+      "  for (const u of unitsOf(P1)) { if (u.x % 2 == 0) continue; mine += 1; }",
+      // (A `continue` inside a switch is the loop's: one place a turn, place 0's turn wrapped.)
+      "  for (const u of unitsOf(P2)) { switch (u.x % 3) { case 0: continue; default: odd += 1; } }",
+      "  print(`${all} ${mine} ${odd}`);",
+    ].join("\n"), full);
+  });
+
+  it("keeps units in variables, arrays and calls", () => {
+    same([
+      "  const pair: (Unit | null)[] = [first({ owner: P1, type: units.TerranMarine }), first({ owner: P2 })];",
+      "  let hp = 0;",
+      "  for (const u of pair) if (u) hp += u.hp;",
+      "  let best: Unit | null = null;",
+      "  let least = 1000;",
+      "  for (const u of unitsOf(P2)) if (u.hp < least) { least = u.hp; best = u; }",
+      "  if (best) print(`${hp} ${best.hp} ${best.x}`);",
+      "  best?.kill();",
+      "  if (best) print(\"alive\"); else print(\"gone\");",
+    ].join("\n"), UNITS, HOME);
+  });
 });

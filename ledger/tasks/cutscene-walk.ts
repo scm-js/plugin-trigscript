@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit kept in a variable
+// ledger: step 10, takes
 // trigscript/cutscene: a unit sent to a point by a Move order, waited for until it is there: `await walk(u, x, y)`.
 import { walk } from "trigscript/cutscene";
 program(async () => {

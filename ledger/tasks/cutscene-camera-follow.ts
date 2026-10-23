@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit kept in a variable
+// ledger: step 10, takes
 // trigscript/cutscene: a camera that keeps a unit in the middle of the screen for so many frames: `await cam.follow(u, time)`.
 import { Camera, SECOND } from "trigscript/cutscene";
 program(async () => {

@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a loop over units
+// ledger: step 10, takes
 // A loop over the units of the player the program runs as: `unitsOf(CurrentPlayer)`.
 program(() => {
   let n = 0;

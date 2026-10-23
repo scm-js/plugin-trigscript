@@ -1,4 +1,4 @@
-// ledger: step 10, refused: a unit's hp written
+// ledger: step 10, takes
 // A unit's hit points written from a value of the program: `u.hp = n`.
 program(() => {
   let n = 5;

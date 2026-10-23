@@ -3563,8 +3563,9 @@ found what they left out; where a step moved, its old number is given.
    and `Set`, a task's arrays, an array in a function that calls itself (the front end makes every one of those
    growing today, a fixed length too); closures over locals and reference classes (`held`, the pool of 1,024 cells);
    signals, which stand on both. (A task's arrays are step 11's, with the tasks.)
-10. **Units** (was 5). Every unit value, unit loops and events, fields, flags, writes and verbs, picks, `select()` and
-    the game command it sends, `underMouse`; the queries scheduled (ideas 6, 7).
+10. **Units** (was 5) ✓ — "Units on our own backend". Every unit value, unit loops, fields, flags, writes and verbs,
+    picks, `select()` and the game command it sends (the events' rows are step 11's, `underMouse`'s step 12's); the
+    queries scheduled (ideas 6, 7) still to come.
 11. **Tasks, `async` and errors** (was 6; errors new). `start`, `cancel`, `running`, `Promise.all`/`race`/`any`,
     `every`, `after`, `on.*` handlers, on the walk as the scheduler (idea 2). `try`, `catch`, `finally`, `throw`,
     `uncaught`, a program's `errors`, the error classes.
@@ -3924,7 +3925,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 7 Programs, owners and players | 27 of 28 |
 | 8 Texts as values | 48 of 48 |
 | 9 Arrays that grow, the heap | 27 of 27 |
-| 10 Units | 0 of 99 |
+| 10 Units | 99 of 99 |
 | 11 Tasks, `async` and errors | 0 of 44 |
 | 12 Input | 0 of 26 |
 | 13 The map's own triggers | 0 of 13 |
@@ -3991,6 +3992,17 @@ the ledger is the list it can be written again from at 4.0.
   second until the program reaches it again (both builds; found writing `probes/own-fields.ts`, 2026-10-20).
 - A condition kept in a `const` is asked where the `const` is used: `const there = bring(…); centerLocation(…); if
   (there)` asks Bring after the move (both builds; found writing `probes/own-locations.ts`).
+- **Units on a map of our own (step 10), what is left:** a walk is about 2× eudplib's, not more: each condition that
+  reads the record is a field the step moves on (10 ns a place), and a pick's result is one more (the emitter has no
+  copy out of a variable's cell once that is not a place of it — to add). A loop over a player's units could walk that
+  player's list where the order cannot show (a count, a sum, a write to each), at about 0.7 µs a unit against 0.1 µs a
+  place of the table: worth it when the player holds few of the map's units, which is known only while the game runs.
+  `nearest` is 0.30 ms to eudplib's 0.33 for 115 units in one cluster, where the box rejects none: each unit's x and y
+  are read a bit at a time (32 triggers); reading only their high bytes first, to bound the distance, would halve it.
+  The map is bigger (2.86 MB to 1.82): reads of fields outside loops could be the run time's functions, as the heap's
+  are, and a loop's body is written up to three times (place 0, two places a turn). `give()` leaves the game's counts
+  as they were (both builds: eudplib's `cgive`), so `command()` after it reads the old owner's; the game's own Give
+  Units does not.
 - A map of our own: JSX inside a program was "made while the game runs" even when it held nothing of the program's —
   taken since step 8's part 3;
   (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
@@ -4810,6 +4822,73 @@ closures' seven arrays of 1,024 cells (0.5 MB), and a function that calls itself
 the triggers, the copies a routed variable's reads refresh are a bit at a time into every field that holds a multiple
 of it, one at each read: a cell for each multiple kept beside the variable would make them routings (to weigh: each
 write a few actions more).
+
+### Units on our own backend (2026-10-22)
+
+Step 10 (`compiler/backend/units.ts`, a pass of its own before the heap's, as `texts.ts` and `heap.ts` are). Step 10 is
+done: 99 of 99. A unit an event gives (`on.created` and the rest) is step 11's row, as the tasks that listen are; a pick
+near the mouse (`underMouse`) is step 12's, with the input.
+
+- **A unit is two numbers** of the program's: the EPD of its record in the unit table (0: none) — what a condition's
+  player field and a Set Deaths' destination take as they are — and the uniqueness byte its place had when the unit was
+  taken. A unit kept in a variable, an array or a call's parameter or result is both; one there by construction — a
+  loop's turn, a pick in the statement that made it — is its EPD alone, and its byte is read only if it is kept.
+  Before a kept unit is used, one trigger of four conditions asks that it is there still: the EPD, a sprite, an order
+  other than Die, the same uniqueness byte (the Python side's `when_alive`).
+- **A unit's numbers are read through the current player**, as eudplib reads: the pointer written once at the dword
+  the number is in, the read's conditions on player 13, the pointer given back to the program's own player. A read in
+  place would make each of its conditions — 24 for hit points — a place of the unit, which every write of the unit
+  moves. Hit points and shields as the game shows them (a started point counts), energy a byte of its word, the most
+  hit points and shields from units.dat at the unit's type. A flag is one condition where it is. A write is one masked
+  Set Deaths, stopped at the field's top as the simulator stops it; hit points of 0 kill.
+- **Verbs** as the Python side's: kill and remove are the order Die (remove with the user-action flag eudplib sets);
+  damage and heal in the game's own 256ths, at 0 dead, up to the type's most; an order through a location made a box of
+  four pixels around the unit for the one action and put back after; locate a location centred on the unit; give
+  eudplib's `cgive` — the owner's byte, the unit out of its player's list and into the new one's after its first
+  unit, the pointers read as EPDs (the two low bits left out). `select()`: on that player's computer, the selection's
+  twelve slots and the panel's flag, and a Select command of the units' tags written a byte at a time into the game's
+  queue of commands at its length, when it has room.
+- **A loop or a pick walks the unit table** oldest first, as the Python side's `scan`: place 0, then 1,699 down. It
+  walks down to the lowest place the game has ever handed out, a cell for the map (`UNIT_END`, a global as the heap's
+  are): the game hands the places out from a list whose never-used places are always its end, in order (scm-sim's
+  `docs/specs/unit-lists.md`, section 3), so that place only moves down, and each walk moves it past the places below
+  it that are no longer all 0 (a sprite, a position or a uniqueness byte) — one trigger in a frame where nothing new
+  was made. Nothing is counted on the way: eudplib's walk counts the units it meets against the game's count of
+  places in use, a trigger and a read of the record at every place. A turn is the loop's test, the filter asked in one
+  trigger — a sprite, the owner, the type, inside the location, with the order asked only of what it lets through —
+  and the step down, laid out where the test is gone back to. Two places a turn when the body is small and no
+  `continue` of its own reaches the loop: the test and the step are then paid once for two. Place 0 is a turn of its
+  own ahead, read at its constant address (its `break` ends the walk, its `continue` goes on to the loop).
+- **A pick:** the first unit stops the walk; the nearest asks each unit, through the current player, whether it is
+  inside the box |dx|, |dy| < the nearest so far — one trigger — and measures only one inside (the box's sides and the
+  centre kept in every place they are read, `everywhere`; what a measure writes kept in one cell each, `routed`, so
+  that a unit's x is not copied into every place it reaches); one at random counts, draws and walks again.
+
+| Lifted game, Remastered's weights (`probes/own-units.ts`, 193 units) | Ours | eudplib |
+| --- | ---: | ---: |
+| W1: every unit counted | **0.021 ms** | 0.040 ms |
+| W2: a player's Marines among them counted | **0.024 ms** | 0.046 ms |
+| W3: a pick that finds none, the whole table walked | **0.024 ms** | 0.044 ms |
+| W4: every Zergling's hit points added up | **0.089 ms** | 0.293 ms |
+| W5: the nearest Zergling (115, all in one cluster) | **0.298 ms** | 0.333 ms |
+| C–D: a pick's fields read, a location on a unit, a loop in it | **0.085 ms** | 0.217 ms |
+| E–F: writes, damage, heal, two units compared | **0.035 ms** | 0.075 ms |
+| K–L: a function finding the weakest unit, eight random picks | **0.224 ms** | 0.497 ms |
+| the map | 2.86 MB | 1.82 MB |
+
+What a walk costs now, place by place: about 85 ns (every unit) to 105 ns (a filter of two) against eudplib's 190 to
+230 — the filter's trigger (the record's first read in a trigger 19.6 ns, each more 12.3) and the step (each condition
+that reads the record is a field the step moves on, 10 ns). What is left is in the ledger's *Open* list.
+
+Checked: `tests/emitter.test.ts` ("a map of our own, units": loops with every filter, a `break` and a `continue`, fields
+and flags, `first`, `nearest` and none, writes, damage and heal by points and by a share, kill, arrays and kept units —
+the payload walked from its bytes over a unit table laid out as the game's, against the simulator); the probe both
+ways in the lifted game, every line the same and "ok".
+
+Played in Remastered (2026-10-22, recording 18.56.36): all 19 lines word for word and in order, W's counts the lifted
+game's (193 units, 3 Marines, 115 Zerglings), T about 4.2 s after the first group; the Marine ordered away walks off, the
+one given to Player 2 is shot by Player 1's own, two Marines are in the panel after `select()`, the walked Marine ends
+at the right of the row; no hitch.
 
 ### Triggers stacked (2026-10-20)
 
