@@ -5083,6 +5083,9 @@ fight — the payload walked from its bytes frame after frame, each line at its 
 `probes/own-events.ts` both ways in the lifted game, every line the same at the same frame and "ok" (made, died, the
 handler that waits, an order).
 
+Played in Remastered (2026-10-22, recording 21.59.29): all 7 lines word for word and in order, each at the lifted
+game's frame (2, 4, 6, 12, 15, 29); the Marines made and killed as the script says; no hitch.
+
 ### Triggers stacked (2026-10-20)
 
 Brought forward from step 14 (`compiler/backend/layout.ts`). The game reads no more of a trigger's 2,408 bytes than
