@@ -87,6 +87,14 @@ function ownTrigger(record: TriggerRecord, players: MapPlayers, string: (i: numb
   };
 }
 
+/** The script's settings a map of our own is built with (`script.ts`'s `ScriptSettings`): the defaults when unset. */
+export interface OwnOptions {
+  /** The cells of the heap the programs' growing arrays share (`ir.ts`'s `HEAP_CELLS`). */
+  heapCells?: number;
+  /** How many calls deep a function that calls itself may go (`ir.ts`'s `STACK_DEPTH`). */
+  stackDepth?: number;
+}
+
 /** What `emitOwn` takes the map for when the build gave none: the players' slots all human, a 128 by 128 map, the last unit-properties slot. */
 const ANY_MAP: OwnMap = { humans: ANY_PLAYERS.slots, width: 128 * 32, height: 128 * 32, cuwp: 64 };
 
@@ -106,7 +114,7 @@ function ownerSlots(program: Program, players: MapPlayers): number[] | string {
  * `textBase`: the string the first of `Own.texts` is to be among the map's (the next one the map adds; 1 when there is
  * no map).
  */
-export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & Partial<Pick<CompileResult, "input">>, players: MapPlayers = ANY_PLAYERS, textBase = 1, map: OwnMap = { ...ANY_MAP, humans: players === ANY_PLAYERS ? ANY_MAP.humans : players.slots }): Own | string {
+export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & Partial<Pick<CompileResult, "input">>, players: MapPlayers = ANY_PLAYERS, textBase = 1, map: OwnMap = { ...ANY_MAP, humans: players === ANY_PLAYERS ? ANY_MAP.humans : players.slots }, options: OwnOptions = {}): Own | string {
   // The map's own triggers, then the script's records (step 13): a record's text or sound file is the script's string
   // it names, the map's the map's own string already. Hyper triggers are left out: a map of our own goes through its
   // triggers every frame as it is, and under that pass the game holds a list with hyper triggers in it to every second
@@ -132,7 +140,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & 
   if (typeof planned === "string") return planned;
   const input = planned;
   const reader = known.findIndex(hasInput);
-  const programs = known.map((p, k) => loopScoped(growingArrays(heldVariables(withInput(unitValues(p, { sources, pass: k === passer }, input?.carrier), k)))));
+  const programs = known.map((p, k) => loopScoped(growingArrays(heldVariables(withInput(unitValues(p, { sources, pass: k === passer }, input?.carrier), k)), options.heapCells)));
   function withInput(p: Program, k: number): Program { return input && (hasInput(p) || k === reader) ? inputValues(p, input, k === reader) : p; }
   for (const [k, program] of programs.entries()) {
     const slots = ownerSlots(program, players);
@@ -159,7 +167,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & 
     for (const player of program.perPlayer ? [...slots].sort((a, b) => a - b) : slots.slice(0, 1)) {
       const n = runs.length;
       // (The first run keeps the emitter's names; each other one's are its own, but for what its program shares.)
-      const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players, program.errors, runs.length === firstRun ? program.pass : undefined, runs.length === firstRun ? program.after : undefined);
+      const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, options.stackDepth, player, players, program.errors, runs.length === firstRun ? program.pass : undefined, runs.length === firstRun ? program.after : undefined);
       if (typeof graph === "string") return graph;
       const name = (id: string) => (!n || isHeapGlobal(id) || id === NOW || isEventGlobal(id) || isInputGlobal(id) || UNIT_GLOBALS.some((d) => d.id === id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
       const g = n ? renamed(graph, `#${n}`, name) : graph;

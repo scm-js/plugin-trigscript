@@ -3,22 +3,22 @@
  * start-up). Each program's whole body is lowered by the emitter (`compiler/backend/emit.ts`, `emitBody`) — once for
  * each player a per-player program runs for — laid out at fixed addresses after the strings
  * (`compiler/backend/layout.ts`), and handed to the game's trigger walk by a few triggers in the map's TRIG section.
- * What the emitter cannot lower yet is refused, and said.
+ * What the emitter cannot lower yet is refused, and said. The build itself is `compiler/backend/build.ts`, the one
+ * the plugin's build step runs in the editor (step 14); this script prepares a probe map for it and writes the file.
  *
  *   npx tsx scripts/build-own.mts probes/own-loader.ts out.scx [map.scx]
  *
  * The map is prepared as build-fixture prepares it (a base each, Player 1 the person; PEOPLE and a `// probe-players:`
- * line as there; MAP_NAME the name the lobby shows), made a Remastered map (VER 206, STRx), and written through the
- * editor's own code (a scm-js checkout beside this repository, or SCMJS_DIR).
+ * line as there; MAP_NAME the name the lobby shows), and written through the editor's own code (a scm-js checkout
+ * beside this repository, or SCMJS_DIR). The base is a melee map, whose stock triggers would end a Use Map Settings
+ * game at once: they are left out unless OWN_KEEP_TRIGGERS says otherwise. OWN_FREE=<dword> fills the payload's free
+ * cells with a marker.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
-import { emitOwn } from "../compiler/backend/own";
-import type { MapPlayers } from "../compiler/backend/emit";
-import { STRINGS, layout } from "../compiler/backend/layout";
-import type { Graph } from "../compiler/backend/graph";
+import { buildOwnMap, isRefused } from "../compiler/backend/build";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 import { finishSounds, vorbisEncoder } from "../compiler/vorbis";
@@ -37,14 +37,11 @@ const compiled = performance.now();
 
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));
-const { parseScenario, serializeScenario, markDirty, setMapVersion, setScenarioName } = await import(join(EDITOR, "src", "formats", "chk", "scenario.ts"));
-const { internString, patchPlayer, readPlayerSettings } = await import(join(EDITOR, "src", "editor", "settings.ts"));
-const { setString } = await import(join(EDITOR, "src", "formats", "chk", "sections", "strings.ts"));
+const { parseScenario, serializeScenario, markDirty, setScenarioName } = await import(join(EDITOR, "src", "formats", "chk", "scenario.ts"));
+const { patchPlayer } = await import(join(EDITOR, "src", "editor", "settings.ts"));
 const { addUnits, applyUnitChanges, makeUnit, nextSerial } = await import(join(EDITOR, "src", "editor", "units.ts"));
-const { cuwpUsage, patchCuwp } = await import(join(EDITOR, "src", "editor", "cuwp.ts"));
 const loaded = await loadMap(new Uint8Array(readFileSync(map)));
 const scn = parseScenario(loaded.chk);
-setMapVersion(scn, "remastered");
 // (MAP_NAME: the name the lobby shows, so that maps built on the same base can be told apart in a recording.)
 if (process.env.MAP_NAME) setScenarioName(scn, process.env.MAP_NAME);
 patchPlayer(scn, 0, { type: 6, race: 1, force: 0 });
@@ -52,33 +49,7 @@ patchPlayer(scn, 1, { type: 5, race: 0, force: 1 });
 for (const slot of (process.env.PEOPLE ?? "").split(",").filter(Boolean).map(Number)) patchPlayer(scn, slot, { type: 6, race: 1, force: slot === 0 ? 0 : 1 });
 const playersLine = /^\/\/ probe-players: (.+)$/m.exec(readFileSync(scriptPath, "utf8"));
 if (playersLine) for (const [slot, patch] of Object.entries(JSON.parse(playersLine[1]) as Record<string, { type?: number; rgb?: [number, number, number] }>)) patchPlayer(scn, Number(slot), patch);
-// The map's players as the programs need them: the slots a human or a computer plays, and their forces.
-const settings = readPlayerSettings(scn) as { types: number[]; force: number[] };
-const players: MapPlayers = { slots: [0, 1, 2, 3, 4, 5, 6, 7].filter((p) => settings.types[p] === 5 || settings.types[p] === 6), forces: settings.force.slice(0, 8) };
-// The texts the programs choose between while the game runs: the map's next strings, one after another, in the order
-// of their numbers (`compiler/backend/texts.ts`).
-const textBase = scn.strings.strings.length;
-// The players' input, when a program reads it (`compiler/backend/input.ts`): the humans, the map in pixels, a
-// unit-properties slot the map does not use — written "in transit" below when the programs need carriers — and a
-// carrier type the map's units and triggers never name (the Valkyrie unless they do).
-const humans = [0, 1, 2, 3, 4, 5, 6, 7].filter((p) => settings.types[p] === 6);
-const cuwpFree = cuwpUsage(scn) as number[];
-const cuwp = 1 + Math.max(0, ...[...Array(64).keys()].filter((i) => !cuwpFree[i]));
-const used = new Set<number>([...scn.units.map((u: { unitId: number }) => u.unitId), ...scn.triggers.flatMap((t: { conditions: { unitId: number }[]; actions: { unitId: number }[] }) => [...t.conditions.map((c) => c.unitId), ...t.actions.map((a) => a.unitId)])]);
-const carrier = used.has(58) ? [...Array(228).keys()].find((t) => !used.has(t))! : 58;
-// The map's own triggers go into the payload with the script's records (step 13), and the TRIG section holds the
-// start-up alone. The base is a melee map, whose stock triggers would end a Use Map Settings game at once: they are
-// left out unless OWN_KEEP_TRIGGERS says otherwise.
-const mapTriggers = process.env.OWN_KEEP_TRIGGERS ? scn.triggers.slice() : [];
-const lowered = emitOwn(r, players, textBase, { humans, width: scn.width * 32, height: scn.height * 32, cuwp, carrier, triggers: mapTriggers });
-if (typeof lowered === "string") { console.error(`the emitter cannot lower this program: ${lowered}`); process.exit(1); }
-lowered.texts.forEach((text, i) => {
-  if (setString(scn.strings, 0, text) !== textBase + i) throw new Error("the pool of texts did not go into the map's strings one after another");
-});
-const { runs } = lowered;
-const graphs: Graph[] = runs.map((run) => run.graph);
-const emitted = performance.now();
-scn.triggers = [];
+// A base and a few troops each, as build-fixture places them.
 const START_LOCATION = 214, COMMAND_CENTER = 106, HATCHERY = 131, MARINE = 0, ZERGLING = 37;
 const placed = [];
 let serial = nextSerial(scn);
@@ -89,82 +60,20 @@ for (const [owner, base, troop] of [[0, COMMAND_CENTER, MARINE], [1, HATCHERY, Z
   for (let i = 0; i < 4; i++) placed.push(makeUnit(null, troop, owner, start.x - 48 + i * 32, start.y + 96, serial++));
 }
 applyUnitChanges(scn, addUnits(scn, placed));
-// The texts the graph shows, in the strings first: the payload goes after them.
-const texts = new Map<string, number>();
-const intern = (text: string) => { if (!texts.has(text)) texts.set(text, internString(scn, text)); };
-for (const t of [...graphs.flatMap((g) => g.triggers), ...lowered.triggers]) for (const a of t.acts) {
-  if (a.display !== undefined) intern(a.display);
-  // (An action of the game's: its text and its sound file's name.)
-  for (const s of [a.strings?.text, a.strings?.wav]) if (s && "text" in s) intern(s.text);
-  if (a.amountText) intern(a.amountText.text);
-}
-// A string for each text printed with values in it, as long as its template and three bytes more: once the strings are
-// laid out, the template goes in it from its first dword's start on, and the string's offset is moved there (the
-// game's own table of strings names only its first 64 KB in 1.16.1, so the template stays among them, as eudplib's
-// buffer does).
-const templates = new Map<string, number>();
-for (const t of graphs.flatMap((g) => g.templates ?? [])) {
-  // (A print at the centre of the screen is written into the game's own line, and data is never shown: no string.)
-  if (t.at !== undefined || t.data) continue;
-  const name = `(TrigScript text ${t.id})`;
-  templates.set(t.id, internString(scn, name + "\r".repeat(Math.max(0, t.bytes.length + 3 - name.length))));
-}
-if (lowered.input) {
-  // (The slot written "in transit": the sections it touched are marked dirty by the editor's code.)
-  patchCuwp(scn, cuwp - 1, { inTransit: true }, true);
-  console.log(`input: ${lowered.input.keys.length} keys, ${lowered.input.mouse ? "the mouse, " : ""}${lowered.input.syncs} sync slots; carriers of type ${carrier}, ${lowered.input.ring} a ring, ${lowered.input.rings} rings, for players ${humans.map((h) => h + 1).join(", ")}; unit-properties slot ${cuwp}; ${lowered.input.bits} bits a value`);
-}
-markDirty(scn, "TRIG", "UNIT", "STRx");
-const chk = serializeScenario(scn);
+markDirty(scn, "UNIT");
+const chk: Uint8Array = serializeScenario(scn);
+const prepared = performance.now();
 
-// The sections, as they are; the strings' and the triggers' put back with the payload and the start-up.
-const sections: { name: string; body: Uint8Array }[] = [];
-const dv = new DataView(chk.buffer, chk.byteOffset, chk.byteLength);
-for (let o = 0; o + 8 <= chk.length;) {
-  const name = String.fromCharCode(...chk.subarray(o, o + 4));
-  const len = dv.getInt32(o + 4, true);
-  if (len < 0 || o + 8 + len > chk.length) break;
-  sections.push({ name, body: chk.subarray(o + 8, o + 8 + len) });
-  o += 8 + len;
-}
-const strx = sections.find((s) => s.name === "STRx");
-if (!strx) { console.error("the map came out with no STRx"); process.exit(1); }
-const values = lowered.values;
-// (STRx: the count, then a four-byte offset a string from the section's start; the section is at STRINGS in the game.)
-const strings = new Uint8Array(strx.body);
-const offsets = new DataView(strings.buffer);
-const templateAt = new Map<string, number>();
-for (const t of graphs.flatMap((g) => g.templates ?? [])) {
-  if (t.at !== undefined || t.data) continue;
-  const index = templates.get(t.id)!;
-  const at = (STRINGS + offsets.getUint32(4 * index, true) + 3) & ~3;
-  strings.set(t.bytes, at - STRINGS);
-  offsets.setUint32(4 * index, at - STRINGS, true);
-  templateAt.set(t.id, at);
-}
-const own = layout({ runs: runs.map((run) => ({ graph: run.graph, owner: run.player })), players: players.slots, triggers: lowered.triggers, strings: strings.length, text: (t) => texts.get(t)!, arrays: values, template: (id) => templates.get(id)!, templateAt, ...(process.env.OWN_FREE ? { free: Number(process.env.OWN_FREE) } : {}) });
-const withPayload = new Uint8Array(strings.length + own.payload.length);
-withPayload.set(strings);
-withPayload.set(own.payload, strings.length);
-strx.body = withPayload;
-const trig = sections.find((s) => s.name === "TRIG");
-if (trig) trig.body = own.trig;
-else sections.push({ name: "TRIG", body: own.trig });
-const parts: Uint8Array[] = [];
-for (const s of sections) {
-  const head = new Uint8Array(8);
-  head.set([...s.name].map((c) => c.charCodeAt(0)));
-  new DataView(head.buffer).setInt32(4, s.body.length, true);
-  parts.push(head, s.body);
-}
-const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-let at = 0;
-for (const p of parts) { out.set(p, at); at += p.length; }
+// The build as the editor runs it: the compile's records go in as the script's (the map's trigger list has none of
+// them here, where the editor's apply would have written them into it).
+const built = buildOwnMap({ chk, compiled: r, dropMapTriggers: !process.env.OWN_KEEP_TRIGGERS, ...(process.env.OWN_FREE ? { free: Number(process.env.OWN_FREE) } : {}) });
+if (isRefused(built)) { console.error(`the emitter cannot lower this program: ${built.refused}`); process.exit(1); }
+const emitted = performance.now();
 const extras = loaded.archive ? await readExtras(loaded.archive, loaded.files) : new Map();
 // The clips the script plays, in the archive (an Ogg one encoded first), as build-fixture puts them.
 if (r.sounds.some((s) => s.vorbis)) finishSounds(r.sounds, vorbisEncoder(readFileSync(join(root, "node_modules", "wasm-media-encoders", "wasm", "ogg.wasm"))));
 for (const s of r.sounds) extras.set(s.path, s.bytes!);
-writeFileSync(resolve(outPath), await saveMap(out, { extras, compress: "pkware", listfile: true }));
+writeFileSync(resolve(outPath), await saveMap(built.chk, { extras, compress: "pkware", listfile: true }));
 const done = performance.now();
-console.log(`${resolve(outPath)}: ${runs.length} run${runs.length === 1 ? "" : "s"} (${runs.map((run) => `program ${run.program + 1} as P${run.player + 1}`).join(", ")}), ${graphs.reduce((n, g) => n + g.triggers.length, 0)} triggers of the graphs, payload ${own.payload.length} bytes at 0x${own.address.toString(16)}, ${lowered.triggers.length} trigger${lowered.triggers.length === 1 ? "" : "s"} of the map's own (${lowered.triggers.reduce((n, t) => n + t.slots.length, 0)} copies${lowered.hyperTriggersLeftOut ? `, ${lowered.hyperTriggersLeftOut} hyper triggers left out` : ""}), start-up ${own.trig.length / 2400} triggers`);
-console.log(`built in ${(done - started).toFixed(0)} ms (compile ${(compiled - started).toFixed(0)}, emit ${(emitted - compiled).toFixed(0)}, map ${(done - emitted).toFixed(0)})`);
+for (const line of built.lines) console.log(line);
+console.log(`${resolve(outPath)}: built in ${(done - started).toFixed(0)} ms (compile ${(compiled - started).toFixed(0)}, map ${(prepared - compiled).toFixed(0)}, build ${(emitted - prepared).toFixed(0)}, archive ${(done - emitted).toFixed(0)})`);

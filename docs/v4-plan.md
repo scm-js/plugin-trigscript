@@ -3578,7 +3578,7 @@ found what they left out; where a step moved, its old number is given.
     The map's TRIG section and the script's `trigger()` records laid out as the game's own nodes in the payload, a copy
     a player, each player's run in turn before the programs, as eudplib's build runs them; `hyperTriggers()` records
     left out, the map's triggers running every frame as it is.
-14. **The build in the editor** (new). A build step of the plugin's own for Save, Test Map and export; the CHK and the
+14. **The build in the editor** ✓ (new; "The build in the editor (2026-10-23)" below). A build step of the plugin's own for Save, Test Map and export; the CHK and the
     archive written in the plugin (mopaq bundled, or an addition to the plugin API); eudplib's fixes to the map
     (MTXM's null tiles, a desync by its source's account; UNIT flags; UNIx/UPGx/TECx defaults); the script's settings
     (stack depth, heap) passed; a refusal shown as a Problem while the script is typed, naming what it refuses; the
@@ -3863,6 +3863,8 @@ probes and seven measurement probes. No showpiece does.
   map; Magenta and TrigScript cannot share a map (two payloads at one address, two links of the lists); A1 to A5,
   Find an EUD Error and the test harness read the variable and trigger maps only the Python build writes; no built map
   is tested in CI; and once the Python is deleted, nothing is left to build the second way and compare against.
+  (Step 14 made the build step, on the scenario's bytes alone — the editor writes the archive — with eudplib's fixes,
+  the sounds from the apply, and a map with Magenta's triggers sent through eudplib; the tools and CI are step 15.)
 
 **Wrong without a word — made refusals with this audit.** `print(…, { to })` was shown to the program's owner
 whoever it was for (`Scope` never read `to`; the Python side sets each player of the group current in turn): a text
@@ -3974,6 +3976,16 @@ the ledger is the list it can be written again from at 4.0.
   (`tests/events.test.ts`). A raw number is a second signature, the action's own.
 
 *Open:*
+- Step 14's leftovers (2026-10-23). *Magenta.* A map with Magenta's member goes through eudplib with TrigScript's
+  programs in its build; Magenta on the own layout, or two payloads behind each other, is for later. *Protection.*
+  The own build scrambles nothing (eudplib's MRGN, shuffle and fake ISOM): the user's call. *The fixes' lines.*
+  "227 rows of UNIx at the defaults with settings left in: zeroed" is true of nearly every map StarEdit wrote (it
+  fills the defaults in); the line could be quieter. *A refusal found at build only.* The apply's compile answers for
+  the map as it was; a map whose players change after the apply (a slot made a computer, say) is built with the
+  manifest's answer until the next apply — the step then throws and Save goes on without the programs, saying so.
+  *The step's purpose.* `document.export` from a plugin builds too (the host runs the steps); nothing says which plugin
+  asked. *Sounds.* A clip the apply wrote as a member is in the archive; a build after `withSounds` refused one is not
+  reached (the apply throws first).
 - `new P(4).x` written in a program's expression is "A value must be known when the script is built"; the same through
   a function (`function made(x) { return new P(x).x; }`) is taken.
 - `displayText(text, always)` made a print loses its flag — to check against the flags a print gives Display Text.
@@ -5403,6 +5415,59 @@ variables' and data's dwords go in the gaps; a list or a template, after everyth
 eudplib's build of `own-made-texts`: 894 KB of strings in a 1.1 MB scenario, 121 KB as a file (ours: 1.38 MB of
 strings, 1.65 MB scenario). What is left: about half the triggers are routing, a trigger for each place a variable is
 copied into (3,219 places in that probe) — fewer places is the next saving.
+
+### The build in the editor (2026-10-23)
+
+Step 14: the map of our own is what Save, Test Map and an export write, from the editor, with no eudplib and no
+Python — the plugin's own build step (`service.ts`, `buildOwn`; `compiler/backend/build.ts`, run in the compile
+worker), registered with the host's `document.buildSteps.add` beside the `before` step that applies the script.
+
+- **On the scenario's bytes alone.** The host hands a step the map as Save would write it and takes a bare scenario
+  back, laying the file out itself with the user's save options and the map's members as they were — so the plugin
+  writes no archive (mopaq stays a dev dependency) and reads the CHK out of the step's input with the host's
+  `sections.chkOf` (plugin-api 1.61.0). `chk.ts` reads and writes what the build touches: the chunks (a negative
+  length ends the reading, what follows is kept), the string table (STR read on as STRx — a Remastered file keeps its
+  strings there — two strings alike sharing their bytes as the editor writes them), DIM, OWNR and FORC for who plays,
+  UNIT and the triggers for the unit types a carrier must not be, UPRP and UPUS for the slot marked in transit. What
+  `build-own.mts` did through the editor's code it now does through `buildOwnMap`, the same function (the probe script
+  keeps the probe's preparation: a base each, the players, the name); the step-13 probe built both ways prints the
+  same ten lines at the same frames in the lifted game, and its sections differ only by the fixes below.
+- **The map's own triggers** come out of the input's TRIG: the hand triggers and the script's block as the apply
+  ordered them (`compiled.triggers` is empty from the editor; a probe under Node still passes its records, which no
+  list holds yet). Hyper triggers among them are left out, as step 13 has it.
+- **eudplib's fixes** (`fixes.ts`, from `eudplib/core/mapdata/fixmapdata.py`): UNIT flags made to agree with the
+  figures, UNIx/UPGx/TECx rows at the defaults zeroed, VER 206, a null tile made tile 1 (said as a warning, with where)
+  — so a map built either way is the same map. Each says a line in Output when it changed anything.
+- **The settings** reach the emitter: `emitOwn` takes `{ heapCells, stackDepth }` (`growingArrays`' cells, `emitBody`'s
+  depth), and the step passes the script's. A stack past 65,536 cells is refused as before, now with a setting to
+  follow.
+- **A refusal while the script is typed.** `compileScript` takes `own` — who plays, the map's size — and answers
+  `ownRefusal`: `emitOwn` run on a copy of the IR (its passes rewrite what they read), the first part it never takes
+  with its line, and the file when it is not the entry file (`refusedAt` in `emit.ts`: ", line 12 of ai/waves.ts";
+  the ledger's rows are one file each and read as before). The service passes it with every compile, so the editor
+  shows it as a warning on the line in Problems ("build" in the source column) and Monaco, and the apply writes it
+  into the manifest (`ownRefusal`).
+- **The changeover**, as the audit proposed: TrigScript builds wherever the emitter takes the whole script, eudplib
+  elsewhere. Both are decided off the manifest, so a save asks for free: the own step applies when the script has
+  programs, the manifest holds no refusal and Magenta's member is not in the map; the eudplib contribution applies
+  when the script has programs and the step does not. The status bar reads **built by TrigScript**, or eudplib's
+  state with why underneath; Output gets the build's lines through the same events the library's builds send
+  (`onBuild`, contributors `["trigscript"]`), so the editor's handler needed no second path.
+- **The worker.** `buildInBackground` sends `{ build: OwnBuildInput }` to the compile worker, which answers with
+  `buildOwnMap`'s outcome; a build is not superseded by a compile typed meanwhile, and supersedes none. A worker
+  bundle without `buildOwnMap` (an older release's `dist/compiler.js`) says to update the plugin.
+- **Seen in the editor** (headless, the plugin served from the worktree with the dist override): a program typed,
+  Apply, Ctrl+S — the status bar **built by TrigScript**, Output "Built by TrigScript itself: 1 program laid out into
+  the map, no eudplib" and the fixes' lines (71 placed units' flags, 227 UNIx rows, VER 206 from 205, STR to STRx,
+  "93 triggers of the programs, payload 23594 bytes at 0x191954a8, 3 triggers of the map's own (6 copies), start-up 65
+  triggers"), "Built 290 KB" and the file downloaded. Before the dist override the page ran the committed bundle and
+  Save opened eudplib's install dialog: the loader takes a served plugin's `build` (dist/plugin.js), and the worker
+  the release's compiler from the CDN unless `monacoDist` points it at the served `dist/`.
+- **Tests:** `tests/own-build.test.ts` (a synthetic scenario in, the sections out: STRx with the pool and the payload,
+  the start-up, the fixes, the map's triggers and hyper triggers, the input's slot, the script's records, the refusals
+  with file and line, the settings' effect), `tests/service.test.ts` (the step applies and the contribution does not
+  and the other way round, the manifest's refusal, Magenta's member, the events, no second compile), the suite 1,362
+  green, the ledger unchanged.
 
 ## Part C — the game, pushed
 
