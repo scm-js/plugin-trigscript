@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A song played again and again beside the program: `start(music.loop(song))`.
 import { music } from "trigscript/music";
 const lead = music.synth({ release: 0.05 });

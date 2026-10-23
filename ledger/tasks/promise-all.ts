@@ -1,4 +1,4 @@
-// ledger: step 11, refused: Promise.all
+// ledger: step 11, takes
 // Two waits side by side, the program going on when both have ended: `await Promise.all([…])`.
 program(async () => {
   await Promise.all([

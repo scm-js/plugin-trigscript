@@ -1,4 +1,4 @@
-// ledger: step 11, refused: Promise.race
+// ledger: step 11, takes
 // Two waits side by side, the program going on when the first ends: `await Promise.race([…])`.
 async function wave(n: number): Promise<number> {
   await sleep(frames(n));

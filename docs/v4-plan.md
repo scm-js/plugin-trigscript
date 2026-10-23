@@ -3566,9 +3566,10 @@ found what they left out; where a step moved, its old number is given.
 10. **Units** (was 5) ✓ — "Units on our own backend". Every unit value, unit loops, fields, flags, writes and verbs,
     picks, `select()` and the game command it sends (the events' rows are step 11's, `underMouse`'s step 12's); the
     queries scheduled (ideas 6, 7) still to come.
-11. **Tasks, `async` and errors** (was 6; errors new). `start`, `cancel`, `running`, `Promise.all`/`race`/`any`,
-    `every`, `after`, `on.*` handlers, on the walk as the scheduler (idea 2). `try`, `catch`, `finally`, `throw`,
-    `uncaught`, a program's `errors`, the error classes.
+11. **Tasks, `async` and errors** (was 6; errors new). Part 1 ✓: `try`, `catch`, `finally`, `throw`, `uncaught`, a
+    program's `errors`, the error classes — "Errors on our own backend". Part 2 ✓: `start`, `cancel`, `running`,
+    `Promise.all`/`race`/`any`, `every`, `after`, a task's error awaited — "Tasks on our own backend". Part 3: the
+    `on.*` handlers and the pass that finds what they are handed.
 12. **Input** (was 7; idea 13). Keys, clicks, the mouse, typed lines, sync channels, the `local.*` reads and the user's
     player id. The test harness types and presses through chatEvent's and MSQC's addresses (`GameSim`): it moves with
     them, and the map stops needing what MSQC takes (a location, the Valkyrie's entry, Player 12's units).
@@ -3898,7 +3899,7 @@ Bad Apple: 5, 6, 7, as the fog library. The bullets: 5 (a death count read), 9. 
 
 ### The ledger (2026-10-19)
 
-`ledger/` holds a script for each feature of the language and the library — 843 of them, in folders by area — whose
+`ledger/` holds a script for each feature of the language and the library — 849 of them, in folders by area — whose
 first line says which step of the way off eudplib makes it a map of our own's, and whether a map of our own takes it
 today, in the words of its refusal:
 
@@ -3926,7 +3927,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 8 Texts as values | 48 of 48 |
 | 9 Arrays that grow, the heap | 27 of 27 |
 | 10 Units | 99 of 99 |
-| 11 Tasks, `async` and errors | 0 of 44 |
+| 11 Tasks, `async` and errors | 35 of 50 |
 | 12 Input | 0 of 26 |
 | 13 The map's own triggers | 0 of 13 |
 
@@ -4003,6 +4004,31 @@ the ledger is the list it can be written again from at 4.0.
   are, and a loop's body is written up to three times (place 0, two places a turn). `give()` leaves the game's counts
   as they were (both builds: eudplib's `cgive`), so `command()` after it reads the old owner's; the game's own Give
   Units does not.
+- **Errors on a map of our own (step 11, part 1), what is left:** a call in a loop of a function that may throw is
+  about eudplib's (W1, 0.18 ms to 0.21 for 300): the error costs it one action, but the call itself does not keep step
+  1's lead (1.5×) — the argument is copied into each place of the parameter (here three: its cell, the home a signed
+  comparison reads, the action that adds 1; about 170 ns), and the result is copied out (75 ns). Value ranges carried
+  through calls would let a parameter never below zero be compared without a home; the result could be read where it
+  is. A throw is 3.2× eudplib's (W2), and most of what is left is its message, made where it is thrown (7.3 µs of 8.7
+  when the message has a number in it): the throw could keep where it was thrown and its values, and the message be
+  made only where it is read — a `catch` that reads `e.message`, an uncaught error said — about 1.3 µs a throw, 20×
+  eudplib's, for the many catches that read nothing. In code only an error goes through, a signed comparison still
+  reads its variable's home (the variable plus 2³¹), a place every write keeps. The map is bigger (1.52 MB to 1.05).
+- **Tasks on a map of our own (step 11, part 2), what is left:** a start that can run while its tasks still run lays
+  the task's body out once a slot (`max`, 16 unless said): the fastest at its turn, and small since a task's `catch`
+  is laid out once (a 16-slot start's body is 9 triggers in the probe), but a large body grows the map sixteen times;
+  one body with the slot's variables swapped in and out at each turn, as the Python side does, would be the way for a
+  large one. Such a task's arrays, and a start inside it, are refused for now (they would be a slot's own). A called
+  function that waits is refused in a program with tasks (it is laid out once, outside every coroutine). A task asleep
+  is a condition that fails each frame (13 ns), one with nothing in it a trigger passed by as done: a timer wheel
+  (idea 2) would make a sleeper cost nothing until its frame. "did not start" is said in red by the game, as the Python
+  side's build says it, where the simulator notes a fault (both builds).
+- A variable set from a constant less itself (`j = 1 - j`) is copied a bit at a time — 32 triggers, about 0.5 µs, where
+  eudplib's is two actions: the game's subtract stops at 0, so the emitter copies a variable read times −1 (found
+  weighing the errors probe, 2026-10-22).
+- A call worked out when the script is built that throws is a compile error even inside a `try` (both builds):
+  `try { total += check(9); } catch { … }` says "too big: 9 — this expression is computed when the script is built";
+  JavaScript would catch it. Found writing `tests/emitter.test.ts` ("a map of our own, errors").
 - A map of our own: JSX inside a program was "made while the game runs" even when it held nothing of the program's —
   taken since step 8's part 3;
   (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
@@ -4889,6 +4915,123 @@ Played in Remastered (2026-10-22, recording 18.56.36): all 19 lines word for wor
 game's (193 units, 3 Marines, 115 Zerglings), T about 4.2 s after the first group; the Marine ordered away walks off, the
 one given to Player 2 is shot by Player 1's own, two Marines are in the panel after `select()`, the walked Marine ends
 at the right of the row; no hitch.
+
+### Errors on our own backend (2026-10-22)
+
+Step 11, part 1 (`compiler/backend/errors.ts`, a pass before the texts'; the emitter's `try`, `throw` and `handler`).
+The ledger's rows of errors are taken, 12 of 12 (six added for what they did not reach: an error up through a function
+that calls itself, a stack that runs out caught, `finally` on a `return`, a class's own field and `name`, `e.stack`, an
+uncaught error thrown in a called function). The two rows of a task's error awaited wait for the tasks (part 2).
+
+- **What the front end does already** (B4): before a `throw` it puts the error in flight — its class's code into
+  `Program.errors.thrown`, its message into `message` — copies `finally` before every way out, and makes a program's
+  body a `try` whose `catch` is `uncaught`. `errors.ts` writes out what the emitter would need texts for, before the
+  texts are lowered: the line each error is thrown at into a variable of the program's (one thrown again keeps it),
+  `uncaught` as the print the Python side makes ("TrigScript: uncaught RangeError: …, line N." in red, and the code
+  back to 0), and for a program with a function that calls itself, a function that sets the RangeError of a stack
+  that ran out.
+- **A throw is a jump**: to the `catch` of the nearest `try` around it. In a called function with no `try` around it,
+  out of the function: one that never calls itself goes out through a trigger of its own for errors, whose next
+  pointer each call points at where an error goes from that call, in the trigger that sets where it goes back to — so
+  nothing is looked at on the way back, where eudplib looks at the error in flight after every call of a function
+  that may throw. When every call names the same place, that trigger is given it when the map is built, and the calls
+  set nothing. A function that calls itself goes out from its end, as a `return` does: each call takes its frame back
+  and then looks at the error in flight (a frame keeps what a `catch` after the call reads, too). A `try` costs
+  nothing while nothing is thrown.
+- **A stack that runs out throws a RangeError** ("Maximum call stack size exceeded", at the line of the call), as
+  JavaScript, the simulator and the Python side's build do; a map of our own stopped the program there before, and
+  still does in a program that neither throws nor catches.
+- **What only an error goes through is cold**: statements that end in a `throw`, and a `catch`. What they read of a
+  variable is refreshed from its cell just before it is read, as a routed variable's is, and is never a place of it
+  that every write keeps. Without it, a message made from a parameter cost every call of the function an action and a
+  copy (about 75 ns), and each throw wrote the error's code and its message's lengths into every place a `catch` read
+  them from (about 90 actions a throw in the probe). The payload went from 1.88 MB to 1.21; a throw from 11.4 µs to 8.7.
+  A loop is never cold, its test and its body: it may turn many times on an error's way too (`while (alive()) { … }`
+  and a `throw` after it, the whole body of a program, laid out its reads refreshed at every turn before).
+
+| Lifted game, Remastered's weights (`probes/own-errors.ts`) | Ours | eudplib |
+| --- | ---: | ---: |
+| A–B: a throw caught, classes told apart, messages made while the game runs | **0.211 ms** | 1.492 ms |
+| C–D: thrown again, `finally`, out of called functions | **0.080 ms** | 0.125 ms |
+| E–F: up through a function that calls itself; a stack run out at 1,024 calls, caught | **0.611 ms** | 2.412 ms |
+| W1: 300 calls of a function that may throw, none thrown | **0.183 ms** | 0.208 ms |
+| W2: 100 errors thrown in a called function, each caught (a number in the message) | **0.876 ms** | 2.846 ms |
+| W3: an error up through 40 frames, four times | **0.096 ms** | 0.364 ms |
+| W4: 200 turns through a `try` with a `finally`, one in two left by `continue` | **0.029 ms** | 0.058 ms |
+| the uncaught error said | **0.023 ms** | 0.057 ms |
+| the map | 1.52 MB | 1.05 MB |
+
+W1 is where the call is, not the error: the error costs one action a call. What is left is in the ledger's *Open* list.
+
+Checked: `tests/emitter.test.ts` ("a map of our own, errors": try and catch, the classes and a field, a rethrow and
+`finally` on every way out, out of called functions and a function's own `try`, uncaught, through recursion and its
+frames, the stack run out — and every one of the ledger's scripts of errors — the payload walked from its bytes against
+the simulator); the 30 scripts of `tests/errors.test.ts` a map of our own takes, the same way (once, not kept as a
+test); the probe both ways in the lifted game, every line the same at the same frame and "ok".
+
+Played in Remastered (2026-10-22, recording 20.07.15): all 10 lines word for word and in order, the uncaught error in
+red and nothing after it; the groups 2, 2, 4, 18 and 2 game frames apart, as in the lifted game — the frame a stack runs
+out 1,024 calls deep and the frame of 100 throws among them; no hitch.
+
+### Tasks on our own backend (2026-10-22)
+
+Step 11, part 2 (`compiler/backend/emit.ts`: `planTasks`, the coroutines, `start`, `cancel`, `parallel`, `tasks()`, the
+tasks' turn). The ledger's rows of tasks and of `Promise.all`, `race` and `any` are taken, 23 of them — 35 of step 11's
+50; the 15 left are the `on.*` events, part 3.
+
+- **A coroutine** is the program, a task's slot or a branch of a `Promise.all` or `race`: a trigger that wakes it —
+  "the map's count of frames has reached W: go to R" — whose W and R its sleep writes. The program's is its run's
+  `@wake`; a slot's and a branch's are triggers of their own, passed by as done while nothing runs in them (the walk
+  skips a trigger whose done flag is set before its conditions, at about 40% of an empty trigger's cost).
+- **The map's count of frames** (`@now`) is one more each pass (`@run`). A sleep copies it, plus its frames, into its
+  wake: one copy, where the program's sleep read the game's tick a bit at a time (32 triggers, about 0.5 µs; now about
+  70 ns, for every program).
+- **The tasks' turn** follows the program's turn, and the program's wake when it does not hold: each start's slots in
+  the order of the starts' numbers, as the simulator orders them; when a task can start one, round again while one
+  was started, for it to have its first turn in this frame too. A task outlives its program.
+- **A start** that can run only once — in no loop, nowhere twice, in no task of more than one slot — has one slot,
+  always free when it runs: its arguments go straight into the task's parameters. One that can run while its tasks do
+  has its `max` of slots, each with its own copy of the task's body and variables (the variables the simulator swaps):
+  it finds the first free slot, says once in red that none was when all run, and the task's number is
+  `slot | task << 8 | generation << 16`, as the Python side's. `running` is a number one slot's number is; `cancel`
+  switches that slot off where it waits.
+- **`Promise.all` and `race`**: each branch a coroutine with a trigger of its own, all due as the statement is
+  reached and run in order; then the coroutine around sleeps a frame at a time and runs those still running, until
+  all have ended — or one has, a race, which goes on from that branch's end with the others switched off.
+- **A task's error**: the front end's `catch` around every task's body (the error noted in the slot for an `await` of
+  it, or said) reads the task's number and nothing of the task's, and is laid out once, a function each task calls
+  with its number; an uncaught error is said through one function too. A probe with two starts of sixteen slots was
+  19.8 MB before, 1.37 MB after (eudplib's 2.05). An array of texts longer than 64 cells — the errors' messages, a
+  cell a slot — takes a cell's block from the pool the first time it holds a text, as an array that grows does.
+- **Found on the way:** a loop's test was split into what nothing in the loop writes, tested once on the way in — but
+  while the loop sleeps a task may write it (`await t` is `while (t.running) sleep(1)`): a loop that sleeps tests its
+  whole condition each turn. A slot's number is worked out from its generation into places, which only a write sets:
+  the slot's variables are declared as the program starts.
+
+| Lifted game, Remastered's weights (`probes/own-tasks.ts`), µs a frame | Ours | eudplib |
+| --- | ---: | ---: |
+| W1: sixteen tasks asleep, none waking | **0.7** | 40.2 |
+| W2: sixteen tasks awake every frame, a little each | **3.9** | 90.4 |
+| sixteen tasks started in one frame | **10.0** | 141.5 |
+| W3: the program asleep a frame at a time (the sixteen asleep beside it) | **0.9** | 40.4 |
+| W4: four branches of a `Promise.all`, each asleep a frame at a time | **1.0** | 41.0 |
+| A: a task awaited, `running`, a task cancelled | **1.0** | 7.8 |
+| F: a task's error caught where it is awaited | **20.7** | 55.2 |
+| the first frame | **23.1** | 1,084.1 |
+| the map | **1.37 MB** | 2.05 MB |
+
+A task's turn costs about 0.2 µs (W2, less the frame around it) against eudplib's 3.1: its variables are its slot's
+own, no swapping; a slot asleep 13 ns a frame, a free one less. What is left is in the ledger's *Open* list.
+
+Checked: `tests/emitter.test.ts` ("a map of our own, tasks": every row of `ledger/tasks/`, `music.loop`, `ui.lines`, a
+program for every player with tasks, and cancelling, slots and their numbers, a task started from a task earlier and
+later in the turn, branches inside a task and a race inside a branch, errors in tasks — the payload walked from its
+bytes frame after frame against the simulator, every text at its frame); the probe both ways in the lifted game, every
+line the same at the same frame and "ok".
+
+Played in Remastered (2026-10-22, recording 20.57.34): all 9 lines word for word and in order, "did not start" in red;
+each group at the lifted game's frame (2, 14, 22, 29, 40, 43, 47, 75), the frames where 32 tasks start among them; no
+hitch.
 
 ### Triggers stacked (2026-10-20)
 

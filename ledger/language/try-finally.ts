@@ -1,4 +1,4 @@
-// ledger: step 11, refused: try
+// ledger: step 11, takes
 // `finally`: what runs however the `try` is left.
 program(() => {
   let k = 0;

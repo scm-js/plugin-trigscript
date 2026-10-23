@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A task that starts a task of its own.
 async function inner(n: number) {
   await sleep(frames(n));

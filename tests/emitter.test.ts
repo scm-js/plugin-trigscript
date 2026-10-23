@@ -4,7 +4,7 @@
 // conditions compare memory with their own numbers, actions write memory, the walk follows next pointers), from the
 // same random values, every variable compared after. The game probe probes/game-emitter.ts does the same in the
 // lifted game, for fewer loops.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarDecl } from "../compiler/ir";
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
@@ -147,7 +147,8 @@ const CALLS = { whole: false };
  * 0 byte as nothing) less 0x0D — which StarCraft draws as nothing, and which a map of our own fills the room around a
  * number with — in hex.
  */
-const PRINTED: { want: string[]; got: string[] } = { want: [], got: [] };
+/** `frames`: the frame each of `got` was shown in, by a walk of several (`runOwn`'s `frames`). */
+const PRINTED: { want: string[]; got: string[]; frames: number[] } = { want: [], got: [], frames: [] };
 const shown = (bytes: number[]) => bytes.filter((b) => b !== 0x0d).map((b) => b.toString(16).padStart(2, "0")).join("");
 /**
  * The statements the evaluator may still run for the program in hand (a hundred thousand), its calls' bodies included: a program whose
@@ -299,7 +300,7 @@ function key(d: Dword): string {
   if ("template" in d) return `template:${d.template}:${d.word}`;
   if ("cell" in d) return `epd:${TABLE_EPD(d.cell) + 18 * d.index}`;
   const f = d.field;
-  return f === "next" || f === "current" ? `${d.at}|${f}` : "cond" in f ? `${d.at}|cond:${f.cond}${f.part === "player" ? ":player" : f.part === "mask" ? ":mask" : ""}` : `${d.at}|act:${f.act}:${f.part}`;
+  return f === "next" || f === "current" || f === "flags" ? `${d.at}|${f}` : "cond" in f ? `${d.at}|cond:${f.cond}${f.part === "player" ? ":player" : f.part === "mask" ? ":mask" : ""}` : `${d.at}|act:${f.act}:${f.part}`;
 }
 
 function exec(g: Graph, env: Env): Env {
@@ -1066,7 +1067,11 @@ describe("the emitter, a map of our own's texts", () => {
 const laidOut = new WeakMap<Graph, { arrays: Map<string, number[]>; own: ReturnType<typeof layout>; texts: string[]; templates: string[] }>();
 /** `memory`: dwords of the game's as the map starts, by address (a player's name, their colour); `arrays`: the lists the graph reads. */
 /** `runs`: instead of `g` alone, several runs laid out one after another, as a map of our own runs them each frame. */
-function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[]): Env {
+/**
+ * `frames`: walked that many times, as the game walks the triggers once a frame — from `@run` (the map's count of frames
+ * one more) when more than one, the memory kept from one to the next; each text shown noted with its frame.
+ */
+function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[], frames = 1): Env {
   // (Laid out once a graph: a test may walk one many times.)
   let done = laidOut.get(g);
   if (!done || (done.arrays !== arrays && (done.arrays.size || arrays.size))) {
@@ -1090,7 +1095,10 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
   const byte = (a: number) => dv.getUint8(a - base);
   // (A player field of 13 is the current player: the dword whose EPD the game's current player is.)
   const at = (epd: number) => u(DEATHS + 4 * (epd === 13 ? rd(0x6509b0) : epd));
-  let pc = own.address;
+  PRINTED.frames = [];
+  for (let frame = 1; frame <= frames; frame++) {
+  let pc = frames > 1 ? own.triggers.get("@run")! : own.address;
+  const shownBefore = PRINTED.got.length;
   for (let steps = 0; !(pc & 0x80000000); steps++) {
     if (steps > 200_000_000) throw new Error("the payload does not end");
     if (!inside(pc)) throw new Error(`the walk left the payload: 0x${pc.toString(16)}`);
@@ -1125,6 +1133,8 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
         wr(addr, randomBit() ? (rd(addr) | bit) >>> 0 : (rd(addr) & ~bit) >>> 0);
         continue;
       }
+      // (Play WAV: noted as a sound played, which sound aside.)
+      if (kind === 8) { PRINTED.got.push("wav"); continue; }
       if (kind !== 45) throw new Error(`action kind ${kind}`);
       const dest = at(rd(o + 16)), value = rd(o + 20), modifier = byte(o + 27), old = rd(dest);
       if (dv.getUint16(o + 30 - base, true) === 0x4353) {
@@ -1137,6 +1147,8 @@ function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string,
       wr(dest, modifier === 7 ? value : modifier === 8 ? u(old + value) : Math.max(0, old - value));
     }
     pc = rd(pc + 4);
+  }
+  for (let i = shownBefore; i < PRINTED.got.length; i++) PRINTED.frames.push(frame);
   }
   const out: Env = new Map([...own.vars].map(([id, a]) => [id, rd(a)]));
   for (const [id, n] of WRITABLE) {
@@ -1764,5 +1776,343 @@ describe("a map of our own, units", () => {
       "  best?.kill();",
       "  if (best) print(\"alive\"); else print(\"gone\");",
     ].join("\n"), UNITS, HOME);
+  });
+});
+
+describe("a map of our own, errors", () => {
+  /** What a script prints as the simulator runs it, and as its payload does, walked from its bytes (one pass). */
+  const both = (script: string): { want: string[]; got: string[] } => {
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
+    const want = simulatePrograms(r.ir, 1, { strings: r.strings }).events.filter((e) => e.text !== undefined && e.action.type === 9).map((e) => hex(e.text!));
+    const o = emitOwn(r);
+    if (typeof o === "string") throw new Error(o);
+    PRINTED.got = [];
+    runOwn(o.runs[0].graph, undefined, o.values);
+    return { want, got: PRINTED.got };
+  };
+  const same = (script: string, lines?: string[]) => {
+    const r = both(script);
+    expect(r.want.length).toBeGreaterThan(0);
+    expect(r.got).toEqual(r.want);
+    if (lines) expect(r.want).toEqual(lines.map((l) => shown([...new TextEncoder().encode(l)])));
+  };
+  /** A program whose `k` is 2, not known when built. */
+  const program = (body: string, before = "") => `${before}\nprogram(() => {\n  let k = 0;\n  while (k < 2) k += 1;\n${body}\n});\n`;
+
+  it("goes to the catch of the try around a throw, and on after it", () => {
+    same(program([
+      "  try {",
+      "    if (k > 1) throw new Error(\"too many\");",
+      "    print(\"fine\");",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`caught ${e.message}`);",
+      "  }",
+      "  try { print(\"no throw\"); } catch { print(\"never\"); }",
+      "  print(\"after\");",
+    ].join("\n")), ["caught too many", "no throw", "after"]);
+  });
+
+  it("tells classes of error apart, the script's own with fields among them, and makes a message while the game runs", () => {
+    same(program([
+      "  for (let i = 0; i < 4; i++) {",
+      "    try {",
+      "      if (i == 0) throw new Late(k * 5);",
+      "      if (i == 1) throw new RangeError(`i is ${i}, k ${k}`);",
+      "      if (i == 2) throw new TypeError(\"type\");",
+      "      print(`${i} went through`);",
+      "    } catch (e) {",
+      "      if (e instanceof Late) print(`late by ${e.by}: ${e.message}`);",
+      "      else if (e instanceof RangeError) print(`range: ${e.message}`);",
+      "      else if (e instanceof Error) print(`other: ${e.message}`);",
+      "    }",
+      "  }",
+    ].join("\n"), "class Late extends Error {\n  by: number;\n  constructor(by: number) {\n    super(\"late\");\n    this.by = by;\n  }\n}"), ["late by 10: late", "range: i is 1, k 2", "other: type", "3 went through"]);
+  });
+
+  it("throws a caught error again, to the try further out, and finally runs however the try is left", () => {
+    same(program([
+      "  let cleaned = 0;",
+      "  try {",
+      "    try {",
+      "      if (k > 1) throw new Error(\"inner\");",
+      "    } catch (e) {",
+      "      print(\"seen inside\");",
+      "      throw e;",
+      "    } finally {",
+      "      cleaned += 1;",
+      "    }",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`caught outside: ${e.message}, cleaned ${cleaned}`);",
+      "  }",
+      "  for (let i = 0; i < 4; i++) {",
+      "    try {",
+      "      if (i == 1) continue;",
+      "      if (i == 2) break;",
+      "    } finally {",
+      "      cleaned += 10;",
+      "    }",
+      "  }",
+      "  print(`${cleaned}`);",
+    ].join("\n")), ["seen inside", "caught outside: inner, cleaned 1", "31"]);
+  });
+
+  it("comes out of called functions to the try around the call, and a function's own try keeps its errors", () => {
+    same(program([
+      "  let total = 0, n = 0;",
+      "  try {",
+      "    while (n < 5) {",
+      "      total += outer(n);",
+      "      n += 1;",
+      "    }",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`stopped at ${n}: ${e.message}`);",
+      "  }",
+      "  try { total += check(k + 7); } catch { total += 1000; }",
+      "  print(`${total} ${safe(1)} ${safe(7)}`);",
+    ].join("\n"), [
+      "function check(n: number) {",
+      "  if (n > 2) throw new Error(`too big: ${n}`);",
+      "  return n + 1;",
+      "}",
+      "function outer(n: number) {",
+      "  return check(n) * 2;",
+      "}",
+      "function safe(n: number) {",
+      "  try {",
+      "    return check(n);",
+      "  } catch {",
+      "    return -1;",
+      "  }",
+      "}",
+    ].join("\n")), ["stopped at 3: too big: 3", "1012 2 -1"]);
+  });
+
+  it("says an error nothing catches in red, where it was thrown, and stops the program there", () => {
+    same(program([
+      "  print(\"before\");",
+      "  if (k > 1) explode(k);",
+      "  print(\"after\");",
+    ].join("\n"), "function explode(k: number) {\n  throw new RangeError(`k is ${k}`);\n}"), ["before", "\x06TrigScript: uncaught RangeError: k is 2, line 2."]);
+  });
+
+  it("comes up through a function that calls itself, its frames taken back on the way", () => {
+    same(program([
+      "  try {",
+      "    print(`${down(k + 3)}`);",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`caught ${e.message}`);",
+      "  }",
+      "  print(`${halves(k * 20)}`);",
+    ].join("\n"), [
+      "function down(n: number): number {",
+      "  if (n == 0) throw new Error(\"bottom\");",
+      "  return down(n - 1) + 1;",
+      "}",
+      // (Each level keeps `n` and `half` around the call; the catch reads them after the frame is taken back.)
+      "function halves(n: number): number {",
+      "  const half = n >> 1;",
+      "  try {",
+      "    if (n < 3) throw new Error(\"small\");",
+      "    return halves(half) + n;",
+      "  } catch {",
+      "    return half * 100 + n;",
+      "  }",
+      "}",
+    ].join("\n")), ["caught bottom", `${40 + 20 + 10 + 5 + 102}`]);
+  });
+
+  it("prints what the simulator prints for each of the ledger's scripts of errors", () => {
+    for (const name of ["try-catch", "try-finally", "rethrow", "error-class", "error-fields", "error-stack", "throw-from-function", "throw-through-recursion", "finally-on-return", "throw-uncaught", "uncaught-in-function", "stack-overflow-caught"]) {
+      const r = both(readFileSync(`ledger/language/${name}.ts`, "utf8"));
+      expect([name, r.want.length > 0]).toEqual([name, true]);
+      expect([name, r.got]).toEqual([name, r.want]);
+    }
+  });
+
+  it("lays a loop out the same on an error's way, a throw after it", () => {
+    // (Only what runs once before a throw is cold, its reads refreshed from their cells: a loop may turn many times.)
+    const lines = (end: string) => {
+      const r = compileScript(ts, { "main.ts": `program(() => {\n  let i = 0, s = 0;\n  while (i < 100) {\n    s += i * 3;\n    i += 1;\n  }\n  ${end}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+      const o = emitOwn(r);
+      if (typeof o === "string") throw new Error(o);
+      return o.runs[0].graph.triggers.filter((t) => t.at && t.at.line >= 3 && t.at.line <= 5).map((t) => [t.conds.length, t.acts.length, !!t.copy]);
+    };
+    expect(lines(`throw new Error("done");`)).toEqual(lines(`print("done");`));
+    // (And one whose message reads the sum: its read is refreshed where it is made, no place the loop keeps.)
+    expect(lines(`throw new Error(\`\${s}\`);`)).toEqual(lines(`print("done");`));
+  });
+
+  it("throws a RangeError where a function that calls itself runs out of stack", () => {
+    same(program([
+      "  try {",
+      "    print(`${forever(k)}`);",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`${e instanceof RangeError} ${e.message}`);",
+      "  }",
+    ].join("\n"), "function forever(n: number): number {\n  if (n > 1000000) return 0;\n  return forever(n + 1) + 1;\n}"), ["true Maximum call stack size exceeded"]);
+  });
+});
+
+describe("a map of our own, tasks", () => {
+  /**
+   * What a script prints over so many frames, each text with its frame — and each sound played, as "wav": as the
+   * simulator runs it, and from its payload's bytes (every run of it, one a player of a program for each).
+   */
+  const both = (script: string, frames: number, file = "main.ts"): { want: string[]; got: string[] } => {
+    const r = compileScript(ts, { [file]: script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
+    const events = simulatePrograms(r.ir, frames, { strings: r.strings }).events.filter((e) => (e.text !== undefined && e.action.type === 9) || e.action.type === 8);
+    const first = events[0]?.frame ?? 0;
+    const want = events.map((e) => `${e.frame - first} ${e.action.type === 8 ? "wav" : hex(e.text!)}`);
+    // (Player 1 alone in the game, as the simulator runs a program for each player: for the first.)
+    const o = emitOwn(r, { slots: [0], forces: [0, 0, 0, 0, 0, 0, 0, 0] });
+    if (typeof o === "string") throw new Error(o);
+    PRINTED.got = [];
+    runOwn(o.runs[0].graph, undefined, o.values, o.runs.length > 1 ? o.runs.map((x) => ({ graph: x.graph, owner: x.player })) : undefined, frames);
+    const start = PRINTED.frames[0] ?? 0;
+    return { want, got: PRINTED.got.map((t, i) => `${PRINTED.frames[i] - start} ${t}`) };
+  };
+  for (const path of ["sounds/music-loop.ts", "texts/ui-lines.tsx", "programs/owner-all-players-tasks.ts"]) it(`runs ledger/${path} as the simulator does, frame for frame`, () => {
+    const r = both(readFileSync(`ledger/${path}`, "utf8"), 200, path.endsWith(".tsx") ? "main.tsx" : "main.ts");
+    expect(r.want.length).toBeGreaterThan(0);
+    expect(r.got).toEqual(r.want);
+  });
+  const ROWS = ["start-call", "start-arrow", "start-void", "start-max", "task-awaited", "task-running", "task-cancel", "task-outlives-program", "task-starts-a-task", "generator-as-a-task", "timers-after", "timers-every", "timers-every-times", "timers-every-cancelled", "promise-all", "promise-all-values", "promise-race", "promise-any", "task-error-awaited", "task-error-not-awaited"];
+  for (const name of ROWS) it(`runs ledger/tasks/${name} as the simulator does, frame for frame`, () => {
+    const r = both(readFileSync(`ledger/tasks/${name}.ts`, "utf8"), 200);
+    // (A task cancelled says nothing: the tests below do.)
+    if (name !== "task-cancel") expect(r.want.length).toBeGreaterThan(0);
+    expect(r.got).toEqual(r.want);
+  });
+  const same = (script: string, frames = 120) => {
+    const r = both(script, frames);
+    expect(r.want.length).toBeGreaterThan(0);
+    expect(r.got).toEqual(r.want);
+  };
+
+  it("cancels a task where it waits, and says it no longer runs", () => {
+    same([
+      "async function ticker(name: number) {",
+      "  let i = 0;",
+      "  while (true) {",
+      "    print(`${name}: ${i}`);",
+      "    i += 1;",
+      "    await sleep(frames(2));",
+      "  }",
+      "}",
+      "program(async () => {",
+
+      "  const a = start(ticker(1));",
+      "  const b = start(ticker(2));",
+      "  await sleep(frames(5));",
+      "  a.cancel();",
+      "  print(`${a.running} ${b.running}`);",
+      "  await sleep(frames(4));",
+      "  b.cancel();",
+      "  a.cancel();",
+      "  print(`${a.running} ${b.running}`);",
+      "});",
+    ].join("\n"));
+  });
+
+  it("gives a start's tasks its slots, says once when all run, and reuses a slot with a new number", () => {
+    // (The game says in red that a task did not start, as the Python side's build does; the simulator notes a fault.)
+    const r = both([
+      "async function wave(n: number) {",
+      "  await sleep(frames(n));",
+      "  print(`wave ${n}`);",
+      "}",
+      "program(async () => {",
+      "  let n = 1;",
+      "  while (n <= 4) {",
+      "    const t = start(wave(n * 2), { max: 2 });",
+      "    print(`${n}: ${t.running}`);",
+      "    n += 1;",
+      "  }",
+      "  await sleep(frames(3));",
+      "  n = 1;",
+      "  while (n <= 2) {",
+      "    const t = start(wave(n), { max: 2 });",
+      "    print(`again ${n}: ${t.running}`);",
+      "    n += 1;",
+      "  }",
+      "  await sleep(frames(10));",
+      "});",
+    ].join("\n"), 120);
+    const said = shown([...new TextEncoder().encode("\x06TrigScript: wave did not start, line 8 - all 2 of this start's tasks are running.")]);
+    expect(r.got.filter((t) => t.endsWith(said))).toEqual([`0 ${said}`]);
+    expect(r.got.filter((t) => !t.endsWith(said))).toEqual(r.want);
+  });
+
+  it("starts a task from a task later in the turn, and earlier, in the frame it is started", () => {
+    same([
+      "async function late(n: number) {",
+      "  print(`late ${n} starts`);",
+      "  await sleep(frames(1));",
+      "  print(`late ${n} ends`);",
+      "}",
+      "async function early() {",
+      "  await sleep(frames(2));",
+      "  print(\"early starts late\");",
+      "  start(late(1));",
+      "  await sleep(frames(2));",
+      "}",
+      "program(async () => {",
+      "  start(late(0));",
+      "  start(early());",
+      "  print(\"program\");",
+      "});",
+    ].join("\n"));
+  });
+
+  it("waits for branches inside a task, and a race inside a branch", () => {
+    same([
+      "async function pause(n: number): Promise<number> {",
+      "  await sleep(frames(n));",
+      "  return n;",
+      "}",
+      "async function pair(): Promise<number> {",
+      "  const [a, b] = await Promise.all([pause(2), pause(5)]);",
+      "  return a + b;",
+      "}",
+      "async function task() {",
+      "  const [x, y] = await Promise.all([pair(), Promise.race([pause(3), pause(7)])]);",
+      "  print(`task ${x} ${y}`);",
+      "}",
+      "program(async () => {",
+      "  start(task());",
+      "  let i = 0;",
+      "  while (i < 8) { print(`frame ${i}`); i += 1; await sleep(frames(1)); }",
+      "});",
+    ].join("\n"));
+  });
+
+  it("throws in a task to its own catch, and to the program waiting on it", () => {
+    same([
+      "async function risky(n: number) {",
+      "  await sleep(frames(n));",
+      "  try {",
+      "    if (n > 1) throw new RangeError(`n is ${n}`);",
+      "  } catch (e) {",
+      "    if (e instanceof RangeError) print(`caught in the task: ${e.message}`);",
+      "  }",
+      "  if (n > 2) throw new Error(`gave up at ${n}`);",
+      "  print(`task ${n} ends`);",
+      "}",
+      "program(async () => {",
+      "  const a = start(risky(1));",
+      "  const b = start(risky(3));",
+      "  await a;",
+      "  print(\"a done\");",
+      "  try {",
+      "    await b;",
+      "  } catch (e) {",
+      "    if (e instanceof Error) print(`the program caught: ${e.message}`);",
+      "  }",
+      "});",
+    ].join("\n"));
   });
 });

@@ -67,9 +67,12 @@ export interface FixedFn { fn: "fmul_vars" | "fdiv_vars" | "fmul_by" | "fdiv_by"
 /**
  * `current`: the dword whose top byte is the trigger's current action (where a trigger held by a Wait or a
  * Transmission goes on from); an action's `flags` dword has its flags in the low byte (bit 0: a Wait or a Transmission
- * started, which the game steps over the next time it is reached).
+ * started, which the game steps over the next time it is reached). `flags`: the trigger's own (4, preserved; 8 more,
+ * done: the walk passes it by before its conditions, at about 40% of what an empty trigger costs it).
  */
-export type Field = { cond: number; part?: "value" | "player" | "mask" } | { act: number; part: ActPart } | "next" | "current";
+export type Field = { cond: number; part?: "value" | "player" | "mask" } | { act: number; part: ActPart } | "next" | "current" | "flags";
+/** A trigger's flags: preserved, and preserved and done (passed by: `Trigger.off`). */
+export const TRIGGER_ON = 4, TRIGGER_OFF = 12;
 export type ActPart = "value" | "dest" | "modifier" | "mask" | "text" | "wav" | "time" | "flags";
 
 export type Compare = "atLeast" | "atMost" | "exactly";
@@ -129,7 +132,8 @@ export const SWITCHES = 0x58dc40;
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,
  * or `END` for what follows the graph — or, unset, to the trigger after it in the list.
  */
-export interface Trigger { label: string; conds: Cond[]; acts: Act[]; next?: string; at?: At; copy?: Copy; island?: Stmt; call?: Call }
+/** `off`: laid out done (`TRIGGER_OFF`), passed by until an action of the graph's switches it on: a task's slot with nothing in it. */
+export interface Trigger { label: string; conds: Cond[]; acts: Act[]; next?: string; at?: At; copy?: Copy; island?: Stmt; call?: Call; off?: boolean }
 
 /**
  * A call of a fixed-point function, in place of a trigger as a copy is: its parameters' cells were written by the
@@ -160,6 +164,13 @@ export interface Copy { from: string; into: { dword: Dword; add: Num; scale?: nu
 export const END = "@end";
 
 /**
+ * A map of our own's count of frames (TrigScript 4, step 11): a variable of the map's, one more each pass before the
+ * runs (`layout.ts`). A coroutine's wake — the program's, a task's, a branch of a `Promise.all`'s — asks whether it has
+ * reached the frame its sleep wrote: one copy of it plus the frames, where the game's own tick was read a bit at a time.
+ */
+export const NOW = "@now";
+
+/**
  * A copy into the graph on the way in: the variable's value times `scale` (1 when unset; wrapping) plus `add`, written
  * into the dword. The variables a graph reads that something else writes come in this way, once each time the walk
  * enters it (the Python side routes the variable's cell, as it does any read).
@@ -184,7 +195,11 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
  * order, `TRIGGER_BYTES` apart. Every other trigger the layout puts where it fits (`layout.ts`).
  */
 /** (A template with `at` is the game's own memory there — the line a print at the centre of the screen is written into — and its bytes are written by the program, not laid out.) */
-export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number; data?: boolean }[]; rows?: string[][] }
+/**
+ * `tasks`: where a run's tasks have their turn (a map of our own): the walk goes there after the program's turn, and when
+ * the program's wake does not hold; it ends at `END`.
+ */
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number; data?: boolean }[]; rows?: string[][]; tasks?: string }
 export interface Region { id: string; cells: number; values?: number[] }
 
 /**

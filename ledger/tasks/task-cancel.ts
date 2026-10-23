@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A task stopped where it is: `t.cancel()`.
 async function forever() {
   while (true) await sleep(frames(1));

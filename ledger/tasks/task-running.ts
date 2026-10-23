@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // Whether a task still runs: `t.running`, true until it ends or is cancelled.
 async function short() {
   await sleep(frames(3));

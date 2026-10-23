@@ -1,4 +1,4 @@
-// ledger: step 11, refused: a task started
+// ledger: step 11, takes
 // A task started beside the program, the program going on at once: `start(tick(3))`.
 async function tick(n: number) {
   let i = 0;
