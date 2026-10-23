@@ -4600,7 +4600,11 @@ class Lowering:
         elif k == "return":
             fn = ctx.get("fn")
             if fn is None:
-                raise Fail("trigscript: return outside a function%s" % where(st))
+                # At the top of a program: its end, for good.
+                if ctx.get("end") is None:
+                    raise Fail("trigscript: return outside a function%s" % where(st))
+                EUDJump(ctx["end"])
+                raise Leave()
             if st.get("value") is not None and fn["result"] is not None:
                 self.put(fn["result"], st["value"], fn["kind"])
             EUDJump(fn["end"])
@@ -5906,7 +5910,8 @@ class Lowering:
             if self.per_player:
                 for pool in self.pools.values():
                     pool.base << f_mul(self.player, pool.max)
-        self.coroutine(self.top, self.p["body"])
+        end = Forward()
+        self.coroutine(self.top, self.p["body"], {"end": end}, end)
         self.run_tasks()
 
     def run_tasks(self):

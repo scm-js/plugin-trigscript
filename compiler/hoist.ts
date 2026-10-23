@@ -94,6 +94,10 @@ export function libraryName(ts: typeof TS, checker: TS.TypeChecker, id: TS.Ident
   if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
   const decl = sym?.valueDeclaration ?? sym?.declarations?.[0];
   if (!decl || decl.getSourceFile().fileName !== DECLARATIONS_FILE) return null;
+  // (A member of one of the library's interfaces — a unit's `order()` method, a field of a record it declares — is that
+  // type's, not the library's `order()`: `first(…)?.order("move", …)` is the unit's. A member of one of its objects —
+  // `on.died`, `local.selected`, `memory.game` — is the library's.)
+  if ((ts.isMethodSignature(decl) || ts.isPropertySignature(decl)) && ts.isInterfaceDeclaration(decl.parent)) return null;
   return sym!.name;
 }
 
@@ -682,6 +686,8 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     const scan = (n: TS.Node): void => {
       if (!ok) return;
       if (ts.isIdentifier(n)) { identifier(n, n.parent); return; }
+      // `this` inside an arrow written in a method is the instance the method runs on, which the program has.
+      if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword) { ok = false; return; }
       ts.forEachChild(n, scan);
     };
     const identifier = (n: TS.Identifier, p: TS.Node) => {

@@ -1270,6 +1270,35 @@ describe("a map of our own, memory at a value's address", () => {
   });
 });
 
+describe("a map of our own, a sum of bit-slices of one read", () => {
+  it("folds a sum whose terms are slices of one dword read and a negative constant as the program does (step 12's Open list)", () => {
+    // `(v & 0xffff) − 1 + ((v >>> 16) − 1) × 1024` of a dword 0x00050003: 2 + 4 × 1024.
+    const decl = (id: string): VarDecl => ({ id, name: id, kind: "number", shared: false, at });
+    const v = (id: string): NumExpr => ({ kind: "var", id });
+    const c = (value: number): NumExpr => ({ kind: "const", value });
+    const bin = (op: "+" | "-" | "*" | "&" | ">>>", left: NumExpr, right: NumExpr): NumExpr => ({ kind: "binary", op, left, right, at, label: "" });
+    const deaths: ConditionRecord = { location: 0, player: 1000, amount: 0, unitId: 0, comparison: 0, type: 15, resource: 0, flags: 0, mask: 0 };
+    const read: NumExpr = { kind: "read", read: { source: "condition", record: deaths }, at, label: "" } as NumExpr;
+    const low = bin("&", v("v"), c(0xffff)), high = bin(">>>", v("v"), c(16));
+    const cases: [string, NumExpr, number][] = [
+      ["d", bin("+", bin("-", low, c(1)), bin("*", bin("-", high, c(1)), c(1024))), 2 + 4 * 1024],
+      ["e", bin("+", bin("-", bin("&", v("v"), c(0xff)), c(3)), bin("-", bin("&", bin(">>>", v("v"), c(8)), c(0xff)), c(5))), u(3 - 3 + (0 - 5))],
+      ["f", bin("-", low, c(1025)), u(3 - 1025)],
+      ["g", bin("-", bin("*", high, c(1024)), c(1025)), u(5 * 1024 - 1025)],
+      ["h", bin("+", low, bin("*", high, c(1024))), 3 + 5 * 1024],
+      ["i", bin("-", bin("+", low, high), c(1025)), u(8 - 1025)],
+      ["j", bin("+", bin("*", high, c(1024)), c(7)), 5 * 1024 + 7],
+      ["k", bin("-", high, c(1)), 4],
+    ];
+    const body = [{ kind: "declare", decl: decl("v"), init: read, at }, ...cases.map(([id, init]) => ({ kind: "declare", decl: decl(id), init, at }))] as Stmt[];
+    const decls = new Map(["v", ...cases.map(([id]) => id)].map((id) => [id, decl(id)]));
+    const g = emitBody(body, decls, "bs", undefined, undefined, undefined, 0);
+    if (typeof g === "string") throw new Error(g);
+    const got = runOwn(g, new Map([[0x58a364 + 4 * 1000, 0x00050003]]));
+    expect(cases.map(([id]) => [id, got.get(id)])).toEqual(cases.map(([id, , want]) => [id, want]));
+  });
+});
+
 describe("a map of our own, texts made while the game runs", () => {
   /** What a one-program script prints, its payload walked from its bytes (one pass: it sleeps nowhere). */
   const printed = (body: string, file = "main.ts", memory?: Map<number, number>): string[] => {

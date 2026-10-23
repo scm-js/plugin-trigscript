@@ -397,12 +397,12 @@ ${kw}function unitsAt(location: Location, filter?: Omit<UnitFilter, "at">): Unit
 ${kw}function unitsOf(player: Player, filter?: Omit<UnitFilter, "owner">): UnitSet;
 /** Every unit on the map the filter matches. */
 ${kw}function allUnits(filter?: UnitFilter): UnitSet;
-/** The first unit the filter matches, or null. */
-${kw}function first(filter?: UnitFilter): Unit | null;
+/** The first unit the filter matches, or null; a set of units — \`first(unitsAt(locations.Base, { owner: P1 }))\` — is its filter. */
+${kw}function first(filter?: UnitFilter | UnitSet): Unit | null;
 /** The unit of a type nearest to the centre of a location, or null; units.AnyUnit for any type. */
 ${kw}function nearest(unit: UnitType, location: Location, filter?: Omit<UnitFilter, "type">): Unit | null;
 /** One of the units the filter matches, picked by the game, or null. */
-${kw}function randomUnit(filter?: UnitFilter): Unit | null;
+${kw}function randomUnit(filter?: UnitFilter | UnitSet): Unit | null;
 /**
  * The game's own tables, inside program() only: what a unit type costs, what a weapon does, a player's
  * upgrades. Read a field as a number, assign to it, += it: \`stats(units.TerranMarine).minerals = 25;\`

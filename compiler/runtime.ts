@@ -379,10 +379,20 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
     return ((n - DEATHS_TABLE_ADDRESS) / 4) >>> 0;
   };
+  /**
+   * A dword as a Deaths names it: its EPD in the player field, unit 0. A dword 12 to 26 dwords into the deaths table
+   * (Player 2's Ghosts to Player 3's Vultures) cannot be named so — the game reads the player group of that number
+   * instead (13 the current player, 17 all players, 18 to 21 the forces) — and is the deaths of player e mod 12 of
+   * unit e div 12, the same cell, so it is named as that in every build.
+   */
+  const deathsAt = (address: unknown, what: string): { player: number; unitId: number } => {
+    const e = epd(address, what);
+    return e >= 12 && e <= 26 ? { player: e % 12, unitId: Math.floor(e / 12) } : { player: e, unitId: 0 };
+  };
   rt.memory = (address: unknown, comparison: unknown, value: unknown) =>
-    condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
+    condition({ ...emptyCondition(), type: ConditionType.Deaths, ...deathsAt(address, "memory: address"), comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
   rt.setMemory = (address: unknown, modifier: unknown, value: unknown) =>
-    action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
+    action({ ...emptyAction(), type: ActionType.SetDeaths, ...deathsAt(address, "setMemory: address"), modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
   rt.disabled = (item: unknown) => {
     if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
     if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
@@ -519,6 +529,8 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   const onlyInProgram = (ident: string, how: string): never => { throw new ScriptError(`${ident}() is about the units in the game, which exist while it runs: ${how}, inside program().`); };
   const filterOf = (ident: string, v: unknown, given: UnitFilter): UnitFilter => {
     const out: UnitFilter = { ...given };
+    // `first(unitsAt(locations.Base, { owner: P1 }))`: the set's own filter.
+    if (isUnitQuery(v)) v = v.filter;
     if (v !== undefined && v !== null) {
       if (typeof v !== "object" || Array.isArray(v) || isGameValue(v)) throw new ScriptError(`${ident}: the filter is an object such as { type: units.TerranMarine, owner: P1, at: locations.Base }, got ${describe(v)}.`);
       for (const [key, value] of Object.entries(v as Record<string, unknown>)) {

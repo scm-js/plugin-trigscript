@@ -57,14 +57,14 @@
  * expression, with a note that it ran when the script was built.
  */
 import type * as TS from "typescript";
-import { ActionType, PlayerGroup } from "../vendor/triggers";
+import { ActionFlag, ActionType, ConditionFlag, PlayerGroup } from "../vendor/triggers";
 import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
 import { clockCall, declarationOf, isOnCall, isScriptClass, isScriptFunction, keepsState, libraryCallName, ON_EVENTS, scriptArrow } from "./hoist";
 import { ORDER_NAMES } from "./orders";
 import { DEAF_KEYS, KEY_NAMES, keyName, parseChatPattern, type ChatPattern, type InputSource } from "./input";
 import { scriptParams } from "./api";
-import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue, isSelected, isSelectionCount, SELECTION_ADDRESS } from "./runtime";
+import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, ScriptError, textParts, type ConditionValue, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue, isSelected, isSelectionCount, SELECTION_ADDRESS } from "./runtime";
 import { cellMax } from "./tables";
 import { markViewWrites, type View } from "./views";
 import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
@@ -708,6 +708,14 @@ export class Structured {
     const e = this.unwrap(expr);
     const pin = this.pinned.get(e);
     if (pin) return pin;
+    // `new P(4).x`: the instance made where it is written, under no name, its fields then read as any instance's.
+    if (ts.isNewExpression(e)) {
+      const cls = this.classOf(e.expression);
+      if (!cls || this.isRefClass(cls)) return undefined;
+      const made = this.instantiate(e, "(made)");
+      if (made) this.pinned.set(e, made);
+      return made ?? undefined;
+    }
     if (ts.isIdentifier(e)) {
       // A name taken out of a pattern (`for (const [k, v] of lost)`) is bound by its own element, not by the declaration it is part of.
       const raw = declarationOf(ts, this.c.checker, e);
@@ -988,6 +996,13 @@ export class Structured {
     const message = err instanceof Error ? err.message : String(err);
     const i = (err as { __trigscriptConst?: number } | null)?.__trigscriptConst;
     const decl = i !== undefined ? this.body.plan.constList[i] : undefined;
+    // Inside a `try`, an error the script's own code threw as it was worked out — `try { total += check(9); }` with a
+    // `check` that throws for 9 — is the program's, thrown where the expression stands, as JavaScript would throw it:
+    // the catch takes it. (0 stands where the value would have, after the throw, which nothing reaches.)
+    if (!decl && this.tries > 0 && err instanceof Error && !(err instanceof LowerError) && !(err instanceof ScriptError) && Object.hasOwn(ERROR_CODES, err.name)) {
+      this.throwBuilt(err.name as BuiltinError, err.message, at);
+      return 0;
+    }
     if (decl?.initializer) throw new ValueError(decl.initializer, `${message} — this constant is computed when the script is built, not in the game.`);
     throw new ValueError(at, `${message} — this expression is computed when the script is built, not in the game.`);
   }
@@ -1209,7 +1224,12 @@ export class Structured {
   }
 
   private returnStatement(s: TS.ReturnStatement, ctx: Ctx) {
-    if (!ctx.fn) { this.c.error(s, "return outside a function."); return; }
+    if (!ctx.fn) {
+      // `if (!raider) return;` at the top of a program: the program ends there, for good.
+      if (s.expression) { this.c.error(s.expression, "A program gives nothing back: return; alone ends it."); return; }
+      this.emit({ kind: "return", at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
     const { fn } = ctx;
     if (fn.inFinally) { this.c.error(s, "A finally block runs on every way out of its try, an error's way too, so it does not return: return after the try."); return; }
     if (fn.finallies?.length) { this.returnThrough(s, ctx); return; }
@@ -1524,6 +1544,21 @@ export class Structured {
    * `throw new Error("…")`, `throw new OutOfGold(need)`, `throw e`: the error is put in flight — its message, its class's
    * fields, its class's code last — and goes to the nearest `try` around it, out through the calls it is in.
    */
+  /** How many `try` bodies the walk is inside: an error a build-time call throws there is the program's (`force`). */
+  private tries = 0;
+
+  /** A built-in error thrown where `node` stands, with its message: what `throw new Error("…")` emits. */
+  private throwBuilt(name: BuiltinError, message: string, node: TS.Node) {
+    const at = this.at(node), label = this.label(node);
+    const f = this.flightOf(node);
+    this.emit({ kind: "assignText", target: f.message.id, value: { kind: "text", text: message }, at, label }, node);
+    const block: Stmt & { kind: "block" } = { kind: "block", body: [], at };
+    this.stackSites.push({ block, name, at, label });
+    this.emit(block, node);
+    this.emit({ kind: "assign", target: f.thrown.id, value: num(ERROR_CODES[name]), at, label }, node);
+    this.emit({ kind: "throw", at, label }, node);
+  }
+
   private throwStatement(s: TS.ThrowStatement) {
     const { ts } = this;
     const at = this.at(s), label = this.label(s);
@@ -1610,7 +1645,9 @@ export class Structured {
     const inner: Ctx = fin
       ? { ...ctx, ...(ctx.fn ? { fn: { ...ctx.fn, finallies: [...(ctx.fn.finallies ?? []), fin] } } : {}), exits: { break: [...(ctx.exits?.break ?? []), fin], continue: [...(ctx.exits?.continue ?? []), fin] } }
       : ctx;
-    const body = this.collect(() => this.block(s.tryBlock.statements, inner));
+    this.tries++;
+    let body: Stmt[];
+    try { body = this.collect(() => this.block(s.tryBlock.statements, inner)); } finally { this.tries--; }
     const guarded: Stmt = s.catchClause ? { kind: "try", body, catch: this.catchBody(s.catchClause, inner), at, label } : { kind: "block", body, at };
     if (!fin) { this.emit(guarded, s); return; }
     const { save, restore } = this.keepFlight(at, label);
@@ -2017,6 +2054,9 @@ export class Structured {
       if (race && race !== "all") { this.c.error(d, `${d.name.text} would be ${this.c.checker.typeToString(type)}: Promise.${race} gives the value of the branch that ends first, so every branch gives one. Give a sleep() or an until() a value with .then(() => …).`); continue; }
       // `let target: Enemy | null`, `let s: Shape = …` (B9): a variable that may be none, or one of several classes — they are kept by reference.
       if (!kind) { const wanted = this.instanceClasses(type); if (wanted && this.needRef(wanted)) { this.c.error(d, `${d.name.text} is ${this.c.checker.typeToString(type)}: its classes are kept by reference.`); continue; } }
+      // `const both = command(…) && bring(…)`: conditions of the game, kept to be asked where the name is tested, as
+      // `const there = bring(…)` is (the script hoists that one itself; `&&` of two is the program's).
+      if (!kind) { const conds = this.conditionsOf(init); if (conds) { this.scope.bind(d, { kind: "value", value: conds }); continue; } }
       if (!kind) { this.c.error(d, `Variables hold numbers, booleans, texts, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
       // `let total = shared(0)`: one cell for every player of a per-player program, initialised with the argument.
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
@@ -3192,16 +3232,21 @@ export class Structured {
         return this.mark<NumExpr | BoolExpr>({ kind: "pop", array: a.id, at }, e);
       }
       case "fill": {
-        if (as !== "statement" || e.arguments.length !== 1) return wrong(`${a.name}.fill(value) stands on its own and takes one value.`);
+        if (as !== "statement" || e.arguments.length < 1 || e.arguments.length > 3) return wrong(`${a.name}.fill(value, start?, end?) stands on its own.`);
         if (a.values) return wrong(`${a.name} was computed when the script was built and is only read in a program.`);
         const value = one(e.arguments[0]);
         if (!value) return null;
-        // The value once, then every cell: a loop the game runs, as for…of is.
+        // The value once, then every cell: a loop the game runs, as for…of is. With `start` and `end` (JavaScript's,
+        // counted from the end when negative, cut to the array), from the one to before the other.
         const v = this.newVar(`(fill of ${a.name})`, a.kind, at, { temp: true, ...(a.bits ? { bits: a.bits } : {}), ...(a.unsigned ? { unsigned: true } : {}) });
         const i = this.newVar(`(index of ${a.name})`, "number", at, { temp: true });
+        const length: NumExpr = { kind: "length", array: a.id, at };
+        const from = e.arguments[1] ? this.sliceEnd(e.arguments[1], length, e.arguments[1]) : num(0);
+        const to = e.arguments[2] ? this.sliceEnd(e.arguments[2], length, e.arguments[2]) : length;
+        if (!from || !to) return null;
         this.emit({ kind: "declare", decl: v, init: value, at, label }, e);
-        this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
-        this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: a.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+        this.emit({ kind: "declare", decl: i, init: from, at, label }, e);
+        this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: to, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
           body: [{ kind: "store", array: a.id, index: varRef(i), value: a.kind === "number" ? varRef(v) : boolRef(v), at, label }], at, label }, e);
         return true;
       }
@@ -4039,6 +4084,43 @@ export class Structured {
       body: pairs.map(([to, of]): Stmt => ({ kind: "push", array: to.id, value: { kind: "element", array: of.id, index: varRef(i), at }, at, label })), at, label }, where);
   }
 
+  /**
+   * Conditions of the game known when the script is built, joined by `&&` — `command(…) && bring(…)` — each as the
+   * script made it. Null when the expression is anything else (a `!`, a comparison of a variable: the program's own).
+   */
+  private conditionsOf(e: TS.Expression): ConditionValue[] | null {
+    const { ts } = this;
+    const x = this.unwrap(e);
+    if (ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+      const l = this.conditionsOf(x.left), r = this.conditionsOf(x.right);
+      return l && r ? [...l, ...r] : null;
+    }
+    let h: Hoisted | undefined;
+    try { h = this.evaluate(x); } catch { return null; }
+    if (!h) return null;
+    if (isCondition(h.value)) return [h.value];
+    return Array.isArray(h.value) && h.value.length > 0 && h.value.every(isCondition) ? (h.value as ConditionValue[]) : null;
+  }
+
+  /**
+   * `a ** n` and `Math.pow(a, n)`: the base multiplied into itself, `n` known when the script is built (the game has
+   * no power of a variable — a loop of products says it). `a ** 0` is 1.
+   */
+  private power(baseE: TS.Expression, expE: TS.Expression, e: TS.Expression): NumExpr | null {
+    const h = this.evaluate(expE);
+    const n = h ? this.asInteger(h, expE) : null;
+    if (n === null) { if (!h) this.c.error(expE, "The power is known when the script is built: a ** 2, Math.pow(a, 3). For one the game works out, multiply in a loop."); return null; }
+    if (n < 0) { this.c.error(expE, "A negative power is a fraction below 1, which a whole number of the game has no room for."); return null; }
+    const base = this.num(baseE);
+    if (!base) return null;
+    if (n === 0) return num(1);
+    const at = this.at(e), label = this.label(e);
+    const x = n > 1 ? this.temp(base, baseE) : base;
+    let acc: NumExpr = x;
+    for (let i = 1; i < n; i++) acc = { kind: "binary", op: "*", left: acc, right: x, at, label };
+    return this.mark<NumExpr>(acc, e);
+  }
+
   /** A place a `slice` is given, as JavaScript reads it: below zero it counts from the end, and it stays inside 0 … length. */
   private sliceEnd(given: TS.Expression, length: NumExpr, where: TS.Node): NumExpr | null {
     const n = this.num(given);
@@ -4756,8 +4838,11 @@ export class Structured {
   /** `hp[i] = v`, `hp[i] += v`: a store into a cell. An index that holds a call is evaluated once for the read and once for the store, as two reads of `i` would be. */
   private storeElement(e: TS.BinaryExpression, el: { a: ArrayDecl; index: NumExpr }, op: TS.SyntaxKind) {
     const { ts } = this;
-    const { a, index } = el;
+    const { a } = el;
     if (a.values) { this.c.error(e.left, `${a.name} was computed when the script was built and is only read in a program; declare it with let inside the program to write to it.`); return; }
+    // (`xs[n++] = n * 10`: the index before the value, as JavaScript has it — an index with a call in it is worked out first.)
+    const calls = (x: unknown): boolean => !!x && typeof x === "object" && (Array.isArray(x) ? x.some(calls) : (x as { kind?: string }).kind === "call" || Object.values(x).some(calls));
+    const index = calls(el.index) ? this.temp(el.index, e.left) : el.index;
     const emit = (value: NumExpr | BoolExpr) => this.emit({ kind: "store", array: a.id, index, value, at: this.at(e), label: this.label(e) }, e);
     if (a.kind === "boolean") {
       if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "Booleans take = only."); return; }
@@ -5213,11 +5298,15 @@ export class Structured {
   }
 
   private emitAction(a: ActionRecord, at: TS.Node) {
-    if (a.type === ActionType.PreserveTrigger) return; // Every generated trigger is preserved already.
+    // Every generated trigger is preserved already: a word, and nothing emitted.
+    if (a.type === ActionType.PreserveTrigger) { this.emit({ kind: "remark", short: "does nothing in a program", text: "preserve() keeps a trigger running after it has fired. A program runs on its own until it ends, so this does nothing here and can go.", at: this.at(at) }, at); return; }
+    if (a.flags & ActionFlag.Disabled) { this.c.error(at, "disabled() switches an action of a trigger off, which the game then skips. In a program, leave the action out instead."); return; }
     const s = a.text > 0 ? this.c.strings[a.text - 1] : undefined;
     if (s && "text" in s && hasTextMark(s.text)) {
       // name() or color() in the text: only displayText has a form the game fills in.
       if (a.type !== ActionType.DisplayText) { this.c.error(at, "name() and color() are filled in while the game runs, which displayText() and print() can do; this action's text is fixed when the script is built."); return; }
+      // (A print is always displayed: the flag an action carries has no place in it.)
+      if (!(a.flags & ActionFlag.AlwaysDisplay)) this.emit({ kind: "remark", short: "always displayed", text: "A text with name() or color() in it is filled in while the game runs, as print() fills one, and such a text is always displayed: the false here changes nothing.", at: this.at(at) }, at);
       this.emitPrint(textParts(s.text), CURRENT_PLAYER, "chat", at);
       return;
     }
@@ -7293,7 +7382,7 @@ export class Structured {
    */
   private switchStatement(s: TS.SwitchStatement, ctx: Ctx) {
     const { ts } = this;
-    if (this.isTextTyped(s.expression) && !this.evaluate(s.expression)) { this.textSwitch(s, ctx); return; }
+    if (this.isTextTyped(s.expression)) { this.textSwitch(s, ctx); return; }
     const value = this.num(s.expression);
     if (!value) return;
     const clauses = s.caseBlock.clauses;
@@ -7332,7 +7421,10 @@ export class Structured {
     const { ts } = this;
     const given = this.text(s.expression);
     if (!given) return;
-    const of = this.textTemp(given, s.expression);
+    // (A text known when the script is built — `switch (MODE)` of a const — is matched now: the case it falls into is
+    // the one taken, and no text is compared in the game.)
+    const known = given.kind === "text" ? given.text : undefined;
+    const of = known === undefined ? this.textTemp(given, s.expression) : given;
     const clauses = s.caseBlock.clauses;
     const at = this.at(s), label = this.label(s);
     let which: NumExpr = num(-1);
@@ -7342,6 +7434,7 @@ export class Structured {
       if (ts.isDefaultClause(c)) continue;
       const h = this.evaluate(c.expression);
       if (!h || typeof h.value !== "string" || hasTextMark(h.value)) { this.notConstant(c.expression, "A case's text"); values[i] = Number.NaN; continue; }
+      if (known !== undefined) { if (h.value === known) which = num(i); continue; }
       which = { kind: "ternary", cond: { kind: "textCompare", op: "==", left: of, right: { kind: "text", text: h.value }, at, label }, whenTrue: num(i), whenFalse: which, at, label };
     }
     const scope = new Scope(this.scope);
@@ -10548,6 +10641,15 @@ export class Structured {
         asCalled({ init: unit, label });
         return;
       }
+      if (!ts.isIdentifier(this.unwrap(arg)) && this.kindOf(this.c.checker.getTypeAtLocation(p.name)) === "boolean" && this.kindOf(this.c.checker.getTypeAtLocation(arg)) === "boolean") {
+        // `step(n, turns < 2)`: a comparison, or any condition of the program's, into a boolean of the parameter's own.
+        const test = this.bool(arg);
+        const copy = this.newVar(p.name.text, "boolean", this.sourceOfIn(target, p.name));
+        out.params.push({ decl: copy, init: test, label });
+        scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init: test, label });
+        return;
+      }
       const value = ts.isIdentifier(this.unwrap(arg)) ? null : this.numQuietly(arg);
       if (value) {
         // An expression over variables: computed into a variable of the parameter's own.
@@ -10993,6 +11095,14 @@ export class Structured {
     if (ts.isNewExpression(e)) { const cls = this.classOf(e.expression); if (cls && this.isRefClass(cls)) return this.newObject(e, cls); }
     // `this` of an instance kept by reference: its row.
     if (e.kind === ts.SyntaxKind.ThisKeyword) { const self = this.scope.lookup(THIS); if (self?.kind === "record" && self.ref) return self.ref.place; }
+    // `await sleep(frames(1)).then(() => 7)` as a value: the wait, then what the function gives, in a variable.
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "then" && this.isPromise(e.expression.expression)) {
+      const at = this.at(e), label = this.label(e);
+      const v = this.newVar("(then)", "number", at, { temp: true, ...this.widthOf(this.c.checker.getTypeAtLocation(expr)) });
+      this.emit({ kind: "declare", decl: v, init: num(0), at, label }, e);
+      this.task(e, { decl: v, kind: "number" });
+      return varRef(v);
+    }
     const h = this.evaluate(expr);
     // No function: `let f: (() => void) | undefined = undefined`; no instance (B9): `let next: Node | null = null`.
     if (h && (h.value === undefined || h.value === null) && this.noFunction(expr)) return num(0);
@@ -11117,14 +11227,27 @@ export class Structured {
       if (!inner) return null;
       if (e.operator === ts.SyntaxKind.PlusToken) return inner;
       if (e.operator === ts.SyntaxKind.MinusToken) return this.mark<NumExpr>({ kind: "unary", op: "-", expr: inner, at: this.at(e) }, e);
-      this.c.error(e, "Only + and - apply to variables.");
+      // `~a`: every bit the other way, which is a ^ 0xFFFFFFFF (−a − 1 of a signed number, as in JavaScript).
+      if (e.operator === ts.SyntaxKind.TildeToken) return this.mark<NumExpr>({ kind: "binary", op: "^", left: inner, right: num(-1), at: this.at(e), label: this.label(e) }, e);
+      this.c.error(e, "Only + - and ~ apply to variables.");
       return null;
     }
     // `queue.pop() ?? 0`: what TypeScript asks for, since a pop of an empty array is undefined there. The other value when it is empty.
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
       const left = this.unwrap(e.left);
+      // `u?.hp ?? 0` of a unit or none: its field while it is there and on the map, the other value when not.
+      if (ts.isPropertyAccessExpression(left) && left.questionDotToken && this.isUnitTyped(left.expression)) {
+        const m = this.unitMember(left);
+        const other = this.num(e.right);
+        if (!m || !other) return null;
+        const value = this.unitField(left, m);
+        if (!value) return null;
+        const at = this.at(e), label = this.label(e);
+        return this.mark<NumExpr>({ kind: "ternary", cond: { kind: "unitAlive", unit: m.unit, at, label }, whenTrue: value, whenFalse: other, at, label }, e);
+      }
       const taken = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) ? left.expression.name.text : "";
-      const list = taken === "pop" || taken === "shift" ? this.bindingOf((left as TS.CallExpression & { expression: TS.PropertyAccessExpression }).expression.expression) : undefined;
+      // (`rows[i].pop() ?? -1`: the row an array of arrays holds at i is the list, as `listOf` finds it.)
+      const list = taken === "pop" || taken === "shift" ? this.listOf((left as TS.CallExpression & { expression: TS.PropertyAccessExpression }).expression.expression) : undefined;
       // `xs.at(i) ?? 0`: the other value for a place past either end.
       const atOf = taken === "at" ? this.bindingOf((left as TS.CallExpression & { expression: TS.PropertyAccessExpression }).expression.expression) : undefined;
       if (atOf?.kind === "array" && atOf.a.kind === "number" && ts.isCallExpression(left) && left.arguments.length === 1) {
@@ -11158,9 +11281,10 @@ export class Structured {
         return this.mark<NumExpr>({ kind: "ternary", cond: { kind: "compare", op: ">", left: { kind: "length", array: list.a.id, at }, right: num(0), at, label: this.label(e) }, whenTrue: popped, whenFalse: other, at, label: this.label(e) }, e);
       }
     }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.AsteriskAsteriskToken) return this.power(e.left, e.right, e);
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
-      if (!op) { this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>."); return null; }
+      if (!op) { this.c.error(e, "Expected a number: variables take + - * / % ** and the bitwise & | ^ << >> >>>."); return null; }
       const l = this.num(e.left);
       const r = this.num(e.right);
       if (!l || !r) return null;
@@ -11355,6 +11479,33 @@ export class Structured {
     if (callee === Math.abs) {
       const a = args(1, "Math.abs()");
       return a ? intrinsic("abs", [a[0]]) : null;
+    }
+    if (callee === Math.pow) {
+      if (e.arguments.length !== 2) { this.c.error(e, "Math.pow() takes 2 arguments."); return null; }
+      return this.power(e.arguments[0], e.arguments[1], e);
+    }
+    if (callee === Math.sign) {
+      // 1, −1 or 0, the number read as signed, as JavaScript's is.
+      const a = args(1, "Math.sign()");
+      if (!a) return null;
+      const at = this.at(e), label = this.label(e);
+      const x = this.temp(a[0], e);
+      const below: NumExpr = { kind: "ternary", cond: { kind: "compare", op: "<", left: x, right: num(0), at, label }, whenTrue: num(-1), whenFalse: num(0), at, label };
+      return this.mark<NumExpr>({ kind: "ternary", cond: { kind: "compare", op: ">", left: x, right: num(0), at, label }, whenTrue: num(1), whenFalse: below, at, label }, e);
+    }
+    if (callee === Math.log2) {
+      // The place of the highest bit set — floor(log2 x) of a whole number — found by halving: five comparisons, each
+      // with a power of two. Of 0 it is 0 (JavaScript's −Infinity is no number of the game).
+      const a = args(1, "Math.log2()");
+      if (!a) return null;
+      const at = this.at(e), label = this.label(e);
+      const x = this.temp(a[0], e);
+      const between = (lo: number, hi: number): NumExpr => {
+        if (lo === hi) return num(lo);
+        const mid = (lo + hi + 1) >> 1;
+        return { kind: "ternary", cond: { kind: "compare", op: ">=", left: x, right: num(2 ** mid), at, label, unsigned: true }, whenTrue: between(mid, hi), whenFalse: between(lo, mid - 1), at, label };
+      };
+      return this.mark<NumExpr>(between(0, 31), e);
     }
     if (callee === Math.min || callee === Math.max) {
       if (e.arguments.length === 0) { this.c.error(e, "Math.min / Math.max take at least one argument."); return null; }
@@ -11702,13 +11853,13 @@ export class Structured {
     if (typeof v === "boolean") return v ? TRUE : FALSE;
     if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
     if (typeof v === "string") return v !== "" ? TRUE : FALSE;
-    if (isCondition(v)) return this.mark<BoolExpr>({ kind: "cond", record: { ...v.record } }, at);
+    if (isCondition(v)) return this.conditionOf(v, at);
     if (isRead(v)) return this.readBool(v, at);
     if (isTable(v)) { const read = this.tableRead(v, at); return read ? this.mark<BoolExpr>({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at) : FALSE; }
     if (isInput(v)) return this.inputBool(v, at);
     if (isChat(v)) return this.inputBool(v.matched, at);
     if (isMouse(v)) { this.c.error(at, "mouse() is a place on the map, not a condition: compare its x or its y."); return FALSE; }
-    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c) => this.mark<BoolExpr>({ kind: "cond", record: { ...c.record } }, at)) };
+    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c) => this.conditionOf(c, at)) };
     if (isAction(v)) { this.c.error(at, "This is an action, not a condition."); return FALSE; }
     // Anything else known when the script is built is true or false as in JavaScript: a note or a rest (null) of a
     // pattern, a clip, a picture — \`if (note) playWav(note)\` in a loop unrolled over them.
@@ -11716,6 +11867,12 @@ export class Structured {
     if (typeof v === "object" || typeof v === "function") return TRUE;
     this.c.error(at, `Expected a condition, got ${describe(v)}.`);
     return FALSE;
+  }
+
+  /** A condition of the game as the program tests it. `disabled(…)` is a trigger's: there, the game skips the condition; a program would hold it, so it is refused instead. */
+  private conditionOf(v: ConditionValue, at: TS.Node): BoolExpr {
+    if (v.record.flags & ConditionFlag.Disabled) { this.c.error(at, "disabled() switches a condition of a trigger off, which the game then skips. A program tests its conditions: leave this one out, or take disabled() off it."); return FALSE; }
+    return this.mark<BoolExpr>({ kind: "cond", record: { ...v.record } }, at);
   }
 
   /** A condition as a `BoolExpr` tree. */

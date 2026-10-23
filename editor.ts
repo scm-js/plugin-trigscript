@@ -54,12 +54,12 @@ import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, note
 import { testName } from "./service";
 import { applyMoves, buildTree, filesUnder, folderOf, movesOf, refuseMoves, tabLabels, validFolder, type Moves, type TreeNode } from "./tree";
 import { ProgramSimulation, type ProgramEvent, type ProgramSimulationOptions, type SimBounds, type SimUnitInit } from "./compiler/simulateIr";
-import { positionIn, type BuildRefusal, type MapNames, type ScriptArtifact, type ScriptService } from "./service";
+import { positionIn, type BuildRefusal, type MapNames, type OwnBuildEvent, type ScriptArtifact, type ScriptService } from "./service";
 import { COMPACT_LAYOUT, DEFAULT_LAYOUT, SHELL_STYLE, createShell, type IconName, type ShellLayout } from "./shell";
 import { DEBUG_STYLE, Debugger, type DebugGameView } from "./debugger";
 import type { DebugRecording } from "./compiler/gameDebug";
 import type { ScmSimDebugView } from "./vendor/scmSim";
-import type { EudplibBuildEvent, EudplibService } from "./vendor/eudplib";
+import type { EudplibService } from "./vendor/eudplib";
 import type { Translate } from "./i18n";
 import { describeMedia, isImageFile, isMediaFile, isNotesFile, isSoundFile } from "./compiler/media";
 import { importMedia, showImage, showVideo } from "./videoImport";
@@ -1534,8 +1534,14 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
 
   /** A build of the programs, whoever started it (Save, Test Map, Test): its state in the status bar, its log in Output, a failure on its line. */
-  const onLibraryBuild = (e: EudplibBuildEvent) => {
-    if (cancelled || (e.kind !== "log" && !e.contributors.includes("trigscript"))) return;
+  const onLibraryBuild = (e: OwnBuildEvent) => {
+    if (cancelled || (e.kind !== "log" && e.kind !== "warning" && !e.contributors.includes("trigscript"))) return;
+    if (e.kind === "warning") {
+      // TrigScript's own build has a word for the map maker: a trigger of the map's own left out, or one that never runs.
+      log(t("Build warning: {message}", { message: e.message }), false);
+      shell.notify({ key: `build-warning:${e.message}`, kind: "warn", text: e.message, actions: [{ label: t("Show the log"), run: () => shell.showPanel("output") }] });
+      return;
+    }
     if (e.kind === "start") {
       streamed = 0;
       shell.dismiss("build");

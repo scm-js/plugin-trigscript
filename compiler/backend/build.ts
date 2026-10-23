@@ -58,6 +58,8 @@ export interface OwnBuildStats {
   mapTriggers: number;
   mapTriggerCopies: number;
   hyperTriggersLeftOut: number;
+  /** The map's own triggers for a player group the game runs no list for (Players 9 to 12, Foes, Allies, Neutral, Non-Allied Victory Players): laid out in no list, as in the game. */
+  mapTriggersUnlisted: number;
   startUpTriggers: number;
   input: { keys: number; mouse: boolean; syncs: number; carrier: number; ring: number; rings: number; humans: number[]; cuwp: number; bits: number } | null;
   /** How many strings the map had before, and has now. */
@@ -77,6 +79,8 @@ export interface OwnBuild {
   stats: OwnBuildStats;
   /** With `maps`: where the triggers and the variables are, and the same as lines of a build's log. */
   maps?: OwnMaps;
+  /** What the map maker should hear of beyond the log: triggers of the map's own that are left out or never run. */
+  warnings: string[];
 }
 
 export type OwnBuildOutcome = OwnBuild | { refused: string };
@@ -164,6 +168,7 @@ export function buildOwnMap(input: OwnBuildInput): OwnBuildOutcome {
     mapTriggers: lowered.triggers.length,
     mapTriggerCopies: lowered.triggers.reduce((n, t) => n + t.slots.length, 0),
     hyperTriggersLeftOut: lowered.hyperTriggersLeftOut,
+    mapTriggersUnlisted: lowered.triggers.filter((t) => t.slots.length === 0).length,
     startUpTriggers: own.trig.length / 2400,
     input: lowered.input ? { keys: lowered.input.keys.length, mouse: lowered.input.mouse, syncs: lowered.input.syncs, carrier, ring: lowered.input.ring, rings: lowered.input.rings, humans: lowered.input.humans, cuwp, bits: lowered.input.bits } : null,
     stringsBefore,
@@ -174,8 +179,12 @@ export function buildOwnMap(input: OwnBuildInput): OwnBuildOutcome {
   };
   const maps = input.maps ? ownMaps(lowered, own, input.compiled.ir, strings.length, textBase) : undefined;
   if (stats.input) lines.push(`input: ${stats.input.keys} keys, ${stats.input.mouse ? "the mouse, " : ""}${stats.input.syncs} sync slots; carriers of type ${carrier}, ${stats.input.ring} a ring, ${stats.input.rings} rings, for players ${stats.input.humans.map((h) => h + 1).join(", ")}; unit-properties slot ${cuwp}; ${stats.input.bits} bits a value`);
-  lines.push(`${stats.runs} run${stats.runs === 1 ? "" : "s"} (${stats.runNames.join(", ")}), ${stats.graphTriggers} triggers of the programs, payload ${stats.payloadBytes} bytes at 0x${stats.address.toString(16)}, ${stats.mapTriggers} trigger${stats.mapTriggers === 1 ? "" : "s"} of the map's own (${stats.mapTriggerCopies} copies${stats.hyperTriggersLeftOut ? `, ${stats.hyperTriggersLeftOut} hyper triggers left out` : ""}), start-up ${stats.startUpTriggers} triggers, ${stats.stringsAfter - stats.stringsBefore} strings added`);
-  return { chk: s.bytes(), lines, stats, ...(maps ? { maps } : {}) };
+  lines.push(`${stats.runs} run${stats.runs === 1 ? "" : "s"} (${stats.runNames.join(", ")}), ${stats.graphTriggers} triggers of the programs, payload ${stats.payloadBytes} bytes at 0x${stats.address.toString(16)}, ${stats.mapTriggers} trigger${stats.mapTriggers === 1 ? "" : "s"} of the map's own (${stats.mapTriggerCopies} copies${stats.hyperTriggersLeftOut ? `, ${stats.hyperTriggersLeftOut} hyper triggers left out` : ""}${stats.mapTriggersUnlisted ? `, ${stats.mapTriggersUnlisted} in no list` : ""}), start-up ${stats.startUpTriggers} triggers, ${stats.stringsAfter - stats.stringsBefore} strings added`);
+  // What the map maker should hear of, beyond the log: the editor shows each as a notice.
+  const warnings: string[] = [];
+  if (stats.hyperTriggersLeftOut) warnings.push(`${stats.hyperTriggersLeftOut} hyper trigger${stats.hyperTriggersLeftOut === 1 ? "" : "s"} of the map's own ${stats.hyperTriggersLeftOut === 1 ? "was" : "were"} left out: a map with a program in it goes through its triggers every frame as it is, and with hyper triggers in a list the game would hold it to every second frame.`);
+  if (stats.mapTriggersUnlisted) warnings.push(`${stats.mapTriggersUnlisted} trigger${stats.mapTriggersUnlisted === 1 ? "" : "s"} of the map's own ${stats.mapTriggersUnlisted === 1 ? "is" : "are"} for a player group the game runs no triggers for (Players 9 to 12, Foes, Allies, Neutral, Non-Allied Victory Players): ${stats.mapTriggersUnlisted === 1 ? "it" : "they"} never run, in this build as in the game.`);
+  return { chk: s.bytes(), lines, stats, warnings, ...(maps ? { maps } : {}) };
 }
 
 export const isRefused = (o: OwnBuildOutcome): o is { refused: string } => "refused" in o;
