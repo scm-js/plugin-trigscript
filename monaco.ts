@@ -334,8 +334,14 @@ export function setMapRefs(monaco: MonacoApi, refs: () => MapRefs | null) {
   });
 }
 
-/** A line worth a warning that is no fault of the script: a test that fails, a `test.only` left in. */
-export interface ScriptWarning { file: string; line: number; message: string }
+/** A line worth a warning that is no fault of the script: a test that fails, a `test.only` left in, a program built through eudplib. */
+export interface ScriptWarning {
+  file: string;
+  line: number;
+  message: string;
+  /** Who says so: the tests (unset), or the build — what the Problems view writes in its column. */
+  source?: "build";
+}
 
 /** The compiler's own diagnostics, drawn under the TypeScript ones, per file; `warnings` in the colour of a warning. */
 export function setCompilerMarkers(monaco: MonacoApi, files: ScriptFiles, diagnostics: ScriptDiagnostic[], warnings: ScriptWarning[] = []) {

@@ -6257,6 +6257,9 @@ function plainFns(x: unknown): unknown {
 /** How often the emitter did what is worth counting, for its tests: loops with values computed once on the way in. */
 export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0, products: 0, quotients: 0, bits: 0, shifts: 0, fixed: 0, random: 0, reads: 0 };
 
+/** Where a refusal points, at its end: ", line N", and the file when it is not the script's entry file. */
+export const refusedAt = (at?: At): string => (at ? `, line ${at.line}${at.file && at.file !== "main.ts" && at.file !== "main.tsx" ? ` of ${at.file}` : ""}` : "");
+
 /**
  * A whole body of statements lowered to one graph, for a map of our own (no Python side, no eudplib): every statement
  * must be the emitter's — a print of a known text is the game's Display Text — with nothing left to an island, no
@@ -6331,11 +6334,11 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     // all players the front end adds, say, after a closure it cannot keep.)
     const refused = [...scope.islands.keys()];
     const first = refused.find((s) => scope.whyOf.get(s)?.never) ?? refused[0];
-    return `${scope.whyOf.get(first)?.why || `a ${first.kind} it does not lower`}${first.at ? `, line ${first.at.line}` : ""}`;
+    return `${scope.whyOf.get(first)?.why || `a ${first.kind} it does not lower`}${refusedAt(first.at)}`;
   }
   if (scope.calls.size) {
     const [s, call] = [...scope.calls][0];
-    return `a ${call.fn.fn.startsWith("fdiv") ? "quotient" : "product"} of fixed numbers${s.at ? `, line ${s.at.line}` : ""}`;
+    return `a ${call.fn.fn.startsWith("fdiv") ? "quotient" : "product"} of fixed numbers${refusedAt(s.at)}`;
   }
   const make = (forced: Set<string>, unguarded = new Set<Stmt>()): { e: Emitter; g: Graph | string } => {
     const e = new Emitter(key, scope);

@@ -19,7 +19,8 @@
  * again: the script is never run on the main thread, where nothing could stop an endless
  * loop in it.
  */
-import type { CompileResult, ScriptFiles } from "./compiler/compiler";
+import type { CompileResult, OwnCheck, ScriptFiles } from "./compiler/compiler";
+import type { OwnBuildInput, OwnBuildOutcome } from "./compiler/backend/build";
 import { ENTRY_URL } from "./compiler/entry";
 import type { ScriptNames } from "./compiler/names";
 import type { TestRunOptions } from "./compiler/testing";
@@ -76,6 +77,8 @@ export interface CompileInput {
   tests?: TestRunOptions;
   /** Encode the sounds the map is to get (a build): a check leaves an Ogg Vorbis one as its name (`compiler/vorbis.ts`). */
   sounds?: boolean;
+  /** Ask whether TrigScript's own build takes the programs for this map (`CompileResult.ownRefusal`). */
+  own?: OwnCheck;
 }
 
 interface CompileRequest extends CompileInput {
@@ -85,9 +88,17 @@ interface CompileRequest extends CompileInput {
   vorbisUrl?: string;
 }
 
+/** A map of our own built in the worker (`compiler/backend/build.ts`), off the main thread like a compile. */
+interface BuildRequest {
+  id: number;
+  moduleUrl: string;
+  libUrl: string;
+  build: OwnBuildInput;
+}
+
 interface CompileResponse {
   id: number;
-  result?: CompileResult;
+  result?: CompileResult | OwnBuildOutcome;
   error?: string;
   /** The worker could not load its compiler at all: every later request would fail the same way. */
   fatal?: boolean;
@@ -98,20 +109,26 @@ importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests } = e.data;
+  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests, own, build } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
     try { mod = await loading; } catch (err) { loading = null; postMessage({ id, error: String((err && err.message) || err), fatal: true }); return; }
     // The plugin fetched as one bundle is a blob too, but one that exports the plugin and not the compiler.
     if (typeof mod.compileScript !== "function") { loading = null; postMessage({ id, error: "the module has no compiler in it", fatal: true }); return; }
+    // A build of a map of our own: the compile's programs into the scenario's bytes, no TypeScript needed.
+    if (build) {
+      if (typeof mod.buildOwnMap !== "function") throw new Error("This compiler bundle cannot build a map of its own: update the plugin.");
+      postMessage({ id, result: mod.buildOwnMap(build) });
+      return;
+    }
     if (lib === null) {
       const r = await fetch(libUrl);
       if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
       lib = await r.text();
     }
     // A check names the script's clips and makes none of them; a build makes them, the long ones encoded below.
-    const result = mod.compileScript(self.ts, files, names, { lib, tests, sounds: Boolean(vorbisUrl) });
+    const result = mod.compileScript(self.ts, files, names, { lib, tests, sounds: Boolean(vorbisUrl), own });
     // A build's long clips encoded as Ogg Vorbis; a check's left as names, their samples not sent.
     if (typeof mod.finishSounds === "function") {
       const encoder = vorbisUrl && result.sounds.some((s) => s.vorbis) ? await mod.loadVorbis(vorbisUrl) : null;
@@ -140,7 +157,8 @@ let worker: Worker | null = null;
 let blobRefused = false;
 let unavailable: { reason: string; at: number } | null = null;
 let seq = 0;
-const pending = new Map<number, { resolve: (r: CompileResult) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+/** What is in flight: a compile, which a newer compile supersedes, or a build, which nothing does. */
+const pending = new Map<number, { resolve: (r: CompileResult | OwnBuildOutcome) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; build: boolean }>();
 
 /**
  * The worker is a whole TypeScript instance (tens of MB of heap) and it is only busy while
@@ -222,7 +240,7 @@ function timeOut(id: number, ms: number) {
   worker?.terminate();
   worker = null;
   rejectAll("The compile was stopped.");
-  p.reject(new Error(`The script did not finish in ${ms / 1000} seconds. Is there an endless loop outside program()?`));
+  p.reject(new Error(p.build ? `The build did not finish in ${ms / 1000} seconds.` : `The script did not finish in ${ms / 1000} seconds. Is there an endless loop outside program()?`));
 }
 
 /** The worker, started if there is none. Throws `CompilerUnavailable` when one cannot be made, or could not a moment ago. */
@@ -267,19 +285,39 @@ export function compileInBackground(input: CompileInput, dist: string = DEFAULT_
   let w: Worker;
   try { w = getWorker(); } catch (err) { return Promise.reject(err as Error); }
   const id = ++seq;
-  // Anything still in flight is stale now.
+  // Any compile still in flight is stale now (a build is not: it answers whatever is typed meanwhile).
   for (const [old, p] of pending) {
+    if (p.build) continue;
     pending.delete(old);
     clearTimeout(p.timer);
     p.reject(new CompileSuperseded());
   }
   return new Promise<CompileResult>((resolve, reject) => {
     const ms = input.sounds ? BUILD_TIMEOUT_MS : COMPILE_TIMEOUT_MS;
-    pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id, ms), ms) });
-    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}), ...(input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}) };
+    pending.set(id, { resolve: (r) => resolve(r as CompileResult), reject, timer: setTimeout(() => timeOut(id, ms), ms), build: false });
+    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}), ...(input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}), ...(input.own ? { own: input.own } : {}) };
     w.postMessage(req);
   }).catch((err: Error) => {
     if (err.message === RETRY) return compileInBackground(input, dist);
+    throw err;
+  });
+}
+
+/**
+ * Build a map of our own in the background (`compiler/backend/build.ts`): the compile's programs laid out into the
+ * scenario's bytes, which the plugin's build step hands the editor. Not superseded by a compile, and supersedes none.
+ */
+export function buildInBackground(input: OwnBuildInput, dist: string = DEFAULT_DIST): Promise<OwnBuildOutcome> {
+  let w: Worker;
+  try { w = getWorker(); } catch (err) { return Promise.reject(err as Error); }
+  const id = ++seq;
+  return new Promise<OwnBuildOutcome>((resolve, reject) => {
+    const ms = BUILD_TIMEOUT_MS;
+    pending.set(id, { resolve: (r) => resolve(r as OwnBuildOutcome), reject, timer: setTimeout(() => timeOut(id, ms), ms), build: true });
+    const req: BuildRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), build: input };
+    w.postMessage(req);
+  }).catch((err: Error) => {
+    if (err.message === RETRY) return buildInBackground(input, dist);
     throw err;
   });
 }

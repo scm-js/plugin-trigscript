@@ -28,7 +28,8 @@ import { checkProgram } from "./eud";
 import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
 import { rangeNumbers } from "./ranges";
-import { emitGraphs } from "./backend/emit";
+import { emitGraphs, type MapPlayers } from "./backend/emit";
+import { emitOwn } from "./backend/own";
 import { markRecursion, settleRecursion } from "./recursion";
 import { inputPlan, inputsOf, numberSyncSlots, type InputPlan } from "./input";
 import { declarations, programDeclarations, type Program } from "./ir";
@@ -173,8 +174,22 @@ export interface CompileResult {
    * lifted game, beside the engine (`gameTests.ts`) — without TypeScript there.
    */
   modules?: [string, LinkedFile][];
+  /**
+   * Why a map of our own does not take the programs (`backend/own.ts`, `emitOwn`), when the compile was asked
+   * (`CompileOptions.own`) and it does not: the first part it never takes, with its line. Absent when it takes them,
+   * when there are none, or when the script did not compile.
+   */
+  ownRefusal?: string;
   /** No errors: `triggers` and `ir` are the complete output. */
   ok: boolean;
+}
+
+/** The map a compile is checked against for a map of our own (`CompileOptions.own`): who plays, and the map's size in pixels. */
+export interface OwnCheck {
+  players: MapPlayers;
+  humans: number[];
+  width: number;
+  height: number;
 }
 
 export interface CompileOptions {
@@ -193,6 +208,11 @@ export interface CompileOptions {
    * get (`sound.ts`'s clips work their samples out only when asked). A build's compile leaves it out.
    */
   sounds?: boolean;
+  /**
+   * Ask whether a map of our own takes the programs as they are, for this map (`ownRefusal`): what the editor shows
+   * as a problem while the script is typed, so that a map does not change builds without anyone seeing.
+   */
+  own?: OwnCheck;
 }
 
 export { LowerError };
@@ -557,7 +577,17 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests)
       : { list: listTests(registry).list, results: [], only: [], ms: 0 };
   }
-  return result({ ir, input, triggers, sources, strings: collector.strings, sounds: [...collector.sounds.values()], variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }) });
+  // A map of our own asked whether it takes the programs: on a copy, since its passes rewrite what they read.
+  let ownRefusal: string | undefined;
+  if (options.own && ir.length && diagnostics.length === 0) {
+    try {
+      const own = emitOwn({ ir: structuredClone(ir), triggers, strings: collector.strings, input }, options.own.players, 1, { humans: options.own.humans, width: options.own.width, height: options.own.height, cuwp: 64 });
+      if (typeof own === "string") ownRefusal = own;
+    } catch (err) {
+      ownRefusal = `the build failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  return result({ ir, input, triggers, sources, strings: collector.strings, sounds: [...collector.sounds.values()], variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }), ...(ownRefusal !== undefined ? { ownRefusal } : {}) });
 }
 
 /**
