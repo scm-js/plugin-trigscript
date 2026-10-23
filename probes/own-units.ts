@@ -1,10 +1,10 @@
-// TrigScript 4, the backend: units in a map of our own (scripts/build-own.mts) — step 10 of the way off eudplib. A unit
+// TrigScript 4, the backend: units in a map of our own (scripts/build-fixture.mts) — step 10 of the way off eudplib. A unit
 // is two numbers, the EPD of its record and its place's uniqueness byte, checked before use when it was kept; a loop or
 // a pick walks the game's unit table, place 0 and then 1 699 down, until it has met the units in use.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the same
 // frames; every line should end "ok", and a line ending "WRONG" names the check that failed. The frames after "Weighed"
 // are walks of about 160 units, to weigh. In the game, at S two Marines are selected, and at T one walks right.
-//   npx tsx scripts/build-own.mts probes/own-units.ts /tmp/own-units.scx
+//   npx tsx scripts/build-fixture.mts probes/own-units.ts /tmp/own-units.scx
 //   npx tsx scripts/build-fixture.mts probes/own-units.ts /tmp/own-units-eud.scx
 // The map build-own makes: Player 1 a person with a Command Center and 4 Marines, Player 2 a computer with a Hatchery
 // and 4 Zerglings.

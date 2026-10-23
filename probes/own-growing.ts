@@ -1,9 +1,9 @@
-// TrigScript 4, the backend: arrays that grow in a map of our own (scripts/build-own.mts) — every growing array's cells
+// TrigScript 4, the backend: arrays that grow in a map of our own (scripts/build-fixture.mts) — every growing array's cells
 // a block of one heap of cell triggers, the array four numbers beside it (where its block is, its length, its room, its
 // block's size), a push a store at the end and an addition, more room the run time's `grow`.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the
 // same frames; every line should end "ok", and a line ending "WRONG" names the check that failed.
-//   npx tsx scripts/build-own.mts probes/own-growing.ts /tmp/own-growing.scx
+//   npx tsx scripts/build-fixture.mts probes/own-growing.ts /tmp/own-growing.scx
 //   npx tsx scripts/build-fixture.mts probes/own-growing.ts /tmp/own-growing-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

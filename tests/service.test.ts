@@ -267,6 +267,13 @@ describe("service: saving applies the script and builds its programs", () => {
     expect(heard[0]).toMatchObject({ kind: "start", purpose: "save", contributors: ["trigscript"] });
     expect(heard.at(-1)).toMatchObject({ kind: "done", purpose: "save", chkBytes: out.length });
     expect((heard[1] as { line: string }).line).toMatch(/^Built by TrigScript itself: 1 program laid out into the map, no eudplib$/);
+    // A build asked for the maps of where the triggers and the variables are says them as the Python build did, in the log.
+    heard.length = 0;
+    await svc.withVariableMap(() => step.run({ map: chk(), fileName: "x.scx", purpose: "test", signal: new AbortController().signal }));
+    const logged = heard.flatMap((e) => (e.kind === "log" ? [e.line] : []));
+    expect(logged.some((l) => l.startsWith("TRIGSCRIPT-MAP "))).toBe(true);
+    expect(logged.some((l) => l.startsWith("TRIGSCRIPT-VARS "))).toBe(true);
+    expect(logged.filter((l) => l.startsWith("TRIGSCRIPT-PROGRAM ")).length).toBe(1);
     // The step going with the service.
     svc.attach().dispose();
   });

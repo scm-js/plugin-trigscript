@@ -1,7 +1,7 @@
 // TrigScript 4, the backend: step 5 of the way off eudplib in Remastered — the game's conditions and actions in a map
 // of our own, what the lifted game cannot show: a print at the centre of the screen, Transmissions in a loop, a print
 // to every player, counts read straight after units are made, a location moved and units made there.
-//   npx tsx scripts/build-own.mts probes/own-step5.ts own-step5.scx
+//   npx tsx scripts/build-fixture.mts probes/own-step5.ts own-step5.scx
 // Played with own-step5-answers.txt beside it.
 import { program, print, sleep, seconds } from "trigscript";
 

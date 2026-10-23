@@ -1,8 +1,8 @@
-// TrigScript 4, the backend: a map of our own — no eudplib, no Python (scripts/build-own.mts). The program's whole
+// TrigScript 4, the backend: a map of our own — no eudplib, no Python (scripts/build-fixture.mts). The program's whole
 // body is the emitter's: loops of numbers whose results it checks itself, each check showing one line of known text.
 // Every line should end "ok"; a line ending "WRONG" names the check that failed. (Loops are `while` loops: a `for`
 // with a bound known when the script is built is unrolled by the front end, a turn at a time in the map.)
-//   npx tsx scripts/build-own.mts probes/own-loader.ts /tmp/own-loader.scx
+//   npx tsx scripts/build-fixture.mts probes/own-loader.ts /tmp/own-loader.scx
 import { program, print, sleep, frames } from "trigscript";
 
 program(() => {

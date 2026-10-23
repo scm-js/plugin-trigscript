@@ -1,9 +1,9 @@
-// TrigScript 4, the backend: calls in a map of our own (scripts/build-own.mts) — functions laid out once and called
+// TrigScript 4, the backend: calls in a map of our own (scripts/build-fixture.mts) — functions laid out once and called
 // from several places, arguments written into the function's places, back by a next pointer. Built both ways (through
 // eudplib, and as a map of our own), the lifted game should print the same lines at the same frames; every line
 // should end "ok", and a line ending "WRONG" names the check that failed. (Loops are `while` loops: a `for` with a
 // bound known when the script is built is unrolled by the front end.)
-//   npx tsx scripts/build-own.mts probes/own-calls.ts /tmp/own-calls.scx
+//   npx tsx scripts/build-fixture.mts probes/own-calls.ts /tmp/own-calls.scx
 //   npx tsx scripts/build-fixture.mts probes/own-calls.ts /tmp/own-calls-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

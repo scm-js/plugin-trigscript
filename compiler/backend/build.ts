@@ -21,6 +21,7 @@ import { Sections, addString, freeCuwpSlot, intern, markInTransit, readFacts, re
 import { fixMap } from "./fixes";
 import { STRINGS, layout } from "./layout";
 import { emitOwn, type OwnOptions } from "./own";
+import { ownMaps, type OwnMaps } from "./maps";
 import type { MapPlayers } from "./emit";
 import type { Graph } from "./graph";
 
@@ -42,6 +43,8 @@ export interface OwnBuildInput {
   dropMapTriggers?: boolean;
   /** A dword written into every free cell of the payload (a probe's marker). */
   free?: number;
+  /** Say where each trigger and each variable is (`maps.ts`): for the tools that read a built map in the lifted game. */
+  maps?: boolean;
 }
 
 export interface OwnBuildStats {
@@ -60,6 +63,11 @@ export interface OwnBuildStats {
   /** How many strings the map had before, and has now. */
   stringsBefore: number;
   stringsAfter: number;
+  /** The players whose lists the payload is linked into, and where each one's entry is: what a walk of the payload starts from. */
+  players: number[];
+  entries: number[];
+  /** The string section's length before the payload: the payload's offsets count from there. */
+  stringsBytes: number;
 }
 
 export interface OwnBuild {
@@ -67,6 +75,8 @@ export interface OwnBuild {
   /** What was done, for the Output panel: the fixes, the input, the counts. */
   lines: string[];
   stats: OwnBuildStats;
+  /** With `maps`: where the triggers and the variables are, and the same as lines of a build's log. */
+  maps?: OwnMaps;
 }
 
 export type OwnBuildOutcome = OwnBuild | { refused: string };
@@ -158,10 +168,14 @@ export function buildOwnMap(input: OwnBuildInput): OwnBuildOutcome {
     input: lowered.input ? { keys: lowered.input.keys.length, mouse: lowered.input.mouse, syncs: lowered.input.syncs, carrier, ring: lowered.input.ring, rings: lowered.input.rings, humans: lowered.input.humans, cuwp, bits: lowered.input.bits } : null,
     stringsBefore,
     stringsAfter: table.entries.length,
+    players: players.slots,
+    entries: players.slots.map((p) => own.triggers.get(`@entry${p}`)!),
+    stringsBytes: strings.length,
   };
+  const maps = input.maps ? ownMaps(lowered, own, input.compiled.ir, strings.length, textBase) : undefined;
   if (stats.input) lines.push(`input: ${stats.input.keys} keys, ${stats.input.mouse ? "the mouse, " : ""}${stats.input.syncs} sync slots; carriers of type ${carrier}, ${stats.input.ring} a ring, ${stats.input.rings} rings, for players ${stats.input.humans.map((h) => h + 1).join(", ")}; unit-properties slot ${cuwp}; ${stats.input.bits} bits a value`);
   lines.push(`${stats.runs} run${stats.runs === 1 ? "" : "s"} (${stats.runNames.join(", ")}), ${stats.graphTriggers} triggers of the programs, payload ${stats.payloadBytes} bytes at 0x${stats.address.toString(16)}, ${stats.mapTriggers} trigger${stats.mapTriggers === 1 ? "" : "s"} of the map's own (${stats.mapTriggerCopies} copies${stats.hyperTriggersLeftOut ? `, ${stats.hyperTriggersLeftOut} hyper triggers left out` : ""}), start-up ${stats.startUpTriggers} triggers, ${stats.stringsAfter - stats.stringsBefore} strings added`);
-  return { chk: s.bytes(), lines, stats };
+  return { chk: s.bytes(), lines, stats, ...(maps ? { maps } : {}) };
 }
 
 export const isRefused = (o: OwnBuildOutcome): o is { refused: string } => "refused" in o;

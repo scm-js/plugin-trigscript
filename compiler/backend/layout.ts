@@ -61,8 +61,16 @@ export interface OwnMap {
   templates: Map<string, number>;
   /** Where each region of cell triggers (an array, a stack) starts: its first cell's trigger. */
   regions: Map<string, number>;
+  /** Where each list the graph reads where it is (an array known when built) starts, and its cells' stride in dwords. */
+  lists: Map<string, { at: number; stride: number }>;
   /** Where each trigger is, by label. */
   triggers: Map<string, number>;
+  /** How many cell triggers hold routed variables, before the regions: the regions' cells follow them. */
+  routeCells: number;
+  /** The payload's cell triggers in all (routed variables, then the regions' cells), 72 bytes apart from `regions`' first or `vars`' first route. */
+  cellCount: number;
+  /** Where the cell triggers start. */
+  cellBase: number;
 }
 
 /**
@@ -570,7 +578,12 @@ export function layout(input: LayoutInput): OwnMap {
   }
   const vars = new Map<string, number>([...cells].filter(([k]) => k.startsWith("var:")).map(([k, a]) => [k.slice(4), a]));
   routes.forEach((id, k) => vars.set(id, cellBase + 72 * k + 348));
-  return { payload: out, trig: startUp(players, (p) => at.get(entry(p))!), address: base, vars, templates, regions, triggers: new Map(triggers.map((t) => [t.label, at.get(t.label)!])) };
+  return {
+    payload: out, trig: startUp(players, (p) => at.get(entry(p))!), address: base, vars, templates, regions,
+    lists: new Map([...lists].map(([id, l]) => [id, { at: l, stride: listData.find((d) => d.at === l)!.stride }])),
+    triggers: new Map(triggers.map((t) => [t.label, at.get(t.label)!])),
+    routeCells: routes.length, cellCount, cellBase,
+  };
 }
 
 /**

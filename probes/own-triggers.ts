@@ -1,4 +1,4 @@
-// TrigScript 4, the backend: the map's own triggers in a map of our own (scripts/build-own.mts) — step 13 of the way off
+// TrigScript 4, the backend: the map's own triggers in a map of our own (scripts/build-fixture.mts) — step 13 of the way off
 // eudplib. The script's trigger() and hyperTriggers() records are laid out as the game's own nodes in the payload, a
 // copy for each player whose list the game would copy them into, chained after the player's entry and before their
 // gate: each player's run in turn before the programs, as eudplib's build runs a map's triggers (RunTrigTrigger) before
@@ -6,7 +6,7 @@
 // slot, a disabled trigger, condition or action is passed over — all the game's own doing.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the same
 // frames; every line should end "ok", and a line ending "WRONG" names the check that failed.
-//   npx tsx scripts/build-own.mts probes/own-triggers.ts /tmp/own-triggers.scx
+//   npx tsx scripts/build-fixture.mts probes/own-triggers.ts /tmp/own-triggers.scx
 //   npx tsx scripts/build-fixture.mts probes/own-triggers.ts /tmp/own-triggers-eud.scx
 import { program, print, sleep, frames, trigger, hyperTriggers, always, never, disabled, deaths, setDeaths, displayText, wait, elapsedTime, preserve, units, P1, P2, P5, AllPlayers, CurrentPlayer } from "trigscript";
 

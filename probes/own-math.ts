@@ -1,9 +1,9 @@
-// TrigScript 4, the backend: square roots, sines, cosines and arc tangents in a map of our own (scripts/build-own.mts)
+// TrigScript 4, the backend: square roots, sines, cosines and arc tangents in a map of our own (scripts/build-fixture.mts)
 // — step 4 of the way off eudplib, part 5. Built both ways (through eudplib, and as a map of our own), the lifted game
 // should print the same lines at the same frames; every line should end "ok", and a line ending "WRONG" names the check
 // that failed. Frames 2 to 10 (the lifted game's 4 to 12) are each one kind of work, 200 times, to weigh.
 // (`Math.sqrt(n)` of a whole number gives a fixed number: the root of n as it is, not of n / 65 536.)
-//   npx tsx scripts/build-own.mts probes/own-math.ts /tmp/own-math.scx
+//   npx tsx scripts/build-fixture.mts probes/own-math.ts /tmp/own-math.scx
 //   npx tsx scripts/build-fixture.mts probes/own-math.ts /tmp/own-math-eud.scx
 import { program, print, sleep, frames, fixed, type fixed as Fixed } from "trigscript";
 

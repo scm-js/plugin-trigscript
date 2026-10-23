@@ -1,10 +1,10 @@
-// TrigScript 4, the backend: the game's actions with fields from values in a map of our own (scripts/build-own.mts) —
+// TrigScript 4, the backend: the game's actions with fields from values in a map of our own (scripts/build-fixture.mts) —
 // step 5 of the way off eudplib, part 2. A field from a value is a place of its variable, kept by the variable's
 // writes, so the action reads it where it is; a unit count is the action done 255 at a time while more are left, then
 // once with the rest, 0 or below doing nothing. Built both ways (through eudplib, and as a map of our own), the lifted
 // game should print the same lines at the same frames; every line should end "ok", and a line ending "WRONG" names
 // the check that failed; line I is a Transmission's own text. Frame 2 (the lifted game's 4) is 200 actions with an amount from a value, to weigh.
-//   npx tsx scripts/build-own.mts probes/own-fields.ts /tmp/own-fields.scx
+//   npx tsx scripts/build-fixture.mts probes/own-fields.ts /tmp/own-fields.scx
 //   npx tsx scripts/build-fixture.mts probes/own-fields.ts /tmp/own-fields-eud.scx
 // The map build-own makes: Player 1 a person with a Command Center and 4 Marines, Player 2 a computer with a Hatchery
 // and 4 Zerglings.

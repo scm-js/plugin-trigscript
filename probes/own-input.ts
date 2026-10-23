@@ -1,4 +1,4 @@
-// TrigScript 4, the backend: the players' input in a map of our own (scripts/build-own.mts) — step 12 of the way off
+// TrigScript 4, the backend: the players' input in a map of our own (scripts/build-fixture.mts) — step 12 of the way off
 // eudplib. Keys, clicks, the mouse and sync() carried between the players' computers by the map itself: a ring of
 // hidden carrier units a player, a Select and a Move to a point each send, the point read back from the carrier's order
 // target on every computer. Nothing of chatEvent's or MSQC's.
@@ -6,7 +6,7 @@
 // keys, clicks and mouse; a line ending "WRONG" names the check that failed. The trip takes two frames in a map of our
 // own and about five through MSQC, so the frames differ. Typed lines (part 2) are read from the text lines on the
 // computer they were typed on and matched there; a pattern's number and its values make the trip.
-//   npx tsx scripts/build-own.mts probes/own-input.ts /tmp/own-input.scx
+//   npx tsx scripts/build-fixture.mts probes/own-input.ts /tmp/own-input.scx
 //   npx tsx scripts/build-fixture.mts probes/own-input.ts /tmp/own-input-eud.scx
 import { program, print, keyPressed, keyHeld, clicked, mouse, sync, local, underMouse, chatted, nextFrame } from "trigscript";
 

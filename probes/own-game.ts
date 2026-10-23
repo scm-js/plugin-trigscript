@@ -1,11 +1,11 @@
-// TrigScript 4, the backend: the game's own conditions and actions in a map of our own (scripts/build-own.mts) — step
+// TrigScript 4, the backend: the game's own conditions and actions in a map of our own (scripts/build-fixture.mts) — step
 // 5 of the way off eudplib, part 1. A condition or an action the script writes with every field known when the map is
 // built is laid out as the game's record, as it is; a condition turned around with `!` is one condition where one
 // says the opposite (at least n against at most n − 1, set against cleared), else a trigger that skips past. Built both
 // ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the same frames;
 // every line should end "ok", and a line ending "WRONG" names the check that failed. Frames 2 and 4 (the lifted game's
 // 4 and 6) are each one kind of work, 200 times, to weigh.
-//   npx tsx scripts/build-own.mts probes/own-game.ts /tmp/own-game.scx
+//   npx tsx scripts/build-fixture.mts probes/own-game.ts /tmp/own-game.scx
 //   npx tsx scripts/build-fixture.mts probes/own-game.ts /tmp/own-game-eud.scx
 // The map build-own makes: Player 1 a person with a Command Center and 4 Marines, Player 2 a computer with a Hatchery
 // and 4 Zerglings.

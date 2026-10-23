@@ -23,7 +23,14 @@ export interface GameVariable {
   cells: Record<string, number | null>;
   /** Bytes from a row's cell to the next (4; 72 where the rows are an EUDVArray, a variable each); 4 when not said. */
   stride?: number;
+  /** A map of our own keeps a unit's `ptr` and a made text's `addr` as EPDs (dwords from the deaths table), not addresses. */
+  epd?: boolean;
+  /** A map of our own keeps a text of the table as its number in the pool of texts known when built: the table's string `textBase` + it. */
+  textBase?: number;
 }
+
+/** The deaths table: what an EPD counts dwords from. */
+const DEATHS = 0x58a364;
 
 export interface GameArray {
   id: string;
@@ -110,13 +117,16 @@ export function programVariables(game: VariableReader, map: VariableMap, name: s
   const raw = (at: number | null | undefined, rowed: boolean, stride = 4): number => (at == null ? 0 : m.getUint32(rowed ? at + stride * who : at, true));
   const num = (v: number, t: { kind: string; bits?: number | null; unsigned: boolean }): number | boolean => (t.kind === "boolean" ? v !== 0 : t.bits || t.unsigned ? v >>> 0 : v | 0);
   const cString = (at: number): string => { let end = at; while (end < u8.length && end - at < MOST_TEXT && u8[end] !== 0) end++; return utf8.decode(u8.subarray(at, end)); };
+  // (A map of our own keeps where a unit or a made text is as an EPD: the address is the deaths table's plus four times it.)
+  const where = (v: GameVariable, cell: number | null | undefined): number => { const x = raw(cell, v.rowed, v.stride); return x && v.epd ? (DEATHS + 4 * x) >>> 0 : x; };
   const text = (v: GameVariable): string => {
-    if (v.text === "made") { const at = raw(v.cells.addr, v.rowed, v.stride); return at ? cString(at) : ""; }
-    const id = raw(v.cells.value, v.rowed, v.stride);
+    if (v.text === "made") { const at = where(v, v.cells.addr); return at ? cString(at) : ""; }
+    const id = raw(v.cells.value, v.rowed, v.stride) + (v.textBase ?? 0);
     return id ? cString(map.strings + m.getUint32(map.strings + 4 * id, true)) : "";
   };
   const value = (v: GameVariable): unknown => {
-    if (v.kind === "unit") { const ptr = raw(v.cells.ptr, v.rowed, v.stride); return ptr ? game.unitAt(ptr, raw(v.cells.uid, v.rowed, v.stride)) : null; }
+    // (A map of our own keeps the uniqueness byte itself; eudplib's build the word it sits in, the byte above.)
+    if (v.kind === "unit") { const ptr = where(v, v.cells.ptr); const uid = raw(v.cells.uid, v.rowed, v.stride); return ptr ? game.unitAt(ptr, v.epd ? uid << 8 : uid) : null; }
     if (v.kind === "text") return text(v);
     return num(raw(v.cells.value, v.rowed, v.stride), v);
   };

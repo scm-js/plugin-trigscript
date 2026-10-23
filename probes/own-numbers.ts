@@ -1,11 +1,11 @@
-// TrigScript 4, the backend: products, quotients and remainders in a map of our own (scripts/build-own.mts) — step 4 of
+// TrigScript 4, the backend: products, quotients and remainders in a map of our own (scripts/build-fixture.mts) — step 4 of
 // the way off eudplib. A product tests the narrower side a bit at a time and adds the other side's multiples, which
 // are places of it; a quotient by a constant is a chain of triggers written where it is used; a quotient of two values
 // doubles the remainder in one action of a trigger of its own. Built both ways (through eudplib, and as a map of our
 // own), the lifted game should print the same lines at the same frames; every line should end "ok", and a line ending
 // "WRONG" names the check that failed. Frames 2, 4, 6, 8 and 10 (the lifted game's 4, 6, 8, 10 and 12) are each one kind of
 // work, 200 times, to weigh.
-//   npx tsx scripts/build-own.mts probes/own-numbers.ts /tmp/own-numbers.scx
+//   npx tsx scripts/build-fixture.mts probes/own-numbers.ts /tmp/own-numbers.scx
 //   npx tsx scripts/build-fixture.mts probes/own-numbers.ts /tmp/own-numbers-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 

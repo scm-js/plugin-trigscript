@@ -1,11 +1,11 @@
-// TrigScript 4, the backend: the game's numbers read as values in a map of our own (scripts/build-own.mts) — step 5
+// TrigScript 4, the backend: the game's numbers read as values in a map of our own (scripts/build-fixture.mts) — step 5
 // of the way off eudplib, part 3. One player's deaths, kills, ore or gas are read where the game keeps them, a bit at a
 // time from the highest group of eight bits the number has; anything else — a sum over a group, units counted, a score,
 // the clocks — is the condition asked a bit at a time from the top. Built both ways (through eudplib, and as a map of
 // our own), the lifted game should print the same lines at the same frames; every line should end "ok", and a line
 // ending "WRONG" names the check that failed (line F prints what it read: the two builds should agree). Frames 2, 4 and 8
 // (the lifted game's 4, 6 and 10) are each 200 reads or comparisons, to weigh.
-//   npx tsx scripts/build-own.mts probes/own-reads.ts /tmp/own-reads.scx
+//   npx tsx scripts/build-fixture.mts probes/own-reads.ts /tmp/own-reads.scx
 //   npx tsx scripts/build-fixture.mts probes/own-reads.ts /tmp/own-reads-eud.scx
 // The map build-own makes: Player 1 a person with a Command Center and 4 Marines, Player 2 a computer with a Hatchery
 // and 4 Zerglings.

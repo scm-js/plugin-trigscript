@@ -388,7 +388,7 @@ export const KO: Record<string, string> = {
   "In the game, this line {did} the same field of another unit ({times, plural, one {# time} other {# times}}): a unit sits elsewhere in the table from one game to the next. {said}": "게임에서 이 줄은 다른 유닛의 같은 필드를 {did} ({times}번). 유닛이 테이블에서 놓이는 자리는 게임마다 다릅니다. {said}",
   "The code Remastered showed when the game ended (EUD ERROR: 0x…):": "게임이 끝날 때 리마스터가 보여 준 코드 (EUD ERROR: 0x…):",
   "“{text}” is not an EUD error code: Remastered shows one as EUD ERROR: 0x and eight digits.": "“{text}”은(는) EUD 오류 코드가 아닙니다. 리마스터는 EUD ERROR: 0x 뒤에 여덟 자리로 보여 줍니다.",
-  "Not looked up: the build did not say where its triggers are. Update the eudplib plugin.": "찾지 않음: 빌드가 트리거의 위치를 알려 주지 않았습니다. eudplib 플러그인을 업데이트하세요.",
+  "Not looked up: the build did not say where its triggers are. Update the eudplib plugin, or save once more.": "찾지 않음: 빌드가 트리거의 위치를 알려 주지 않았습니다. eudplib 플러그인을 업데이트하세요. 또는 한 번 더 저장하세요.",
   "Playing the map in the game, writing down what each line reads and writes…": "게임에서 맵을 플레이하며 각 줄이 읽고 쓰는 것을 기록하는 중…",
   "the engine's page sent back no trace": "엔진 페이지가 기록을 돌려주지 않았습니다",
   "EUD ERROR {code}: {place}, at 0x{address}.": "EUD ERROR {code}: {place}, 주소 0x{address}.",

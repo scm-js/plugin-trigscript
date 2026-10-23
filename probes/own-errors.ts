@@ -1,4 +1,4 @@
-// TrigScript 4, the backend: errors in a map of our own (scripts/build-own.mts) — step 11 of the way off eudplib, part 1.
+// TrigScript 4, the backend: errors in a map of our own (scripts/build-fixture.mts) — step 11 of the way off eudplib, part 1.
 // A `throw` goes to the `catch` of the nearest `try` around it, out of the functions it is in: from a trigger of the
 // function's own that each call points at where its error goes — nothing is looked at on the way back — or, for a
 // function that calls itself, from its end, the call looking at the error once its frame is taken back. A stack that
@@ -6,7 +6,7 @@
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the same
 // frames; every line should end "ok", and a line ending "WRONG" names the check that failed. The frames after "Weighed"
 // are to weigh. The last line is red — "TrigScript: uncaught RangeError: the end, line 214." — and nothing comes after.
-//   npx tsx scripts/build-own.mts probes/own-errors.ts /tmp/own-errors.scx
+//   npx tsx scripts/build-fixture.mts probes/own-errors.ts /tmp/own-errors.scx
 //   npx tsx scripts/build-fixture.mts probes/own-errors.ts /tmp/own-errors-eud.scx
 import { program, print, sleep, frames } from "trigscript";
 
