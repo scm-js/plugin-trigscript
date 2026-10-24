@@ -3588,7 +3588,7 @@ found what they left out; where a step moved, its old number is given.
     reads — A1 to A5, Find an EUD Error, cost by line, the desync detector and `sim.program()` name lines with them;
     `build-fixture` moved onto the own build (the `trigger()` records, Home/Away/Pixel, PEOPLE, the settings);
     the allowlist's evidence traced again; the lowering bench's baseline anew; a built map tested end to end in CI.
-16. **The gate before the Python goes** (new). With it goes the second build every step is held against. Before:
+16. **The gate before the Python goes** ✓ ("The gate before the Python goes (2026-10-23)" below). With it goes the second build every step is held against. Before:
     random whole programs (idea 17) built our way and run in the lifted game against the simulator; every probe and
     showpiece built our way and played again in Remastered; the simulator's model (`docs/ir.md`: the Python lowering's
     today) moved to the own backend.
@@ -5549,6 +5549,166 @@ is a thing a script can say.
 Still open from the list: the step 10 to 15 leftovers (sizes and speeds), `j = 1 - j` copied a bit at a time, the
 texts' 1,023-byte count, `shared(0)` set again by each run, `let total = shared(0)`, and P9 to P12 owners confirmed in
 the game.
+
+### The gate before the Python goes (2026-10-23)
+
+Step 16, on branch `gate`. The idea 17 of Part D built: whole programs made at random, run every way there is, and
+what they found, fixed. Then every probe built both ways and played in the lifted game, the last time the two builds
+are held against each other; and the simulator's model named the backend's.
+
+**Random whole programs** (`tests/randomScript.ts`). A script is drawn as a small tree — the program's variables, its
+functions, statements and expressions of the language's core: numbers with every operator, booleans, texts known when
+built and made in the game, arrays fixed and growing, a record, `if`, `for`, `while`, `do`, `switch`, `break` and
+`continue`, calls and a function that calls itself, `try`, `throw` and `finally`, the deaths table and the switches,
+`sleep` — and rendered twice from the one tree: as TrigScript, and as JavaScript whose own arithmetic (32 bits,
+`Math.imul`, a quotient cut towards zero, a shift by 32 or more leaving nothing) says what the lines must be. Every
+loop carries a guard, every index stays inside its array, a `throw` stands inside a `try`, and a program prints a line
+at the end of each of its frames with its seed in it. Three programs to a script, so one compile holds three.
+
+- **Four runs, the lines compared frame by frame.** JavaScript (`runJs`: each program a generator, `sleep` a yield,
+  the programs resumed in order on the frame their sleep ends); the simulator; the map of our own built on the tests'
+  synthetic scenario and walked from its bytes (`tests/ownWalk.ts`); and, with the game, the lifted game on the own
+  build and on the eudplib build. `tests/random-scripts.test.ts` runs the first three over 60 seeds in CI
+  (`RANDOM_SCRIPTS=n` for more, `RANDOM_SEED=n` for one, its source printed), about a second a seed;
+  `scripts/random-scripts.mts` runs any range, adds the game (`--game`, `--eudplib`, a few programs to a map since the
+  lifted game is 1.16.1 and its string table names 64 KB), and cuts a failing seed down to the smallest script that
+  still fails the same way (`--reduce=SEED`: whole programs first, then a statement at a time out of every body, a
+  compound statement replaced by its body, functions and declarations nothing names).
+- **What the generator had to learn** about writing TypeScript that means what it says, each a false failure before it
+  was a rule: `a < b … > (` reads as a generic call to TypeScript's parser whatever `a` is, so no `<` is ever written
+  (the sides change places); two constants compared have "no overlap", and two constants in arithmetic are worked out
+  when the script is built, so a side is always a variable; `x == 20` narrows `x` to 20 and a later `x != -77` has no
+  overlap, so a constant compared for equality is `z + 20` with `z` a number the compiler cannot see (the deaths of a
+  unit nothing sets); a text variable against a literal narrows it too, so texts are compared variable to variable or
+  as a template of the variable; a divisor the compiler can see is 0 is a compile error, so divisors are `z` or made
+  odd; `deaths()` is a u32; a `finally` cannot `break` out of its try; a function that calls itself only with less;
+  `−(−2 147 483 648)` is a u32 literal. None of these is a bug of the language.
+
+**Found and fixed, in the front end** — what the compiler worked out when the script was built, against what the
+game computes (each the smallest script in `tests/gate.test.ts`):
+- A condition of the game in a `?:`, a loop's bound or a text ternary was taken as *true*: `switchIs(…)` is a record
+  when the script is built, an object, true to JavaScript. The evaluator (`structured.ts`) now treats a condition as a
+  value of the game's — nothing is worked out over it — and the hoister (`hoist.ts`) never hoists a `?:` whole, so its
+  sides are hoisted on their own and the condition is tested where it stands. (`if (cond)` was right all along.)
+- `7 / 2` was 3.5 where the plan (B6) says 3: a quotient of two whole numbers known when built was JavaScript's.
+  `wholeQuotient` / `wholeArithmetic` (`hoist.ts`, by the `fixed` and `u32` brands of the sides' types) now decide, in
+  the evaluator and in every hoisted thunk (a helper emitted by the TypeScript factory around `+ − * /`, the shifts,
+  unary minus and `Math.abs`): whole numbers add, subtract and multiply in 32 bits — `i + 2147483647` for i = 1 is
+  −2 147 483 648, `65536 * 65536` is 0 — divide towards zero, shift by 32 or more to nothing, and `−x` and `Math.abs(x)`
+  wrap; a `u32` from 0 up; a `fixed`, or a side with a fraction, as a fraction. Before, `n = Math.abs(i + 2147483647)`
+  in an unrolled loop was a compile error ("not 2147483648") and `xs[i & 3] = Math.min(7, i << 1000000)` stored i.
+- `xs[ys.pop() & 1] = ys.length ^ 255`: the index is worked out before the value, as JavaScript has it, when it holds a
+  pop or the value calls (the call may change what the index reads); before, only an index with a call in it was.
+
+**Found and fixed, in the map of our own:**
+- A `do … while` whose test needs a value computed first — `(n1 + n2) >= (n2 | n0)`, a call, two made texts compared —
+  was refused ("a do it does not lower"): the rewriter left such a test alone, since what it needs would have to run at
+  a `continue` too. A `do` now carries `before` (IR): statements run before its test at every turn's end, where a
+  `continue` lands; the emitter lays them out at the loop's continue label, and the texts pass puts a `do`'s and a
+  `for`'s text work there (a `for`'s at the top of each turn, as a `while`'s).
+- A cell at a masked index compared with a constant — `if (xs[n & 3] <= 26)`, in a `?:`, as a boolean argument — was
+  refused ("a if it does not lower", "the value given to b"): `cellCompare` left the index under its mask, and a
+  condition reads a cell at a variable plus a constant only. The index is a sum now. Nearly every index a random
+  program writes is masked, which is why this was 49 of 100 seeds.
+- A call among a print's parts clobbered the text: `print(\`s ${f(5)} ${t}\`)` with an `f` that makes a text showed
+  the text alone. The parts were written at the program's one cursor from the first, and the call — hoisted later, by
+  the emitter's rewriter — ran its own text through the same cursor. The texts pass now reads every part up to the last
+  call ahead of the text (`ahead`): a number into a variable of its own, a text of the map's into a number of its own
+  (its texts the variable's), a made text into a block of its own — in the parts' order, as JavaScript reads them, so
+  `${t} ${f()} ${t}` with an `f` that changes `t` prints the old and the new. A text ternary's test is asked once,
+  before the text is begun, and what the side it picks needs done first is done under it.
+
+- A number of the game's compared with a constant below zero — `if (i32(deaths(P1, u)) >= -10)` — was asked of the
+  game as the condition's own "at least 4 294 967 286": false. `asked` (the rewriter) now reads such a constant as the
+  signed number it is and asks the numbers it holds for as bits, one or two runs of "at least" and "at most", as
+  `cellCompare` reads a cell. (A linear sum's constant arrives from 0 up; its sign is in its top bit.)
+- A text ternary whose sides came to one text — `f() ? t : t` — lost its test, and the call in it: a choice of one text
+  was written as that text. Its test is asked now when it does something.
+- A program's tasks died with its body: at its end the run's wake was set to never. The simulator and the Python side
+  let a task run on ("a task that runs on after the program ends", `probes/game-tasks.ts`); the own build's wake now
+  comes every frame and goes straight to the tasks' turn when the program started any — 4 of 4 in the lifted game.
+- `sync()` inside an `if` or a loop was refused: the input pass lowered a `syncSend` only where it stood at the top of
+  a list of statements, and left one inside a statement's body to the emitter, which does not take it. The pass walks
+  every list of statements now. `probes/local-select.tsx` and `local-ui.tsx` build our way (to play: the pack below).
+
+- **Tetris and Snake did not build our way.** Nobody had asked: the showpieces were played on their eudplib builds
+  and the ledger holds the language a row at a time. Tetris's `if (cy >= 0 && board[cy * W + cx] !== 0) return false`
+  was refused by the masked-index fix above — `cellCompare` sent every index through `sum`, and a condition reads a
+  cell at one variable plus a constant, which `cy * W + cx` is not: an index is computed first now when it is masked or
+  of more than one term, else read where it is. Snake (and `probes/game-ui.tsx`) call the ui library's `thousands()`
+  twice in one line: a called function makes its text into *its own* result's block, one for the function, while each
+  call site had a result of its own that nothing wrote (an inlined call's body writes the call's) — "a assign it does
+  not lower" on the function's own statements. A call reads the function's block now, and the statement-level hoist
+  copies what a call gave into a block of its own before a later call writes it again, so `${f(a)} and ${f(b)}` is
+  right. Both showpieces build our way; the pack below plays them.
+
+**What the lifted game taught about reading it** (scm-sim's `readText`): the game's text is a ring of thirteen
+lines read once a frame, so of a frame that printed more only the last thirteen are seen, and a slot whose text is as
+it was when last read, and that the pointer did not pass this frame, is not seen again; a template printed with values
+carries `\r` where its padding was (Remastered draws nothing for it, as the walker drops it), and a dot in a pattern
+does not match `\r`. `random-scripts.mts --game` runs the simulator's lines through the same ring before comparing,
+and `gate-sweep.mts` compares the two builds' lines, both read the same way. And 1.16.1 names the first 64 KB of
+strings: a few programs to a map.
+
+**Left as it is, in the Open list:** a function that calls itself with a `finally` in it is refused ("the variable
+(kept (error message)) of f, which calls itself"): the error kept across the `finally` is a text, which the stack of a
+map of our own does not keep; a function whose every value is known when the script is built runs as JavaScript, with
+JavaScript's arithmetic (`(f8 result) is a number … not 2147483648` where the game would wrap); the lifted game takes
+about six programs to a map.
+
+**The numbers.** The first run of 60 seeds failed 58; after the generator's rules, 93 of 100; after the `do` and the
+masked-index fixes and the condition's, 21; after the print's, 14 — then 13, every one the regression of the print fix,
+and 0. Seeds 1–100 all agree, 3,826 lines; 201–300 all agree, 4,511 lines; 301–400 (a sample never fixed against): all agree, 5,585 lines (two of its seeds found the last two bugs, the do loop's dropped text work and the shift count's parse). In the lifted game, both
+builds: 30 seeds (90 programs, three to a map), 573 lines of each build read through the game's ring, every one among the simulator's lines in its order, and the own build's lines the same as eudplib's, line for line.
+
+**Every probe, both builds** (`scripts/gate-sweep.mts`): each script under `probes/` built our way and through eudplib
+by the command its header gives, each played for 300 frames by the lifted game with nobody at it, the lines compared
+frame by frame; a `game-*.ts` probe runs its tests in the game on the own build instead. The table (the scratchpad's `sweep2.md`
+and `sweep3.md` of 2026-10-23, 119 scripts) comes to:
+
+| What | Scripts |
+| --- | --- |
+| Built both ways, played, the same lines | 78 — every `own-*` probe, the korobeiniki four, sound-demo, music-demo (its sound made first), local-reads/select/ui, classes, map, numbers, arrays, functions, recursion, reads, units, v3, inside, callbacks, spike, strings-spike, remastered-dump, tile-survey, ui-spike, ui-spike-2, frame-cost, the fog and measurement probes that print nothing |
+| Built both ways, the same lines as far as the shorter run goes | local-ui, own-input (eudplib's run a line or two further in the frames) |
+| Built both ways, lines differ by timing, ours earlier | cutscene ("B: 4 got there" at frame 204 against 221), own-step5 (a transmission's wait), own-triggers (B at frame 3 against 6: eudplib runs a trigger it should not) |
+| Built both ways, lines differ because the game is random | tetris, snake (the board drawn from random pieces: played by hand, the pack) |
+| Built both ways, eudplib's lines wrong | own-fields ("C: a unit count WRONG" from eudplib, ok from ours), key-held (eudplib prints garbage where ours prints "taps 0 let go 0") |
+| Refused by the own build | leftovers (a function that calls itself and gives back a text), strings (a unit's name written from a made text), game-closures and game-references (the length of the texts' address array of records kept in an array that grows) |
+| Not built here | bad-apple, halftone, sound-probe (their video, image and base map are not on this disk) |
+| `game-*.ts` tests in the game on the own build, all passed | arrays-cost 7, async 3, clamps 2, cursors 4, emitter 10, errors 7, fdiv 7, fixed 6, function-values, generators 3, location-stale 2, math 4, program 3, ranges 5, short-circuit 1, small-gaps, stdlib-core 5, tasks 4 (after the fix above), thresholds 2, ui 1, unit-order 3, values 3, unit-pixels 1 |
+| `game-*.ts` tests failing in the game on the own build | events, events-2, events-input, key-held, key-tap, local, local-players, players, tests, raycaster, cutscene, lowering — the harness's events and input on a map of our own (the Open list), to be looked at one by one in step 17; text-arrays past the lifted game's 64 KB of strings |
+
+**The simulator's model.** `compiler/simulateIr.ts` and `docs/ir.md` named `python/trigscript.py` as the model the
+interpreter follows — the heap's blocks, a made text's bytes, the stack's frames, a held key's grace, a number's 32
+bits, an uncaught error said in red. Each names the backend's file now (`heap.ts`, `texts.ts`, `emit.ts`, `input.ts`,
+`errors.ts`); the Python is named once, as what laid the same programs out until step 17. The README's account of the
+build still says a program the own build does not take goes through eudplib, which is true until step 17 deletes it.
+
+*Open:*
+- Step 16's leftovers (2026-10-23). *A function that calls itself with a `finally`* in it, refused (a text on the
+  stack); the generator leaves the shape out until then. *A function that calls itself and gives back a text* — the
+  same stack — refused: `probes/leftovers.ts`'s `path()` ("a function that gives back a text (path)") builds through
+  eudplib until it is taken, and step 17 must take it or change the probe. *The test harness on maps of our own:*
+  `probes/events.ts` counts "Display Text Message —" action events, which `sim.events` has only from an eudplib build
+  (0 of 3, 0 of 2 in the game, the lines themselves shown), and `probes/game-tests.ts`'s typed line and key (`sim.type`,
+  `sim.press`) reach the Python side's chatEvent and MSQC, not the own build's carriers — both A2 leftovers for step 17
+  or the Magenta slice, played probes standing in until then. `probes/game-text-arrays.ts` runs its strings past the
+  lifted game's 64 KB. *The hoister's narrowing:* `let b = false; if (b) { f(b || x) }` is `never` to TypeScript (the
+  variable narrowed to false, then nothing), and the error says "must be known when the script is built": right, badly
+  worded. *The lifted game's eudplib build* prints the same lines as ours, so `--eudplib` is kept only until step 17.
+  *Texts in records kept in an array that grows:* `probes/game-closures.ts` and `game-references.ts` are refused ("a
+  assign it does not lower": the length of the texts' address array, `(kept) addr`, `(objects) name.addr`) — a B9 shape
+  the texts pass does not make; through eudplib until taken. *The `game-*.ts` probes that fail in the lifted game on
+  the own build* (the table above) are to be gone through one by one at the start of step 17: most drive the players'
+  input, which the harness sends through the Python side's plugins. *A text made inside a function that calls itself:* `t = \`${t}${f(d - 2)}\`` in `f` reads `t` after the inner call
+  in the simulator and in the map (the same in both), before it in JavaScript ("zzz000" against "zzz0000"); a template
+  with a call at the top of the program reads its parts in order. The generator leaves texts out of a function that
+  calls itself until this is taken. *Build-time functions* run as JavaScript: a function whose
+  arguments and reads are all known when the script is built is called then, and its body's arithmetic does not wrap
+  (`i + 2147483647` inside it is 2 147 483 648, then an error naming the result). *The lifted game's strings:* 1.16.1
+  names the first 64 KB, so `--game` puts three seeds (nine programs) to a map and says so when a map is past it.
+  *`EUDPLIB=1`* is now unused by anything but `gate-sweep.mts` and `random-scripts.mts --eudplib`: step 17 removes it
+  with the Python.
 
 ## Part C — the game, pushed
 

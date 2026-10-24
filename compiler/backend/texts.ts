@@ -767,17 +767,6 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
 
   /** What a text needs done before it is begun (`pre`), and what writes it at the cursor (`body`). */
   interface Writing { pre: Stmt[]; body: Stmt[] }
-  /** Whether statements only work out numbers: no call (the run time's functions move the cursor) and no text. */
-  const makesNothing = (list: Stmt[]): boolean => {
-    const no = (x: unknown): boolean => {
-      if (Array.isArray(x)) return x.every(no);
-      if (!x || typeof x !== "object") return true;
-      const o = x as { kind?: string };
-      if (o.kind === "call" || o.kind === "textBlock" || o.kind === "assignText" || o.kind === "print" || isTextExpr(o as TextExpr)) return false;
-      return Object.values(o).every((v) => !v || typeof v !== "object" || no(v));
-    };
-    return no(list);
-  };
   /** A fresh made text with a block of its own, for a text made only to be read. */
   const temp = (): Made => {
     const id = fresh("made");
@@ -801,7 +790,8 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
     }
     const c = choice(t);
     if (c) {
-      if (c.texts.length === 1) { const body = writeConst(c.texts[0]); return body ? { pre: [], body } : null; }
+      // (One text it can be: written as it is — its test still asked when a call in it does something, `f() ? t : t`.)
+      if (c.texts.length === 1) { const body = writeConst(c.texts[0]); return body ? { pre: holdsCall(c.expr) ? [dec(fresh("pick"), c.expr)] : [], body } : null; }
       // One of the texts it can be, by a test of its number.
       const pick = fresh("pick");
       const each = c.texts.map((text) => writeConst(text));
@@ -817,8 +807,15 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
         // makes no text, so the cursor is left as it is.)
         const a = write(t.whenTrue), b = write(t.whenFalse);
         if (!a || !b) return null;
-        if (!a.pre.length && !b.pre.length) return { pre: [], body: [when(bool(t.cond), a.body, b.body)] };
-        return makesNothing(a.pre) && makesNothing(b.pre) ? { pre: [], body: [when(bool(t.cond), [...a.pre, ...a.body], [...b.pre, ...b.body])] } : null;
+        if (!a.pre.length && !b.pre.length && !holdsCall(t.cond)) return { pre: [], body: [when(bool(t.cond), a.body, b.body)] };
+        // (The test is asked once, before the text is begun, its answer kept in a number of its own — it may call a
+        // function, which may make a text of its own at the cursor — and what the side it picks needs done first is done
+        // then, under it, as JavaScript does only the side taken. The sides' bodies write under the same answer.)
+        const c = fresh("cond");
+        const test = cmp("!=", V(c), k(0));
+        const pre: Stmt[] = [dec(c, { kind: "ternary", cond: bool(t.cond), whenTrue: k(1), whenFalse: k(0), at: here, label: "" })];
+        if (a.pre.length || b.pre.length) pre.push(when(test, a.pre, b.pre));
+        return { pre, body: [when(test, a.body, b.body)] };
       }
       case "template": return writeParts(t.parts);
       case "textSlice": {
@@ -850,11 +847,52 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       default: return null;
     }
   };
-  const writeParts = (parts: TextPart[]): Writing | null => {
-    const out: Writing = { pre: [], body: [] };
-    for (const p of parts) {
+  /** Whether an expression calls a function of the script's: one that may make a text of its own, or change what a part reads. */
+  const holdsCall = (x: unknown): boolean => {
+    if (Array.isArray(x)) return x.some(holdsCall);
+    if (!x || typeof x !== "object") return false;
+    const o = x as { kind?: string };
+    return o.kind === "call" || o.kind === "textCall" || Object.values(o).some((v) => v && typeof v === "object" && holdsCall(v));
+  };
+  /**
+   * A call among a text's parts runs before the text is begun (it may make a text of its own at the cursor), so every
+   * value up to the last call is worked out first, in the parts' order, as JavaScript reads them: a number into a
+   * variable of its own, a text of the map's into a number of its own (its texts the variable's), a made text copied
+   * into a block of its own (`made`) — what the call may change is read before it runs. The parts come back rewritten.
+   */
+  const ahead = (parts: TextPart[]): { pre: Stmt[]; parts: TextPart[]; made: Map<number, Made> } => {
+    const pre: Stmt[] = [], made = new Map<number, Made>();
+    const lastCall = parts.reduce((last, p, i) => (((p.kind === "number" || p.kind === "char") && holdsCall(p.expr)) || (p.kind === "value" && holdsCall(p.text)) ? i : last), -1);
+    const out = parts.map((p, i): TextPart => {
+      if (lastCall < 0 || i > lastCall) return p;
+      if ((p.kind === "number" || p.kind === "char") && !(p.kind === "number" && p.fixed)) {
+        const t = fresh("part");
+        pre.push(dec(t, num(p.expr)));
+        return { ...p, expr: V(t) };
+      }
+      if (p.kind !== "value" || (i === lastCall && !holdsCall(p.text))) return p;
+      // (Texts known when built, chosen among: the choice's number kept, its texts the new variable's.)
+      const c = holdsCall(p.text) ? null : choice(p.text);
+      if (c) {
+        const t = fresh("pick");
+        pre.push(dec(t, c.expr));
+        idVars.set(t, new Set(c.texts));
+        return { ...p, text: { kind: "textVar", id: t } };
+      }
+      const m = temp();
+      const body = make(p.text, m);
+      if (body) { pre.push(...blockOf(m), ...body); made.set(i, m); madeVars.set(m.block, m); }
+      return p;
+    });
+    return { pre, parts: out, made };
+  };
+  const writeParts = (given: TextPart[]): Writing | null => {
+    const first = ahead(given);
+    const out: Writing = { pre: first.pre, body: [] }, parts = first.parts;
+    for (const [i, p] of parts.entries()) {
       let part: Writing | null;
-      if (p.kind === "text") { const body = writeConst(p.text); part = body ? { pre: [], body } : null; }
+      if (first.made.has(i)) part = { pre: [], body: writeMade(first.made.get(i)!) };
+      else if (p.kind === "text") { const body = writeConst(p.text); part = body ? { pre: [], body } : null; }
       else if (p.kind === "number") part = p.fixed ? null : { pre: [], body: [set(X, num(p.expr)), number(!!p.unsigned)] };
       else if (p.kind === "value") part = write(p.text);
       else if (p.kind === "char") part = { pre: [], body: [set(B, bin("+", num(p.expr), k(0))), when(cmp("!=", V(B), k(0)), [put(), add(CC, 1)])] };
@@ -1005,7 +1043,10 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       if (!ch) return null;
       pre.push({ kind: "declare", decl: { ...p.decl, kind: "number", text: undefined }, init: ch.expr, at: here, label: p.label });
     }
-    const result = c.result?.kind === "text" ? madeVars.get(c.result.decl.id) : undefined;
+    // (A called function makes its text into its own result's block — one for the function, whichever call — so a call
+    // of it reads that block; an inlined call has a result of its own, which its body's returns make.)
+    const fnResult = c.fn ? (program.functions ?? []).find((f) => f.id === c.fn)?.result : undefined;
+    const result = c.result?.kind === "text" ? madeVars.get(fnResult?.kind === "text" ? fnResult.decl.id : c.result.decl.id) : undefined;
     if (c.result?.kind === "text" && !result) return null;
     if (result) pre.push(...blockOf(result));
     results.push({ into: result, failed: false });
@@ -1155,10 +1196,19 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       if (v) return v;
     }
     if (o.kind === "textCall") {
-      const r = call((o as Extract<TextExpr, { kind: "textCall" }>).call);
+      const c = (o as Extract<TextExpr, { kind: "textCall" }>).call;
+      const r = call(c);
       if (!r?.result) return o;
       pre.push(...r.pre);
-      return { kind: "textVar", id: [...madeVars].find(([, m]) => m === r.result)![0] };
+      const id = [...madeVars].find(([, m]) => m === r.result)![0];
+      // (A called function's result block is the function's, one for every call: what this call gave is copied into a
+      // block of its own before another call of it — `${f(a)} and ${f(b)}` — writes the block again.)
+      if (c.fn) {
+        const m = temp();
+        const body = make({ kind: "textVar", id }, m);
+        if (body) { pre.push(...blockOf(m), ...body); madeVars.set(m.block, m); return { kind: "textVar", id: m.block }; }
+      }
+      return { kind: "textVar", id };
     }
     // (A call of a number or a condition with texts among its parameters: a statement first, its result read after.)
     const c = (o as { call?: Call }).call;
@@ -1184,7 +1234,23 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       if (!pre.length) return stmt(s);
       return [{ ...s, cond: { kind: "const", value: true }, body: [...pre, when({ kind: "not", expr: bool(cond) }, [{ kind: "break", at: here, label: "" } as Stmt]), ...stmts(s.body)] }];
     }
-    if (s.kind === "do" || s.kind === "for") return stmt(s);
+    // (A `do`'s test is asked at every turn's end: what it needs made first goes before it there, `before`, where a
+    // `continue` lands too. A `for`'s, at the top of each turn, as a `while`'s.)
+    if (s.kind === "do") {
+      if ("at" in s && s.at) here = s.at;
+      const pre: Stmt[] = [];
+      const cond = hoist(s.cond, pre) as BoolExpr;
+      if (!pre.length) return stmt(s);
+      return [{ ...s, cond: bool(cond), before: [...(s.before ?? []), ...pre], body: stmts(s.body) }];
+    }
+    if (s.kind === "for") {
+      if (!s.cond) return stmt(s);
+      if ("at" in s && s.at) here = s.at;
+      const pre: Stmt[] = [];
+      const cond = hoist(s.cond, pre) as BoolExpr;
+      if (!pre.length) return stmt(s);
+      return [{ ...s, cond: undefined, body: [...pre, when({ kind: "not", expr: bool(cond) }, [{ kind: "break", at: here, label: "" } as Stmt]), ...stmts(s.body)], update: stmts(s.update) }];
+    }
     const pre: Stmt[] = [];
     const t = { ...s, ...Object.fromEntries(Object.entries(s).filter(([key]) => key !== "then" && key !== "else" && key !== "body").map(([key, v]) => [key, v && typeof v === "object" ? hoist(v, pre) : v])) } as Stmt;
     return [...pre, ...stmt(t)];
@@ -1324,7 +1390,12 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
    * current player). Otherwise printed once for each text each can be, under a test of which it is — each choice
    * worked out once, into a variable of its own.
    */
-  const print = (s: Extract<Stmt, { kind: "print" }>): Stmt[] => {
+  const print = (given: Extract<Stmt, { kind: "print" }>): Stmt[] => {
+    // (A call among the parts: what comes before it read first, `ahead`, as JavaScript reads it. A made text among the
+    // parts goes through `make`, which does the same once more and finds nothing left to do.)
+    const first = ahead(given.parts);
+    if (first.pre.length) return [...first.pre, ...print({ ...given, parts: first.parts.map((p, i) => (first.made.has(i) ? { kind: "value", text: { kind: "textVar", id: first.made.get(i)!.block } } : p)) })];
+    const s = given;
     const parts = s.parts.map((p) => (p.kind === "value" ? choice(p.text) : null));
     if (s.parts.some((p, i) => (p.kind === "value" && !parts[i]) || p.kind === "name" || p.kind === "color") && s.position === "chat") {
       // A made text in it, or a player's name or colour. Alone: its block shown as it is. Else the printed text made
@@ -1336,8 +1407,10 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       return [...blockOf(SCRATCH), ...body, { kind: "showText", block: SCRATCH.block, bytes: BLOCK, to: s.to, at: s.at }];
     }
     if (!parts.some((c) => c && c.texts.length > 1)) {
+      // (A choice that comes to one text — `f() ? t : t` — still asks its test: a call in it runs, for what it does.)
+      const asked = parts.flatMap((c) => (c && holdsCall(c.expr) ? [dec(fresh("pick"), c.expr)] : []));
       const plain = s.parts.map((p, i) => (parts[i] ? ({ kind: "text", text: parts[i]!.texts[0] } as TextPart) : p));
-      return [walk({ ...s, parts: plain }) as Stmt];
+      return [...asked, walk({ ...s, parts: plain }) as Stmt];
     }
     if (s.parts.some((p, i) => p.kind === "value" && !parts[i])) return [walk(s) as Stmt];
     const choices = parts.filter((c): c is Choice => !!c && c.texts.length > 1);

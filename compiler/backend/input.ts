@@ -35,6 +35,7 @@
  * line goes as a *chat* message: the pattern's number, then its values. On arrival the pattern's flag is up for a
  * frame and its values are in cells.
  */
+import { STATEMENT_KINDS } from "./emit";
 import type { ArrayDecl, At, BoolExpr, NumExpr, Program, Stmt, VarDecl } from "../ir";
 import type { ActionRecord, TriggerRecord } from "../../vendor/triggers";
 import { MAX_CHAT_BYTES, MAX_CHAT_NUMBER, MOUSE_BUTTONS, inputsOf, parseChatPattern, virtualKey, type ChatPattern, type InputSource, type MouseButton } from "../input";
@@ -315,7 +316,8 @@ export function inputValues(program: Program, plan: OwnInputPlan, passes: boolea
   };
 
   const fix = (x: unknown): unknown => {
-    if (Array.isArray(x)) return x.map(fix);
+    // (A list of statements inside a statement — an if's, a loop's, a try's — as statements: a sync() in it is lowered too.)
+    if (Array.isArray(x)) return x.length && x[0] && typeof x[0] === "object" && STATEMENT_KINDS.has((x[0] as { kind?: string }).kind ?? "") ? stmts(x as Stmt[]) : x.map(fix);
     if (!x || typeof x !== "object") return x;
     const o = x as Record<string, unknown> & { kind?: string };
     if (o.kind === "input") return read(o.input as InputSource);
