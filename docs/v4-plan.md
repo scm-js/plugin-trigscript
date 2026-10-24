@@ -5684,6 +5684,24 @@ bits, an uncaught error said in red. Each names the backend's file now (`heap.ts
 `errors.ts`); the Python is named once, as what laid the same programs out until step 17. The README's account of the
 build still says a program the own build does not take goes through eudplib, which is true until step 17 deletes it.
 
+**Played, and what the first play found (2026-10-24).** The pack's Tetris, played in Remastered: every piece fell
+where it appeared, no key moved or turned it, and the game ended on a stack in one column. Written into the lifted
+game's key table the same way (the step 12 runner), the own build of `probes/own-input.ts` printed nothing after its
+first line either — and the same probe built at the step 13 merge answered every key. The build in the editor (step 14)
+took the unit-properties record over from `build-own.mts`, and `markInTransit` in `compiler/backend/chk.ts` wrote the
+carriers' "in transit" state flag at byte 16 of the twenty-byte record, where the game reads it at byte 14 (the
+valid-flags half was right). Every carrier since then was made in the open, an ordinary unit, and no point sent to one
+came back: nothing of the players' input reached a program on any map built our way since step 14 — the step 12 and
+13 plays in Remastered were of `build-own.mts` maps, step 14's played probe pressed no key, the suite's test of the
+record asserted byte 16 too, and nothing in CI presses a key in the game. Byte 14 now, the test with it (and byte 16
+clear). The step 12 probe prints every line again (sync, presses, held, clicks, the mouse, typed lines); Tetris drops
+on Space and slides on A and D in the lifted game; and `game-key-tap` and `game-events-input` pass their tests in the
+game on the own build — so the harness does reach the own build's carriers, and the row of failing `game-*.ts` tests
+in the table above is largely this one fault (`game-key-held` reads 11 frames held where the simulator says 12: the
+late release the send pass adds for Remastered's dropped frame, counted differently by the two; for step 17). The ten
+pack maps that read input were rebuilt (own-input, input, events, cutscene, tetris, key-held, local-select, snake,
+raycaster, local-ui); the other four are as they were.
+
 *Open:*
 - Step 16's leftovers (2026-10-23). *A function that calls itself with a `finally`* in it, refused (a text on the
   stack); the generator leaves the shape out until then. *A function that calls itself and gives back a text* — the
@@ -5691,16 +5709,17 @@ build still says a program the own build does not take goes through eudplib, whi
   eudplib until it is taken, and step 17 must take it or change the probe. *The test harness on maps of our own:*
   `probes/events.ts` counts "Display Text Message —" action events, which `sim.events` has only from an eudplib build
   (0 of 3, 0 of 2 in the game, the lines themselves shown), and `probes/game-tests.ts`'s typed line and key (`sim.type`,
-  `sim.press`) reach the Python side's chatEvent and MSQC, not the own build's carriers — both A2 leftovers for step 17
-  or the Magenta slice, played probes standing in until then. `probes/game-text-arrays.ts` runs its strings past the
+  `sim.press`) were thought to reach only the Python side's chatEvent and MSQC — they reach the own build's carriers too,
+  once the record was right (2026-10-24, above); the action-event counts stay an A2 leftover for step 17 or the
+  Magenta slice. `probes/game-text-arrays.ts` runs its strings past the
   lifted game's 64 KB. *The hoister's narrowing:* `let b = false; if (b) { f(b || x) }` is `never` to TypeScript (the
   variable narrowed to false, then nothing), and the error says "must be known when the script is built": right, badly
   worded. *The lifted game's eudplib build* prints the same lines as ours, so `--eudplib` is kept only until step 17.
   *Texts in records kept in an array that grows:* `probes/game-closures.ts` and `game-references.ts` are refused ("a
   assign it does not lower": the length of the texts' address array, `(kept) addr`, `(objects) name.addr`) — a B9 shape
   the texts pass does not make; through eudplib until taken. *The `game-*.ts` probes that fail in the lifted game on
-  the own build* (the table above) are to be gone through one by one at the start of step 17: most drive the players'
-  input, which the harness sends through the Python side's plugins. *A text made inside a function that calls itself:* `t = \`${t}${f(d - 2)}\`` in `f` reads `t` after the inner call
+  the own build* (the table above) are to be gone through one by one at the start of step 17: most drove the players'
+  input, and the unit-properties record was the fault (2026-10-24); what is left after it is to be seen. *A text made inside a function that calls itself:* `t = \`${t}${f(d - 2)}\`` in `f` reads `t` after the inner call
   in the simulator and in the map (the same in both), before it in JavaScript ("zzz000" against "zzz0000"); a template
   with a call at the top of the program reads its parts in order. The generator leaves texts out of a function that
   calls itself until this is taken. *Build-time functions* run as JavaScript: a function whose

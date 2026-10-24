@@ -113,7 +113,9 @@ describe("the build in the editor", () => {
     const uprp = s.get("UPRP")!;
     const view = new DataView(uprp.buffer, uprp.byteOffset, uprp.byteLength);
     expect(view.getUint16(20, true) & 4).toBe(4);
-    expect(view.getUint16(20 + 16, true) & 4).toBe(4);
+    expect(view.getUint16(20 + 14, true) & 4).toBe(4);
+    // (The state flags are byte 14 of the record. Written at byte 16 from step 14 on, every carrier was made in the open and no key reached a program; the first play of Tetris found it.)
+    expect(view.getUint16(20 + 16, true)).toBe(0);
     expect(s.get("UPUS")![1]).toBe(1);
     expect(out.lines.join("\n")).toMatch(/input: 1 keys, 0 sync slots; carriers of type 58/);
     expect(out.lines.at(-1)).toMatch(/2 triggers of the map's own \(4 copies, 1 hyper triggers left out\)/);
