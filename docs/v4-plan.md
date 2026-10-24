@@ -5702,6 +5702,19 @@ late release the send pass adds for Remastered's dropped frame, counted differen
 pack maps that read input were rebuilt (own-input, input, events, cutscene, tetris, key-held, local-select, snake,
 raycaster, local-ui); the other four are as they were.
 
+**The second play found the second fault (2026-10-24).** The input probe, rebuilt and played: every key, click and
+the mouse answered, and a typed `-help` did not. In the lifted game the same: the probe's typed lines (its third
+program) and its per-player F7 (its fourth) heard nothing, while its keys (its second) did — and each of them alone,
+or first, heard everything. The runs' naming: a run after the first gets every array and variable of its own,
+`id#n`, but for what is the map's, and the input's arrays were not on that list (five of its globals were; the events'
+pass keeps everything of its `@ev.` by prefix). So the second program that read input read `@in.pressed#1` and
+`@in.chatf#1`, cells of its own that no pass wrote: on any map of our own, only the first program that read the
+players' input ever heard it, since step 12 — the step 12 probe is one program, and so is every `game-*.ts` input
+test. Every `@in.` id is the map's now, as `@ev.`; `tests/emitter.test.ts` holds a second program's reads to the
+first one's cells. The input probe's lines, keys, typed lines and the per-player F7 all come in the lifted game, and
+the pack's ten input maps were rebuilt once more. Of the `game-*.ts` tests failing in the game on 2026-10-23, `game-local`, `game-tests` and `game-cutscene` pass now with `key-tap` and `events-input`; still failing: `game-events` (one of four: a listener a player), `game-events-2` (on.killed and on.order counts: the action events, an A2 leftover), `game-lowering` (the C line), `game-key-held` (11 for 12), `game-local-players` (the harness itself) — step 17's list. (An hour of the day went to a `name(P1)` that printed nothing: the
+lifted game's player is called "oracle", and the runner's filter dropped every line with that word in it.)
+
 *Open:*
 - Step 16's leftovers (2026-10-23). *A function that calls itself with a `finally`* in it, refused (a text on the
   stack); the generator leaves the shape out until then. *A function that calls itself and gives back a text* — the

@@ -2387,6 +2387,21 @@ describe("a map of our own, input", () => {
     expect(got.sent).toEqual([]);
   });
 
+  it("a second program that reads the players' input reads the first one's cells: nothing of the input's is renamed a run", () => {
+    // (Every input id is the map's, as the events' `@ev.` are. Renamed `@in.pressed#1` for the second run, that run read
+    // cells of its own that no pass wrote: the slice 4 probe's typed lines and per-player keys heard nothing, 2026-10-24.)
+    const r = compileScript(ts, { "main.ts": [
+      'program(async () => { while (true) { if (keyPressed(P1, "F7")) print("one"); await nextFrame(); } });',
+      'program(async () => { while (true) { if (keyPressed(P1, "F8")) print("two"); if (chatted(P1, "-help")) print("help"); await nextFrame(); } });',
+    ].join("\n") }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, 1, { humans: [0, 1], width: 64 * 32, height: 64 * 32, cuwp: 64 });
+    if (typeof o === "string") throw new Error(o);
+    expect(o.runs).toHaveLength(2);
+    expect(JSON.stringify(o.runs[1].graph).match(/"@in\.[^"#]*#[^"]*"/g) ?? []).toEqual([]);
+    expect((o.runs[1].graph.cells ?? []).map((c) => c.id)).toEqual(expect.arrayContaining(["@in.pressed", "@in.chatf"]));
+  });
+
   it("a key that reads up for one frame of a hold stays held: no second press", () => {
     const got = run([
       "program(async () => {",

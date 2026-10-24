@@ -114,7 +114,8 @@ const KIND_STATE = 0, KIND_SYNC = 1, KIND_CHAT = 2;
 
 const global = (id: string): VarDecl => ({ id, name: "(input)", kind: "number", shared: true, routed: true, global: true, at: AT0 });
 export const INPUT_GLOBALS: readonly VarDecl[] = [global(MADE), global(RING), global(NAME_LENGTH), global(LINE_LENGTH), global(TYPED)];
-export const isInputGlobal = (id: string) => INPUT_GLOBALS.some((d) => d.id === id);
+/** An id of the input's: its arrays, globals and temps are the map's, one of each however many programs and runs read them (as the events' `@ev.`). */
+export const isInputGlobal = (id: string) => id.startsWith("@in.");
 /** The mouse of a player on the map, as the receive pass keeps it: what `underMouse()`'s pick measures from. */
 export const MOUSE_CELLS = { x: MX, y: MY };
 
