@@ -745,6 +745,9 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       }
       if (ts.isPrefixUnaryExpression(n) && (n.operator === ts.SyntaxKind.ExclamationToken || n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) { ok = false; return; }
       if (ts.isPostfixUnaryExpression(n)) { ok = false; return; }
+      // (A `?:` picks its side by what its test is in the game — a condition of the game is a record here, true to
+      // JavaScript: the sides are hoisted on their own, and the compiler tests the condition where it stands.)
+      if (ts.isConditionalExpression(n)) { ok = false; return; }
       ts.forEachChild(n, check);
     };
     check(e);
@@ -955,6 +958,47 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   return plan;
 }
 
+/** The `__kind` brand of a type (`"fixed"`, `"unit"`, …), when it has one. */
+export function brandOfType(ts: typeof TS, checker: TS.TypeChecker, type: TS.Type): string | undefined {
+  void ts;
+  for (const t of type.isIntersection() ? type.types : [type]) {
+    const p = t.getProperty("__kind");
+    if (!p) continue;
+    const pt = checker.getTypeOfSymbol(p);
+    const name = (pt.isUnion() ? pt.types : [pt]).find((x): x is TS.StringLiteralType => x.isStringLiteral());
+    if (name) return name.value;
+  }
+  return undefined;
+}
+
+/** Whether a quotient written in a program divides whole numbers: neither side is typed `fixed` (`7 / 2` is 3; `7 / fixed(2)` is 3.5). */
+export function wholeQuotient(ts: typeof TS, checker: TS.TypeChecker, e: TS.BinaryExpression): boolean {
+  return wholeArithmetic(ts, checker, e) !== "fraction";
+}
+
+/**
+ * How a sum, difference, product or quotient written in a program computes when its sides are known as the script is
+ * built: as the game would — in 32 bits, signed ("i32") or from 0 up ("u32"), by what the sides are typed — or as a
+ * fraction when either side is typed `fixed`. (A side whose value is a fraction computes as one whatever this says.)
+ */
+export function wholeArithmetic(ts: typeof TS, checker: TS.TypeChecker, e: TS.BinaryExpression): "i32" | "u32" | "fraction" {
+  const brands = [brandOfType(ts, checker, checker.getTypeAtLocation(e.left)), brandOfType(ts, checker, checker.getTypeAtLocation(e.right))];
+  return brands.includes("fixed") ? "fraction" : brands.includes("u32") ? "u32" : "i32";
+}
+
+/** The arithmetic of whole numbers at build time, as JavaScript source: `(a, b) => …` taking the operator's sides. */
+function wholeHelper(ts: typeof TS, f: TS.NodeFactory, op: "+" | "-" | "*" | "/", bits: "i32" | "u32"): TS.ArrowFunction {
+  const a = f.createIdentifier("a"), b = f.createIdentifier("b");
+  const isWhole = (x: TS.Identifier) => f.createCallExpression(f.createPropertyAccessExpression(f.createIdentifier("Number"), "isInteger"), undefined, [x]);
+  let test: TS.Expression = f.createLogicalAnd(isWhole(a), isWhole(b));
+  if (op === "/") test = f.createLogicalAnd(test, f.createStrictInequality(b, f.createNumericLiteral(0)));
+  const raw: TS.Expression = op === "+" ? f.createAdd(a, b) : op === "-" ? f.createSubtract(a, b) : op === "*" ? f.createCallExpression(f.createPropertyAccessExpression(f.createIdentifier("Math"), "imul"), undefined, [a, b]) : f.createCallExpression(f.createPropertyAccessExpression(f.createIdentifier("Math"), "trunc"), undefined, [f.createDivide(a, b)]);
+  const wrapped = op === "/" ? raw : bits === "u32" ? f.createUnsignedRightShift(f.createParenthesizedExpression(raw), f.createNumericLiteral(0)) : f.createBitwiseOr(f.createParenthesizedExpression(raw), f.createNumericLiteral(0));
+  const plain: TS.Expression = op === "+" ? f.createAdd(a, b) : op === "-" ? f.createSubtract(a, b) : op === "*" ? f.createMultiply(a, b) : f.createDivide(a, b);
+  return f.createArrowFunction(undefined, undefined, [f.createParameterDeclaration(undefined, undefined, "a"), f.createParameterDeclaration(undefined, undefined, "b")], undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), f.createConditionalExpression(test, undefined, wrapped, undefined, plain));
+}
+
+
 /** What a descriptor's `hoisted()` returns: a thunk per hoisted expression, and a memoised thunk per build-time constant. */
 export interface HoistedThunks { h: (() => unknown)[]; c: (() => unknown)[] }
 
@@ -983,8 +1027,43 @@ export function hoistedFunction(ts: typeof TS, checker: TS.TypeChecker, plan: Pr
     const call = f.createCallExpression(f.createElementAccessExpression(c, f.createNumericLiteral(i)), undefined, []);
     return ts.isBindingElement(decl) && ts.isIdentifier(decl.name) ? f.createPropertyAccessExpression(call, decl.name.text) : call;
   };
+  const SHIFT_OPS: Partial<Record<TS.SyntaxKind, "<<" | ">>" | ">>>">> = { [ts.SyntaxKind.LessThanLessThanToken]: "<<", [ts.SyntaxKind.GreaterThanGreaterThanToken]: ">>", [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken]: ">>>" };
+  const WHOLE_OPS: Partial<Record<TS.SyntaxKind, "+" | "-" | "*" | "/">> = { [ts.SyntaxKind.PlusToken]: "+", [ts.SyntaxKind.MinusToken]: "-", [ts.SyntaxKind.AsteriskToken]: "*", [ts.SyntaxKind.SlashToken]: "/" };
   const rewrite = (node: TS.Node): TS.Node => {
     if (ts.isTypeNode(node)) return node;
+    // Whole numbers compute in a program as they do in the game: `7 / 2` is 3 and `i + 2147483647` wraps (`7 / fixed(2)`
+    // is 3.5, a u32 wraps from 0 up). A sum, difference, product or quotient whose sides are not typed `fixed` goes
+    // through a helper that computes it so when both sides are whole, and as JavaScript does otherwise.
+    // (Math.abs of a whole number wraps as the game's does: abs(−2 147 483 648) is −2 147 483 648.)
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "Math" && node.expression.name.text === "abs" && node.arguments.length === 1 && brandOfType(ts, checker, checker.getTypeAtLocation(node.arguments[0])) !== "fixed") {
+      const v = f.createIdentifier("v");
+      const abs = f.createCallExpression(f.createPropertyAccessExpression(f.createIdentifier("Math"), "abs"), undefined, [v]);
+      const helper = f.createArrowFunction(undefined, undefined, [f.createParameterDeclaration(undefined, undefined, "v")], undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), f.createConditionalExpression(f.createCallExpression(f.createPropertyAccessExpression(f.createIdentifier("Number"), "isInteger"), undefined, [v]), undefined, f.createBitwiseOr(abs, f.createNumericLiteral(0)), undefined, abs));
+      return f.createCallExpression(f.createParenthesizedExpression(helper), undefined, [ts.visitNode(node.arguments[0], rewrite) as TS.Expression]);
+    }
+    // (A shift by 32 or more, or by a number below zero, leaves nothing but the sign, as the game's does.)
+    // (The negative of a whole number wraps as the game's does; a literal's negative is the literal's own.)
+    if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.MinusToken && !ts.isNumericLiteral(node.operand) && brandOfType(ts, checker, checker.getTypeAtLocation(node.operand)) !== "fixed") {
+      const v = f.createIdentifier("v");
+      const helper = f.createArrowFunction(undefined, undefined, [f.createParameterDeclaration(undefined, undefined, "v")], undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), f.createConditionalExpression(f.createCallExpression(f.createPropertyAccessExpression(f.createIdentifier("Number"), "isInteger"), undefined, [v]), undefined, f.createBitwiseOr(f.createParenthesizedExpression(f.createPrefixUnaryExpression(ts.SyntaxKind.MinusToken, v)), f.createNumericLiteral(0)), undefined, f.createPrefixUnaryExpression(ts.SyntaxKind.MinusToken, v)));
+      return f.createCallExpression(f.createParenthesizedExpression(helper), undefined, [ts.visitNode(node.operand, rewrite) as TS.Expression]);
+    }
+    if (ts.isBinaryExpression(node) && SHIFT_OPS[node.operatorToken.kind]) {
+      const op = SHIFT_OPS[node.operatorToken.kind]!;
+      const a = f.createIdentifier("a"), b = f.createIdentifier("b");
+      const far = f.createGreaterThanEquals(f.createUnsignedRightShift(b, f.createNumericLiteral(0)), f.createNumericLiteral(32));
+      const none: TS.Expression = op === ">>" ? f.createConditionalExpression(f.createLessThan(a, f.createNumericLiteral(0)), undefined, f.createPrefixUnaryExpression(ts.SyntaxKind.MinusToken, f.createNumericLiteral(1)), undefined, f.createNumericLiteral(0)) : f.createNumericLiteral(0);
+      const shifted = op === "<<" ? f.createLeftShift(a, b) : op === ">>" ? f.createRightShift(a, b) : f.createUnsignedRightShift(a, b);
+      const helper = f.createArrowFunction(undefined, undefined, [f.createParameterDeclaration(undefined, undefined, "a"), f.createParameterDeclaration(undefined, undefined, "b")], undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), f.createConditionalExpression(far, undefined, none, undefined, shifted));
+      return f.createCallExpression(f.createParenthesizedExpression(helper), undefined, [ts.visitNode(node.left, rewrite) as TS.Expression, ts.visitNode(node.right, rewrite) as TS.Expression]);
+    }
+    if (ts.isBinaryExpression(node) && WHOLE_OPS[node.operatorToken.kind]) {
+      const bits = wholeArithmetic(ts, checker, node);
+      if (bits !== "fraction") {
+        const helper = wholeHelper(ts, f, WHOLE_OPS[node.operatorToken.kind]!, bits);
+        return f.createCallExpression(f.createParenthesizedExpression(helper), undefined, [ts.visitNode(node.left, rewrite) as TS.Expression, ts.visitNode(node.right, rewrite) as TS.Expression]);
+      }
+    }
     if (ts.isIdentifier(node) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) && !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) return constant(node) ?? node;
     if (ts.isShorthandPropertyAssignment(node)) {
       const value = constant(node.name);
