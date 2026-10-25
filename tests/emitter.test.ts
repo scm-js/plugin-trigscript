@@ -2237,6 +2237,22 @@ describe("a map of our own, unit events", () => {
     expect(got).toEqual(["3 made 0", "5 order 0 6 3", "7 morphed 38 from 37", "9 died 0", "9 killed 0 by 0", "11 made 32"]);
   });
 
+  it("reads a died unit's type and place as they are, its order Die and its sprite still there", () => {
+    // (A unit handed to a died handler is on its way out: its record holds its type and place still, and a read of
+    // them asks only that the place holds the record — not that it is alive. The first play of the events probe,
+    // 2026-10-24, printed "died 0 at 0, 0" for every unit, Firebats included.)
+    const got = run([
+      "program(async () => {",
+      "  on.died((u) => { print(`died ${u.type} at ${u.x}, ${u.y}`); });",
+      "});",
+    ].join("\n"), 10, (f, w) => {
+      // (Deaths alone: the watch is gated, so the game's head of free places and Player 1's count move as the game moves them.)
+      if (f === 3) { w(place(1698) + 0x08, 40 * 256); w(place(1698) + 0x0c, 0x700001); w(place(1698) + 0x28, 100 | (200 << 16)); w(place(1698) + 0x4c, 0x0300); w(place(1698) + 0x64, 32); w(place(1698) + 0xa4, 7 * 256); w(0x628438, place(1697)); w(0x581de4, 3); }
+      if (f === 6) { w(place(1698) + 0x08, 0); w(place(1698) + 0x4c, 0x0000); w(0x581de4, 2); }
+    });
+    expect(got).toEqual(["6 died 32 at 100, 200"]);
+  });
+
   it("starts a task for each unit a handler that waits is handed, and passes the watch by while the game's free list and counts stand still", () => {
     // (No orders or types watched: the watch is gated. The game's head of free places (0x628438) and Player 1's count
     // of units (0x581DE4) move as the game moves them when a unit is made; a unit put in a place with neither moved is
@@ -2628,5 +2644,25 @@ describe("a map of our own, input: the mouse, clicks, sync() and a program for e
       "4 help", "6 give 5000 1", "8 spawn 0 (a marine)", "10 give 1048575 0", "14 spawn 37", "15 ping 7",
       ...Array.from({ length: 13 }, (_, i) => `${16 + i} help`), "30 help",
     ]);
+  });
+});
+
+describe("a map of our own, the tasks' turn while the program sleeps", () => {
+  const laid = (script: string) => {
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, 1, { humans: [0], width: 64 * 32, height: 64 * 32, cuwp: 64 });
+    if (typeof o === "string") throw new Error(o);
+    return layout({ runs: o.runs.map((run) => ({ graph: run.graph, owner: run.player })), strings: 0, text: () => 1, arrays: o.values, template: () => 1 });
+  };
+  it("sets the current player to the owner before the wake of a run with tasks, and not where there are none", () => {
+    // (The walk runs from the last player's list, the current player theirs; the wake sets the owner only when the
+    // program runs, and a task's turn comes while it sleeps too: what the task showed then, the owner did not see.
+    // The first play of the events probe, 2026-10-24: "back", printed by a task two seconds after a death.)
+    const withTask = laid("program(async () => { async function later() { await sleep(frames(48)); print(\"later\"); } void later(); await sleep(frames(200)); });");
+    expect(withTask.triggers.has("@cur")).toBe(true);
+    expect(withTask.triggers.has("@wake")).toBe(true);
+    const without = laid("program(async () => { print(\"now\"); await sleep(frames(200)); });");
+    expect(without.triggers.has("@cur")).toBe(false);
   });
 });

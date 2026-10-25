@@ -5715,6 +5715,24 @@ first one's cells. The input probe's lines, keys, typed lines and the per-player
 the pack's ten input maps were rebuilt once more. Of the `game-*.ts` tests failing in the game on 2026-10-23, `game-local`, `game-tests` and `game-cutscene` pass now with `key-tap` and `events-input`; still failing: `game-events` (one of four: a listener a player), `game-events-2` (on.killed and on.order counts: the action events, an A2 leftover), `game-lowering` (the C line), `game-key-held` (11 for 12), `game-local-players` (the harness itself) — step 17's list. (An hour of the day went to a `name(P1)` that printed nothing: the
 lifted game's player is called "oracle", and the runner's filter dropped every line with that word in it.)
 
+**The events map found two more (2026-10-24).** Played in Remastered: every "died" line read `died 0 at 0, 0`,
+Firebats included, and the three "back" lines a handler prints two seconds after a death never came, though the
+Marines it makes did. The lifted game said the same. *A died unit's fields:* a handler's unit is read through the
+guard every unit read has — its place holds a sprite, an order other than Die, the uniqueness byte kept — and a
+unit handed to a died handler has the order Die by definition, so every field of it read as 0 (the type filter, which
+reads the record directly, was right: a Marine handler never fired for a Firebat). A read of a field now asks only
+that the place holds the record (`present`: a sprite and the byte), as the simulator reads a died unit as it died;
+`tests/emitter.test.ts` has a Firebat die at a place and the line say so. *A task's print while the program sleeps:*
+the walk runs from the last player's list, and the game sets the current player to that player; the wake sets it to
+the run's owner only when the program runs, and the tasks' turn comes while it sleeps too — from the wake's failing
+side, and straight from a sleep's own pointer — so a text a task showed then went to the computer. A run with tasks
+now has a node before its wake, `@cur`, that sets the current player to its owner every frame (one node a frame; a
+run without tasks has none), and the test holds it there. Putting the set into the emitter's own node for the turn
+lost the lines of the first sleep instead, for a reason not found; the node before the wake takes every path. With
+both: the events map prints its made, died, back and E lines in the lifted game as the sheet asks; `game-tasks` 4 of
+4 and `game-cutscene` 3 of 3 still; `game-events` and `game-events-2` fail as before, on the action counts the
+harness has only from an eudplib build. The whole pack was rebuilt (every map with tasks or unit reads is touched).
+
 *Open:*
 - Step 16's leftovers (2026-10-23). *A function that calls itself with a `finally`* in it, refused (a text on the
   stack); the generator leaves the shape out until then. *A function that calls itself and gives back a text* — the
