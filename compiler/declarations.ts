@@ -786,8 +786,8 @@ ${kw}const on: {
  * \`while (true) { if (keyPressed(CurrentPlayer, "F7")) …; sleep(frames(1)); }\`. They reach every
  * player's computer in step, a few frames after they happen. The player is one of P1 … P8 or
  * CurrentPlayer — in a program with \`{ owner: AllPlayers }\`, each player's own keys.
- * The map gives up a little for it: one free location among the first 63 (nine when the mouse is read),
- * the Valkyrie unit type, and Player 12 to hold the units that carry the input.
+ * The map gives up a little for it: one unit-properties slot, one unit type the map does not use (the
+ * Valkyrie, unless the map uses it), and Player 12 to hold the hidden units that carry the input.
  */
 /** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
 ${kw}function keyPressed(player: Player, key: Key): boolean;

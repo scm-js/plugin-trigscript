@@ -35,7 +35,7 @@ export interface GameHandle {
   reset(): void;
   /** What each frame of the map's triggers ran (TrigScript 4, A4), when the host counts it; `reset()` clears it. */
   readonly cost?: GameCostTap;
-  /** Where eudplib's payload ends in the game's memory, when the host knows: with the build's map of triggers, each record's line. */
+  /** Where the build's payload ends in the game's memory, when the host knows: with the build's map of triggers, each record's line. */
   readonly payloadEnd?: number;
   /** When the game is one of several copies kept in step, a copy for each of a test's players (scm-sim's `CopyHandle`). */
   readonly copy?: GameCopy;
@@ -64,7 +64,7 @@ export interface Desync {
   wrote: string[][];
   readLocal: string[][];
   players: number[];
-  /** eudplib's payload, watched: dwords that had come to differ before the split, from which frame, by copy. */
+  /** The build's payload, watched: dwords that had come to differ before the split, from which frame, by copy. */
   watched?: { address: number; since: number; values: (number | null)[] }[];
 }
 
@@ -109,7 +109,7 @@ export function desyncMessage(d: Desync, names: Map<number, string> = new Map())
   const before = known.length
     ? ` Before that, the script's ${known.slice(0, 3).map((w) => `${names.get(w.address)} from frame ${w.since} (${w.values.map((v, c) => `${v ?? "?"} at ${who(c)}`).join(", ")})`).join("; ")}${known.length > 3 ? ` and ${known.length - 3} more` : ""} had come apart.`
     : "";
-  const own = theirs ? ` (${theirs} of eudplib's own cells differed too; some are each computer's own on purpose.)` : "";
+  const own = theirs ? ` (${theirs} of the build's own cells differed too; some are each computer's own on purpose.)` : "";
   return `the players' games stopped agreeing at frame ${d.frame}: ${what}${more}.${notes}${before}${own}`;
 }
 
@@ -125,7 +125,7 @@ const COUNT_DEATH = 0x488af0;
 const BUTTON_BITS = { left: 2, right: 8, middle: 32 } as const;
 const FRAMES_PER_SECOND = 24, UNTIL_FRAMES = 2400;
 
-/** The frame from which the game's own locations are the map's (eudplib has put them right by then). */
+/** The frame from which the game's own locations are the map's (a build through eudplib kept them scrambled until its start put them right; a map of our own has them right from the start, and the frame is kept). */
 export const LOCATIONS_READY = 2;
 
 function readLocation(game: GameHandle, n: number): SimBounds | undefined {
@@ -135,7 +135,7 @@ function readLocation(game: GameHandle, n: number): SimBounds | undefined {
 }
 
 /**
- * The map's locations as the game holds them once eudplib has put them right: played to `LOCATIONS_READY` and put
+ * The map's locations as the game holds them once the build's start has run: played to `LOCATIONS_READY` and put
  * back to frame 0. For `GameSim`'s `locations`, and for the simulator's world of the same map.
  */
 export function readLocations(game: GameHandle): Record<number, SimBounds> {
@@ -154,7 +154,7 @@ export function readUnitStats(game: GameHandle): Record<number, { hp: number; sh
   return out;
 }
 
-/** A line as a player reads it: the game's colour codes and eudplib's padding (carriage returns) taken out. */
+/** A line as a player reads it: the game's colour codes and the build's padding (carriage returns) taken out. */
 const clean = (text: string) => text.replace(/[\x01-\x1f]/g, "");
 
 /** A unit as the game holds it: every property read from its slot while it is the same unit, its last value after. */
@@ -213,8 +213,8 @@ export class GameSim implements TestWorldLike {
   private readonly costLines: CostLines | null;
 
   /**
-   * `locations`: the map's locations as the script means them. eudplib keeps them scrambled in the game until its
-   * first frames put them right (frame 2 on a probe's map), so a test that acts at frame 0 needs them from elsewhere
+   * `locations`: the map's locations as the script means them. A build through eudplib kept them scrambled until its
+   * first frames put them right (frame 2 on a probe's map), so a test that acts at frame 0 takes them from elsewhere
    * (`readLocations`); from then on the game's own are read. `variables`: where the build put each program's
    * variables, for `program()`.
    */
@@ -294,7 +294,7 @@ export class GameSim implements TestWorldLike {
 
   /**
    * `run(location)` with a scratch location set to `b` — its four sides, and its elevation flags cleared (a flag
-   * left set keeps the units of that elevation out of it, and at frame 0 they are eudplib's scrambled bits) — then
+   * left set keeps the units of that elevation out of it, and at frame 0 a build through eudplib left scrambled bits there) — then
    * put back as it was, all twenty bytes.
    */
   private scratch<T>(n: number, b: SimBounds, run: (location: number) => T): T {

@@ -23,7 +23,7 @@
  * Not followed: the made texts' heap (a Local text may be longer on one computer, and take more of the heap).
  */
 import { ActionType, ConditionType, type ConditionRecord } from "../vendor/triggers";
-import type { ProgramDiagnostic } from "./eud";
+import type { ProgramDiagnostic } from "./check";
 import { localMemoryAt } from "./memory";
 import { programDeclarations, type At, type Call, type Program, type Stmt } from "./ir";
 

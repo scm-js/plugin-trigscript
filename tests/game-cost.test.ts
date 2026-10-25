@@ -5,9 +5,9 @@ import { CostLines, costByLine, shortCount, shortMs, type GameCostTap } from "..
 import type { TriggerMap } from "../compiler/gameVariables";
 
 const END = 0x19200000;
-// A payload of 4000 bytes: a trigger of line 12 at 0 (one condition, two actions), one of eudplib's at 2400 (no
+// A payload of 4000 bytes: a trigger of line 12 at 0 (one condition, two actions), one of the build's own at 2400 (no
 // line), and one of main.ts line 30 at 1200.
-const MAP: TriggerMap = { payload: 4000, triggers: [[0, 1, 2, "main.ts:12:5"], [2400, 0, 1, "eudplib"], [1200, 0, 1, "30:3"]] };
+const MAP: TriggerMap = { payload: 4000, triggers: [[0, 1, 2, "main.ts:12:5"], [2400, 0, 1, ""], [1200, 0, 1, "30:3"]] };
 const START = END - 4000;
 const cond = (trigger: number, i: number) => START + trigger + 8 + 20 * i;
 const act = (trigger: number, i: number) => START + trigger + 8 + 320 + 32 * i;
@@ -43,7 +43,7 @@ function tap(frames: number[][]): GameCostTap {
 }
 
 describe("CostLines", () => {
-  it("puts a record down to its trigger's line, eudplib's under the line before it, and keeps the rest apart", () => {
+  it("puts a record down to its trigger's line, the build's own under the line before it, and keeps the rest apart", () => {
     const lines = new CostLines(MAP, END);
     expect(lines.group(cond(0, 0))).toBeGreaterThanOrEqual(0);
     expect(lines.group(act(0, 1))).toBe(lines.group(cond(0, 0)));
@@ -53,11 +53,11 @@ describe("CostLines", () => {
     expect(lines.group(END)).toBe(-1);
   });
 
-  it("reads a test's cost: by frame without what eudplib ran before any line, by line with the variables a line went through", () => {
+  it("reads a test's cost: by frame without what ran before any line, by line with the variables a line went through", () => {
     const lines = new CostLines(MAP, END);
     const t = tap([
-      [0x51a284, act(2400, 0), act(2400, 0)],                                      // eudplib's start: none of it a line's
-      [act(2400, 0), cond(0, 0), act(0, 0), act(0, 1), act(2400, 0), act(1200, 0)], // eudplib, line 12 + a variable, line 30
+      [0x51a284, act(2400, 0), act(2400, 0)],                                      // the start-up: none of it a line's
+      [act(2400, 0), cond(0, 0), act(0, 0), act(0, 1), act(2400, 0), act(1200, 0)], // the build's own, line 12 + a variable, line 30
       [act(1200, 0), act(2400, 0), act(2400, 0)],                                    // line 30 + two variables
     ]);
     t.group = lines.group;

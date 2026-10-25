@@ -1,17 +1,15 @@
 /**
- * What the compiler does with a program's IR before eudplib gets it: checks it
- * (`checkProgram`) and serialises it with every text written out (`serializeIr`). The
- * lowering itself is `python/trigscript.py`, run by the eudplib plugin when the map is saved.
+ * What the compiler checks a program's IR for before the backend gets it (`checkProgram`):
+ * what would freeze the game or cannot be built, said at the node, and what its lines are
+ * worth a word about (`hints`).
  *
  * The rule a program has to keep: a loop that never sleeps never gives the frame back. The
  * body of a program runs to completion within the frame, so a loop whose condition never
  * moves would freeze the game. A loop with no `sleep()` on some path around it, whose
  * condition does not mention a variable the body assigns, is an error naming the loop.
  */
-import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { HEAP_CELLS, STACK_DEPTH, bodiesOf, declarations, eachCall, heapCells, stackDepth, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type ArrayDecl, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
-import type { LineHint, ScriptString } from "./compiler";
-import type { InputPlan } from "./input";
+import { bodiesOf, declarations, eachCall, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type ArrayDecl, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
+import type { LineHint } from "./compiler";
 
 export interface ProgramDiagnostic { at: At; message: string }
 
@@ -411,127 +409,4 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
     }
   };
   body.forEach(stmt);
-}
-
-/**
- * The IR as the JSON the Python side reads. A record's text and sound fields hold the
- * compile's *local* ids; here each becomes the text itself (`strings[k - 1].text`), which
- * eudplib puts in the built map's string table, or the map's own index when the script
- * named one (`{ index }`). Nothing a program says is written into the map the user edits.
- * `input` is the compile's plan for what the players do (`input.ts`), when a program reads any.
- */
-/** A table this long or longer goes to the lowering packed (`packTable`) rather than as a list of numbers. */
-export const PACK_FROM = 256;
-
-/**
- * A table's values as the narrowest little-endian bytes that hold every one (1 to 4 a value), in base64: a video's
- * brushes are a few hundred thousand values, which as JSON numbers would outgrow the build's 4 MB of data. The
- * lowering widens them back to a dword each (`python/trigscript.py#unpack_table`).
- */
-export function packTable(values: readonly number[]): { bytes: 1 | 2 | 3 | 4; data: string } {
-  let top = 0;
-  for (const v of values) { const u = v >>> 0; if (u > top) top = u; }
-  const bytes: 1 | 2 | 3 | 4 = top < 0x100 ? 1 : top < 0x10000 ? 2 : top < 0x1000000 ? 3 : 4;
-  const out = new Uint8Array(values.length * bytes);
-  for (let i = 0, at = 0; i < values.length; i++) {
-    const u = values[i] >>> 0;
-    for (let b = 0; b < bytes; b++) out[at++] = (u >>> (8 * b)) & 0xff;
-  }
-  return { bytes, data: base64(out) };
-}
-
-function base64(bytes: Uint8Array): string {
-  let s = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(s);
-}
-
-const packed = (a: ArrayDecl): ArrayDecl | (Omit<ArrayDecl, "values"> & { packed: ReturnType<typeof packTable> }) => {
-  if (!a.values || a.values.length < PACK_FROM) return a;
-  const { values, ...rest } = a;
-  return { ...rest, packed: packTable(values) };
-};
-
-export function serializeIr(programs: Program[], strings: readonly ScriptString[], input: InputPlan | null = null, settings: { heapCells?: number; stackDepth?: number } = {}): string {
-  const resolve = (local: number): number | string => {
-    if (local <= 0) return 0;
-    const s = strings[local - 1];
-    return !s ? 0 : "index" in s ? s.index : s.text;
-  };
-  const action = (r: ActionRecord) => ({ ...r, text: resolve(r.text), wav: resolve(r.wav) });
-  const condition = (r: ConditionRecord): ConditionRecord => ({ ...r });
-  // Only actions carry strings, and only inside statements — but a call's body is statements inside an expression, so expressions are walked for calls.
-  const unit = (u: UnitExpr): UnitExpr => (u.kind === "call" ? { ...u, call: call(u.call) } : u.kind === "unitAt" ? { ...u, ptr: expr(u.ptr), epd: expr(u.epd), uid: expr(u.uid) } : u);
-  const any = <E extends NumExpr | BoolExpr | UnitExpr | TextExpr>(e: E): E => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e as NumExpr | BoolExpr)) as E;
-  const copies: TextMap = { num: (e) => expr(e), bool: (e) => expr(e), call: (c) => call(c) };
-  const text = (t: TextExpr): TextExpr => mapText(t, copies);
-  const expr = <E extends NumExpr | BoolExpr>(e: E): E => {
-    const ofTexts = mapTextOperands(e, copies);
-    if (ofTexts) return ofTexts;
-    switch (e.kind) {
-      case "unitField": case "unitPart": case "unitAlive": case "unitFlag": return { ...e, unit: unit(e.unit) };
-      case "unitSame": return { ...e, left: unit(e.left), right: unit(e.right) };
-      case "unary": case "cast": return { ...e, expr: expr(e.expr) };
-      case "element": return { ...e, index: expr(e.index) };
-      case "binary": case "compare": return { ...e, left: expr(e.left), right: expr(e.right) };
-      case "ternary": return { ...e, cond: expr(e.cond), whenTrue: expr(e.whenTrue), whenFalse: expr(e.whenFalse) } as E;
-      case "intrinsic": return { ...e, args: e.args.map(expr) };
-      case "randomInt": return { ...e, bound: expr(e.bound) };
-      case "call": return { ...e, call: call(e.call) };
-      case "cond": return { ...e, record: condition(e.record) };
-      case "test": return { ...e, expr: expr(e.expr) };
-      case "and": case "or": return { ...e, items: e.items.map(expr) };
-      case "not": return { ...e, expr: expr(e.expr) };
-      case "edge": return { ...e, cond: expr(e.cond) };
-      case "running": return { ...e, task: expr(e.task) };
-      default: return e;
-    }
-  };
-  const call = (c: Call): Call => ({ ...c, params: c.params.map((p) => ({ ...p, init: any(p.init) })), body: c.body.map(stmt) });
-  const stmt = (s: Stmt): Stmt => {
-    switch (s.kind) {
-      case "declare": return { ...s, init: any(s.init) };
-      case "assignUnit": return { ...s, value: unit(s.value) };
-      case "unitLoop": return { ...s, body: s.body.map(stmt) };
-      case "unitWrite": return { ...s, unit: unit(s.unit), value: expr(s.value) };
-      case "select": return { ...s, units: s.units.map(unit) };
-      case "unitDo": return { ...s, unit: unit(s.unit), verb: s.verb.do === "damage" || s.verb.do === "heal" ? { ...s.verb, amount: expr(s.verb.amount) } : s.verb };
-      case "tableWrite": return { ...s, value: any(s.value) };
-      case "assignText": return { ...s, value: text(s.value) };
-      case "storeText": return { ...s, index: expr(s.index), value: text(s.value) };
-      case "releaseText": return { ...s, index: expr(s.index) };
-      case "textLoop": return { ...s, of: text(s.of), body: s.body.map(stmt) };
-      case "assign": return { ...s, value: expr(s.value) };
-      case "declareArray": return { ...s, ...(s.init ? { init: s.init.map(expr) } : {}), ...(s.fill ? { fill: expr(s.fill) } : {}) };
-      case "store": return { ...s, index: expr(s.index), value: expr(s.value) };
-      case "push": return { ...s, value: expr(s.value) };
-      case "setLength": return { ...s, value: expr(s.value) };
-      case "assignBool": return { ...s, value: expr(s.value) };
-      case "if": return { ...s, cond: expr(s.cond), then: s.then.map(stmt), ...(s.else ? { else: s.else.map(stmt) } : {}) };
-      case "while": return { ...s, ...(s.cond ? { cond: expr(s.cond) } : {}), body: s.body.map(stmt) };
-      case "do": return { ...s, body: s.body.map(stmt), cond: expr(s.cond) };
-      case "for": return { ...s, ...(s.cond ? { cond: expr(s.cond) } : {}), update: s.update.map(stmt), body: s.body.map(stmt) };
-      case "unrolled": return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
-      case "parallel": return { ...s, branches: s.branches.map((b) => b.map(stmt)) };
-      case "start": return { ...s, call: call(s.call) };
-      case "cancel": return { ...s, task: expr(s.task) };
-      case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
-      case "return": return s.value ? { ...s, value: any(s.value) } : s;
-      case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}), ...(s.text ? { text: text(s.text) } : {}) };
-      case "syncSend": return { ...s, value: expr(s.value) };
-      case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y), ...(s.size ? { size: { width: expr(s.size.width), height: expr(s.size.height) } } : {}) };
-      case "print": case "buildText": return { ...s, parts: mapTextParts(s.parts, copies) };
-      case "call": return { ...s, call: call(s.call) };
-      case "block": return { ...s, body: s.body.map(stmt) };
-      case "try": return { ...s, body: s.body.map(stmt), catch: s.catch.map(stmt) };
-      // A loop the emitter took: its islands are statements the Python side lowers, and its original one a walk reads.
-      case "graph": return { ...s, original: s.original.map(stmt), graph: { ...s.graph, triggers: s.graph.triggers.map((t) => (t.island ? { ...t, island: stmt(t.island) } : t)) } };
-      default: return s;
-    }
-  };
-  // The heap's size goes along only when an array grows and the map's settings changed it: the lowering has the same default.
-  const heap = settings.heapCells !== undefined && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a) => a.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
-  // The same for how deep a function that calls itself may go: only when one does.
-  const stack = settings.stackDepth !== undefined && settings.stackDepth !== STACK_DEPTH && programs.some((p) => p.functions?.some((f) => f.recursive)) ? { stack: stackDepth(settings.stackDepth) } : {};
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...stack, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, arrays: p.arrays.map(packed), ...(p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}), body: p.body.map(stmt) })) });
 }

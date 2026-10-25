@@ -12,9 +12,7 @@ import { defaultLib } from "../bundle/lib.mjs";
 import { cover, covers, inkOf, prepareShapes } from "../compiler/cover";
 import { FOG_SHAPES } from "../compiler/fogShapes";
 import { describeVideo, readVideo, writeVideo } from "../compiler/media";
-import { packTable, PACK_FROM, serializeIr } from "../compiler/eud";
 import { readFiles, withFiles } from "../script";
-import type { ArrayDecl } from "../compiler/ir";
 
 const LIB = defaultLib();
 
@@ -102,21 +100,6 @@ describe("cover()", () => {
   });
 });
 
-describe("a long table in the IR", () => {
-  it("packs at the narrowest width that holds every value", () => {
-    const back = (p: ReturnType<typeof packTable>) => {
-      const raw = Uint8Array.from(atob(p.data), (c) => c.charCodeAt(0)), out: number[] = [];
-      for (let i = 0; i < raw.length; i += p.bytes) { let v = 0; for (let b = 0; b < p.bytes; b++) v += raw[i + b] * 2 ** (8 * b); out.push(v); }
-      return out;
-    };
-    for (const [values, bytes] of [[[0, 255, 7], 1], [[256, 3], 2], [[0x7f7f7f, 1], 3], [[-1, 5], 4]] as [number[], number][]) {
-      const p = packTable(values);
-      expect(p.bytes).toBe(bytes);
-      expect(back(p)).toEqual(values.map((v) => v >>> 0));
-    }
-  });
-});
-
 describe("a script that plays a video", () => {
   const W = 40, H = 24, frames = ball(W, H, 12);
   const video = writeVideo({ width: W, height: H, frameMs: 42, frames });
@@ -145,12 +128,6 @@ describe("a script that plays a video", () => {
   it("says when the file is not there", () => {
     const r = compile(PLAY, {});
     expect(r.diagnostics.map((d) => d.message).join("\n")).toMatch(/Cannot find "\.\/ball\.video"/);
-  });
-
-  it("packs the tables when the IR is written", () => {
-    const r = compile(PLAY);
-    const ir = JSON.parse(serializeIr(r.ir, r.strings, r.input)) as { programs: { arrays: (ArrayDecl & { packed?: unknown })[] }[] };
-    for (const a of ir.programs.flatMap((p) => p.arrays)) expect(a.packed !== undefined).toBe(a.length >= PACK_FROM);
   });
 });
 

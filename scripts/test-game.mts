@@ -64,7 +64,7 @@ try {
   const run = await startExactGame(chkPath, { game: "ums" });
   const strings = placeStrings(run.lifted, chk);
   const eud = installEud(run.lifted, strings);
-  // (eudplib's payload lies outside what the game's snapshot covers: the handle keeps it itself. What each frame of
+  // (The build's payload lies outside what the game's snapshot covers: the handle keeps it itself. What each frame of
   // the triggers ran is counted, A4.)
   const payloadEnd = 0x191943c8 + strings.bytes;
   const handle = testGame(run.engine, run.lifted, [{ from: strings.gameTable, to: payloadEnd }], { cost: installCost(run.lifted), payloadEnd, ...(errorAddress !== null ? { eud } : {}) }) as GameHandle;
@@ -73,7 +73,7 @@ try {
   // of the game runs them: the compile's JavaScript handed to dist/gametest.js, loaded from its text.
   const source = scriptFiles(script);
   const names = defaultScriptNames();
-  // (The locations from the game once eudplib has put them right: in the built map they are scrambled.)
+  // (The locations from the game once the start-up has run: a build through eudplib kept them scrambled in the file.)
   const locations = readLocations(handle);
   const world = await mapWorld(classic, locations, readUnitStats(handle));
   const compiled = compileScript(ts, source, names, { lib: defaultLib(), tests: { world } });
@@ -94,7 +94,7 @@ try {
     console.log(`EUD ERROR ${a.code}: ${a.place}, at 0x${a.address.toString(16)}. Allowlist: read ${a.read}, write ${a.write}${a.evidence.length ? ` (${a.evidence.join("; ")})` : ""}`);
     console.log(`traced: ${traced.trace.rows.length} distinct accesses over ${traced.trace.frames} frames (${frames} played, then ${traced.results.length} tests)`);
     for (const l of a.lines) console.log(`  ${l.file}:${l.line}  ${l.read && l.write ? "reads and writes" : l.write ? "writes" : "reads"} ${l.match === "exact" ? "this address" : "the same field of another unit"}, ${l.times} times`);
-    if (a.unlined.exact + a.unlined.field) console.log(`  eudplib's own work, under no line: ${a.unlined.exact} times this address, ${a.unlined.field} the same field of another unit`);
+    if (a.unlined.exact + a.unlined.field) console.log(`  the build's own work, under no line: ${a.unlined.exact} times this address, ${a.unlined.field} the same field of another unit`);
     if (!a.lines.length && !(a.unlined.exact + a.unlined.field)) console.log("  nothing in the run touched it");
     process.exit(0);
   }

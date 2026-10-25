@@ -73,7 +73,7 @@ import { CLOSURE_CAP, countReferences, FN_BASE, makePool, type ClosurePool, type
 import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type FnValue, type Place, type RowField, type RowShape, type TypeArgs } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { FIXED_MAX, FIXED_MIN, fixedRaw } from "./numbers";
-import { ERROR_CODES, FIRST_ERROR_CLASS, I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { ERROR_CODES, FIRST_ERROR_CLASS, I32_MAX, I32_MIN, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** Where the numbers that say which class a row of the object table is start (B9), in the pool's function column: apart from functions', for whoever reads the column. */
 const OBJECT_TAG = 1 << 22;
@@ -557,7 +557,7 @@ export class Structured {
   run(): Emitted {
     const statements = this.body.plan.body.statements;
     const at = this.at(this.body.plan.body);
-    const program: Program = { version: IR_VERSION, ...(this.body.name ? { name: this.body.name } : {}), owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, arrays: this.arrays, body: [], at };
+    const program: Program = { ...(this.body.name ? { name: this.body.name } : {}), owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, arrays: this.arrays, body: [], at };
     this.nodes.set(program, this.body.plan.body);
     this.out = program.body;
     const hooks = { boxer: Scope.boxer, resolver: Scope.resolver, created: Scope.created };

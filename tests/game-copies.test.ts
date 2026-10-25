@@ -76,9 +76,9 @@ describe("a desync's words", () => {
     expect([names.get(0x100), names.get(0x204), names.get(0x308)]).toEqual(["gold, in shop", "turn of P2, in shop", "slots[2], in shop"]);
   });
 
-  it("say which variables had come apart before, and how many of eudplib's own", () => {
+  it("say which variables had come apart before, and how many of the build's own", () => {
     const d: Desync = { frame: 40, apart: null, players: [0, 1], differences: [{ what: "unit slot 3, hit points", values: [10240, 5120] }], wrote: [[], []], readLocal: [[], []], watched: [{ address: 0x100, since: 31, values: [5, 0] }, { address: 0x9000, since: 2, values: [1, 2] }] };
-    expect(desyncMessage(d, variableNames(map))).toBe("the players' games stopped agreeing at frame 40: unit slot 3, hit points is 10240 at P1's computer, 5120 at P2's computer. Before that, the script's gold, in shop from frame 31 (5 at P1's computer, 0 at P2's computer) had come apart. (1 of eudplib's own cells differed too; some are each computer's own on purpose.)");
+    expect(desyncMessage(d, variableNames(map))).toBe("the players' games stopped agreeing at frame 40: unit slot 3, hit points is 10240 at P1's computer, 5120 at P2's computer. Before that, the script's gold, in shop from frame 31 (5 at P1's computer, 0 at P2's computer) had come apart. (1 of the build's own cells differed too; some are each computer's own on purpose.)");
   });
 
   it("say when the copies were not even at the same frame", () => {
@@ -102,8 +102,8 @@ describe("a test of several players' result, from each copy's report", () => {
 
 describe("the build's map of triggers", () => {
   it("is read from its lines, and is none when cut short", () => {
-    const lines = ["TRIGSCRIPT-MAP {\"payload\":4096,\"count\":2}", "TRIGSCRIPT-ROWS [[0,1,2,\"3:1\"]]", "hello", "TRIGSCRIPT-ROWS [[2408,0,1,\"eudplib\"]]"];
-    expect(readTriggerMap(lines)).toEqual({ payload: 4096, triggers: [[0, 1, 2, "3:1"], [2408, 0, 1, "eudplib"]] });
+    const lines = ["TRIGSCRIPT-MAP {\"payload\":4096,\"count\":2}", "TRIGSCRIPT-ROWS [[0,1,2,\"3:1\"]]", "hello", "TRIGSCRIPT-ROWS [[2408,0,1,\"\"]]"];
+    expect(readTriggerMap(lines)).toEqual({ payload: 4096, triggers: [[0, 1, 2, "3:1"], [2408, 0, 1, ""]] });
     expect(readTriggerMap(lines.slice(0, 2))).toBeNull();
     expect(readTriggerMap(["hello"])).toBeNull();
   });

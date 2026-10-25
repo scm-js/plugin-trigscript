@@ -11,7 +11,6 @@ import { describe, expect, it } from "vitest";
 import { compileScript, type CompileResult } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { simulatePrograms } from "../compiler/simulateIr";
-import { serializeIr } from "../compiler/eud";
 import type { Call } from "../compiler/ir";
 import { defaultLib } from "../bundle/lib.mjs";
 
@@ -172,12 +171,12 @@ describe("functions: arrays, and functions inside functions", () => {
     expect(r.hints.find((h) => /^called ×2$/.test(h.label))?.file).toBe("lib.ts");
   });
 
-  it("the functions go to the lowering with the program, their text written out", () => {
+  it("the functions go to the backend with the program", () => {
     const r = compile("function say(n: number) { displayText(`n`); setDeaths(P1, units.TerranMarine, 'set', n); } let k = 1; say(k); say(k + 1);");
-    const ir = JSON.parse(serializeIr(r.ir, r.strings));
-    expect(ir.version).toBe(26);
-    expect(ir.programs[0].functions).toHaveLength(1);
-    expect(JSON.stringify(ir.programs[0].functions)).toContain('"text":"n"');
+    expect(r.ir[0].functions).toHaveLength(1);
+    // (The action's text is a local string id, which the build interns into the map's table.)
+    expect(JSON.stringify(r.ir[0].functions)).toMatch(/"text":[1-9]/);
+    expect(r.strings.some((s) => "text" in s && s.text === "n")).toBe(true);
   });
 
   it("an array only a thrown-away copy of a body declared is not kept", () => {

@@ -2,17 +2,13 @@
  * What the players do — keys, clicks, the mouse, what they type — as a program reads it.
  *
  * None of it is in the game's own tables where every computer sees the same: a key is pressed on
- * one computer. Two euddraft plugins the eudplib library carries bring it to everyone in step:
- * **chatEvent** finds the line the local player typed, and **MSQC** sends what happened on one
- * computer to all of them, a frame or a few later, as the player it happened to. The compiler
- * composes both from what the programs ask for (`inputPlan`, `inputPlugins`); the script never
- * names them. What arrives lands in arrays of the lowering's own (`python/trigscript.py`), one
- * cell per player, which last one frame — so an input is true on the frame it arrives and a
- * program that wants it looks every frame.
- *
- * What it takes from the map: MSQC keeps one location for itself and, when the mouse is read, one
- * more per player slot (eight in a row); it uses one unit type for its command units (the
- * Valkyrie) which the map must not use, and Player 12 to hold them.
+ * one computer. The build carries it to every computer in step itself (`backend/input.ts`, step 12
+ * of the way off eudplib): hidden units of Player 12 are given orders on the computer the input
+ * happened on, and the game sends the orders to everyone, where the programs read them back a
+ * frame or a few later. What arrives lasts one frame — so an input is true on the frame it
+ * arrives and a program that wants it looks every frame. This module is the front end's part:
+ * which keys, buttons, typed patterns and sync slots the programs read (`inputPlan`), and what a
+ * typed line matches (`matchChat`).
  */
 import type { NameTable } from "./names";
 import type { NumExpr, Program, Stmt, TextExpr, TextMap, UnitExpr, BoolExpr, Call, At } from "./ir";
@@ -20,9 +16,8 @@ import { bodiesOf, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextPart
 
 export type MouseButton = "left" | "right" | "middle";
 export const MOUSE_BUTTONS: readonly MouseButton[] = ["left", "right", "middle"];
-const MSQC_BUTTON: Record<MouseButton, string> = { left: "L", right: "R", middle: "M" };
 
-/** The keys `keyPressed()` takes, as a script writes them, and the name MSQC knows each by. */
+/** The keys `keyPressed()` takes, as a script writes them, and the name each had in MSQC's settings (the build before step 12 carried input through that euddraft plugin; `virtualKey` still goes by these names). */
 const NAMED_KEYS: Record<string, string> = {
   Space: "SPACE", Enter: "ENTER", Escape: "ESC", Tab: "TAB", Shift: "SHIFT", Ctrl: "LCTRL", Alt: "LALT",
   Left: "LEFT", Up: "UP", Right: "RIGHT", Down: "DOWN", Backspace: "BACK", Delete: "DELETE", Insert: "INSERT",
@@ -52,7 +47,7 @@ export function keyName(v: string): string | null {
   return KEY_BY_LOWER.get(v.trim().toLowerCase()) ?? null;
 }
 
-/** The name MSQC's settings take for a key of `KEY_NAMES`. */
+/** The name MSQC's settings took for a key of `KEY_NAMES` (`virtualKey` keys on it). */
 export function msqcKey(key: string): string {
   return NAMED_KEYS[key] ?? key.toUpperCase();
 }
@@ -69,11 +64,11 @@ export function virtualKey(key: string): number | null {
 
 /* ── Chat patterns ── */
 
-/** The most values a typed line can carry: each is one of MSQC's command units per player. */
+/** The most values a typed line can carry (a limit from the carriers' days under MSQC, kept). */
 export const MAX_CHAT_CAPTURES = 3;
 /** What the game lets a player type. */
 export const MAX_CHAT_BYTES = 78;
-/** The most a number in a typed line comes through as: what MSQC can send on the smallest map. */
+/** The most a number in a typed line comes through as (what the carriers could send on the smallest map, kept). */
 export const MAX_CHAT_NUMBER = 0xfffff;
 
 export type ChatCapture =
@@ -193,28 +188,22 @@ export type InputSource =
   /** What `syncSend` of the slot sent from `player`'s computer, plus 1, once it has arrived; 0 until then (B5). */
   | { source: "sync"; slot: number; player: number };
 
-/** Everything the input plugins are set up from, written into the IR file beside the programs. */
+/** Everything the programs read of the players, for the build (`backend/input.ts`) and the simulator. */
 export interface InputPlan {
   keys: string[];
-  /** The keys a program asks are held, each read on every frame it is down (MSQC's KeyPress). */
+  /** The keys a program asks are held, each read on every frame it is down. */
   held?: string[];
   buttons: MouseButton[];
   chats: ChatPattern[];
   /** Unit names a `{…:unit}` capture knows, lower case, with the type each means; only when one is used. */
   unitNames?: [name: string, id: number][];
-  /** The location MSQC keeps for itself, as its 0-based slot. */
-  qcLocation: number;
-  /** The 1-based number of the first of eight locations in a row MSQC keeps the players' mice in; null when no program reads the mouse. */
-  mouseBase: number | null;
-  /** How many `sync()` slots the programs use (B5): each a value MSQC sends from one computer to all; absent when none. */
+  /** Whether a program reads the players' mice. */
+  mouse: boolean;
+  /** How many `sync()` slots the programs use (B5): each a value sent from one computer to all; absent when none. */
   syncs?: number;
 }
 
-/** The unit type MSQC makes its command units of (the Valkyrie), and the player that holds them, as MSQC's setting takes it: what Magenta's probe maps were played with. */
-export const QC_UNIT = 58;
-export const QC_PLAYER = 11;
-const MOUSE_SLOTS = 8;
-/** Input's locations come from the first 63: every map's location table has those. */
+/** A library's reserved location comes from the first 63 (`reserveLocation`): every map's location table has those. */
 export const LAST_SLOT = 62;
 
 /** Every input a program reads, in the order met, and where the first is. */
@@ -293,11 +282,10 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
 }
 
 /**
- * The plan for a compile's programs: null when none reads the players. `locations` is the map's
- * table, to keep clear of the slots it uses. Throws an Error worded for the author when the map
- * has no room.
+ * The plan for a compile's programs: null when none reads the players. `units` is the map's
+ * table of unit names, for a `{…:unit}` capture of a typed line.
  */
-export function inputPlan(programs: Program[], locations: NameTable, units: NameTable, reserved: readonly number[] = []): InputPlan | null {
+export function inputPlan(programs: Program[], units: NameTable): InputPlan | null {
   const { sources, mouse } = inputsOf(programs);
   if (sources.length === 0 && !mouse) return null;
   const keys: string[] = [];
@@ -311,27 +299,11 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
     else if (s.source === "chat" && !chats.some((c) => c.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
   }
   const syncs = Math.max(0, ...sources.map((s) => (s.source === "sync" ? s.slot + 1 : 0)));
-  // The highest free slots among the first 63, so the low numbers a map maker reaches for first stay free.
-  // (And those a library took with reserveLocation() when the script was built.)
-  const used = new Set([...locations.entries.map((e) => e.value - 1), ...reserved.map((n) => n - 1)]);
-  const free = (slot: number) => slot >= 0 && slot <= LAST_SLOT && !used.has(slot);
-  let qcLocation = -1;
-  for (let slot = LAST_SLOT; slot >= 0; slot--) if (free(slot)) { qcLocation = slot; break; }
-  if (qcLocation < 0) throw new Error("Reading keys, clicks or chat needs one free location among the map's first 63 for the plugin that carries them between the players' computers; this map uses them all.");
-  let mouseBase: number | null = null;
-  if (mouse) {
-    for (let slot = LAST_SLOT - MOUSE_SLOTS + 1; slot >= 0 && mouseBase === null; slot--) {
-      let ok = true;
-      for (let i = 0; i < MOUSE_SLOTS; i++) if (!free(slot + i) || slot + i === qcLocation) ok = false;
-      if (ok) mouseBase = slot + 1;
-    }
-    if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
-  }
   // With a held key in the game, keys go every frame they are down, and a multiplayer game may bring two frames' commands
-  // at once — the later replaces the earlier, since MSQC's carrier has one order. A press of its own ("went down") would
-  // be lost that way, so every key is sent as held and a press is worked out where it arrives: held now, not before.
+  // at once — the later replaces the earlier, since a carrier has one order. A press of its own ("went down") would be
+  // lost that way, so every key is sent as held and a press is worked out where it arrives: held now, not before.
   if (held.length) for (const k of keys) if (!held.includes(k)) held.push(k);
-  const plan: InputPlan = { keys, ...(held.length ? { held } : {}), buttons, chats, qcLocation, mouseBase, ...(syncs ? { syncs } : {}) };
+  const plan: InputPlan = { keys, ...(held.length ? { held } : {}), buttons, chats, mouse, ...(syncs ? { syncs } : {}) };
   if (chats.some((c) => c.captures.some((x) => x.kind === "unit"))) {
     const seen = new Set<string>();
     plan.unitNames = [];
@@ -362,51 +334,4 @@ export function numberSyncSlots(program: Program, base: number): number {
   walk(program.body);
   walk(program.functions ?? []);
   return count;
-}
-
-/** The names the lowering registers its cells under, which is how MSQC's and chatEvent's settings reach them. */
-export const INPUT_NAMES = {
-  key: (i: number) => `tsin_key${i}`,
-  held: (i: number) => `tsin_held${i}`,
-  button: (i: number) => `tsin_button${i}`,
-  syncLocal: (i: number) => `tsin_sync${i}`,
-  syncIn: (i: number) => `tsin_sync${i}_in`,
-  chatLocal: "tsin_chat",
-  chatIn: "tsin_chat_in",
-  captureLocal: (i: number) => `tsin_capture${i}`,
-  captureIn: (i: number) => `tsin_capture${i}_in`,
-  heard: "tsin_heard", pointer: "tsin_pointer", length: "tsin_length", pattern: "tsin_pattern",
-};
-
-/**
- * The euddraft plugin sections for a plan, in the order they have to run around `trigscript`:
- * chatEvent before it (it finds the typed line the lowering then reads), MSQC after it (it sends
- * what the lowering made of the line). Every address is a name the lowering registers.
- */
-export function inputPlugins(plan: InputPlan): { before: Record<string, Record<string, string | number>>; after: Record<string, Record<string, string | number>> } {
-  const before: Record<string, Record<string, string | number>> = {};
-  if (plan.chats.length) before.chatEvent = { __addr__: INPUT_NAMES.heard, __ptrAddr__: INPUT_NAMES.pointer, __lenAddr__: INPUT_NAMES.length, __patternAddr__: INPUT_NAMES.pattern };
-  const msqc: Record<string, string | number> = { QCUnit: QC_UNIT, QCLoc: plan.qcLocation, QCPlayer: QC_PLAYER, QCDebug: "false" };
-  // KeyDown, not KeyPress: MSQC's KeyPress is true on every frame the key is down, and a tap is two or three frames —
-  // one tap of W turned the Tetris piece two or three times (TrigScript 4, S2, played). KeyDown is the frame it goes down.
-  // Without a held key, a press is MSQC's KeyDown: one command a tap. With one, every key goes as held (see inputPlan).
-  if (!plan.held?.length) plan.keys.forEach((key, i) => { msqc[`KeyDown(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`; });
-  plan.held?.forEach((key, i) => { msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.held(i)}, 1`; });
-  plan.buttons.forEach((b, i) => { msqc[`MouseDown(${MSQC_BUTTON[b]})`] = `${INPUT_NAMES.button(i)}, 1`; });
-  if (plan.mouseBase !== null) msqc.Mouse = plan.mouseBase;
-  // sync() (B5): each slot a value sent from the computer it was put on, as MSQC's `val` sends a typed number.
-  for (let i = 0; i < (plan.syncs ?? 0); i++) msqc[`${INPUT_NAMES.syncLocal(i)}.AtLeast(1); val, ${INPUT_NAMES.syncLocal(i)}`] = INPUT_NAMES.syncIn(i);
-  if (plan.chats.length) {
-    const sent = `${INPUT_NAMES.chatLocal}.AtLeast(1)`;
-    msqc[`${sent}; val, ${INPUT_NAMES.chatLocal}`] = INPUT_NAMES.chatIn;
-    const captures = Math.max(0, ...plan.chats.map((c) => c.captures.length));
-    for (let i = 0; i < captures; i++) msqc[`${sent}; val, ${INPUT_NAMES.captureLocal(i)}`] = INPUT_NAMES.captureIn(i);
-  }
-  return { before, after: { MSQC: msqc } };
-}
-
-/** The whole `plugins` of a build, in order: what the service contributes and the tests build with. */
-export function buildPlugins(plan: InputPlan | null, irPath: string): Record<string, Record<string, string | number>> {
-  const input = plan ? inputPlugins(plan) : { before: {}, after: {} };
-  return { ...input.before, trigscript: { ir: irPath }, ...input.after, eudTurbo: {} };
 }

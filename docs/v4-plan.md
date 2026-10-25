@@ -3592,10 +3592,11 @@ found what they left out; where a step moved, its old number is given.
     random whole programs (idea 17) built our way and run in the lifted game against the simulator; every probe and
     showpiece built our way and played again in Remastered; the simulator's model (`docs/ir.md`: the Python lowering's
     today) moved to the own backend.
-17. **Deleted** (was 9): `python/trigscript.py` (7,100 lines), its embedding (`embed-python.mts`, whose stdlib half
-    stays), the IR's hand-off to Python (`serializeIr`, `packTable`, `IR_VERSION`), the `requires` of plugin-eudplib,
-    and the copy in five repositories that says a map is built by eudplib. The own-loader probe builds in 0.7 s
-    against 5.3.
+17. **Deleted** ✓ ("The Python goes (2026-10-25)" below): `python/trigscript.py` (7,113 lines), its embedding
+    (`embed-python.mts`, whose stdlib half stays as `embed-stdlib.mts`), the IR's hand-off to Python (`serializeIr`,
+    `packTable`, `IR_VERSION`, the `graph` statement and the emitter's hybrid mode), the `requires` of plugin-eudplib,
+    and the copy in four repositories that says a map is built by eudplib (this one, scm-js, plugin-eudplib; the
+    registry's description follows the next release).
 
 ### Calls on our own backend (2026-10-19)
 
@@ -5768,10 +5769,88 @@ are fixed above; the gate's part 2 is done.
   arguments and reads are all known when the script is built is called then, and its body's arithmetic does not wrap
   (`i + 2147483647` inside it is 2 147 483 648, then an error naming the result). *The lifted game's strings:* 1.16.1
   names the first 64 KB, so `--game` puts three seeds (nine programs) to a map and says so when a map is past it.
-  *`EUDPLIB=1`* is now unused by anything but `gate-sweep.mts` and `random-scripts.mts --eudplib`: step 17 removes it
-  with the Python. *A mono clip plays 2.4 dB quieter* than a stereo one in Remastered, and a note of the music library
+  *`EUDPLIB=1`* went with the Python in step 17, as did `--eudplib` of `random-scripts.mts` and `gate-sweep.mts`. *A mono clip plays 2.4 dB quieter* than a stereo one in Remastered, and a note of the music library
   goes in as a mono WAV while the rendered song is a stereo Ogg: the short clips should go in with two channels too
   (the music demo's play, 2026-10-25).
+
+### The Python goes (2026-10-25)
+
+Step 17, branch `python-goes` off trigscript-4 (d25e975). What went: `python/trigscript.py` (7,113 lines) and
+`compiler/generated/trigscriptPy.ts`; `scripts/embed-python.mts` (now `embed-stdlib.mts`, the standard library's half);
+`compiler/eud.ts`'s `serializeIr`, `packTable` and `PACK_FROM` (the file is `check.ts`, `checkProgram` alone);
+`IR_VERSION` and `Program.version`, and the `graph` statement (IR 26) with the emitter's whole hybrid mode — `emitLoop`,
+`emitGraphs`, islands, copies on the way in as anything but a refusal, the fixed-point `call` triggers, `Scope.native`
+(every path is the native one now; `island()` is `refuse()`, which notes why and goes on so that `emitBody` can name the
+first part never taken); `vendor/eudplib.ts` and the service's `library()`, `watchLibrary()`, `collect()` and the
+contribution to the library's build; the editor's library status item and its five states; the manifest's `ownRefusal`;
+the MSQC and chatEvent plugin sections of `compiler/input.ts` (`inputPlugins`, `buildPlugins`, `INPUT_NAMES`, the
+location the plan reserved and the "needs one free location among the map's first 63" error, which the own build never
+needed — the plan says `mouse` now, and no slot); the `requires` of plugin-eudplib in `plugin.json`;
+`tests/python.test.ts`, `tests/eud-build.test.ts`, `scripts/drive-eud.mjs`; `EUDPLIB=1` of `build-fixture.mts` and
+`--eudplib` of `random-scripts.mts` and `gate-sweep.mts` (the sweep is every probe built and played, one column). 67
+files, 9,896 lines out, 587 in.
+
+**What the build does now.** The step applies to every script with programs (`hasPrograms`). One the emitter does not
+take is a Problems warning on the line while typing ("The programs will not be built: TrigScript does not take this yet
+(…). The map is saved without them.") and a failed step on save with the same reason, whose notice saves the rest
+(*Save without it*). A map with Magenta's member is refused with the reason (`whyNotBuilt`): eudplib's build rebuilds
+the strings section from its parsed strings, which would drop the payload behind them, and ours would drop eudplib's
+the same way — neither order works until Magenta builds on our layout (the next slice, *Open decisions*). The debugger,
+the cost view, the EUD-error lookup and the allowlist say "the build's own triggers" where they said "eudplib's own
+work" (`STEP_BUILD`); a trigger map's origin for a trigger no line made is `""`.
+
+**Found on the way: the editor had been building loops through eudplib since step 14.** `compile.ts` never passed
+`emitter: false` — only the tests and `build-fixture.mts` did — so `emitGraphs` ran on every compile in the editor and
+the own build was handed loops already turned into `graph` statements, which `emitBody` refused ("a graph in a statement
+it cannot lower, line 3"). Every script with a plain numeric loop (`while (n < 12) n += 5`) had gone through eudplib
+with a warning, in the editor alone; every map played since step 14 was built by `build-fixture.mts`, and so by the own
+build, which is why nobody saw it. Gone with the hybrid: there is one lowering, and the editor's compile and the tests'
+are the same compile.
+
+**Also found.** *Lists read a bit at a time* were laid out 18 dwords apart (the EUDVArray's stride, for the Python
+side's benefit): a dword a value now (`readTable`'s `stride = 1`), and the condition's player field a plain place of the
+index. *A printed number's field* was 12 bytes whatever the number; a line of 24 one-digit numbers (`game-lowering`'s
+C line, `${k < v ? 1 : 0}` × 24) was 290 bytes of template and the game's 218-byte text line cut it — the lifted game
+showed "C: 110001 001101 01011". The field is now sized by the value ranges (`fieldWords`: 4 bytes up to four
+characters, 8 up to eight, else 12), the routine's last dwords copied into it; the C line is about 100 bytes, and
+the probe's eight tests pass in the game. *A copy that sent
+no block* made scm-sim's `differences()` throw "Cannot read properties of undefined (reading 'buffer')" in a two-copy
+test (`game-local-players`, "the harness itself" in the gate's table): guarded in scm-sim-eud (8852b7c), both tests
+pass in the game.
+
+**The `game-*.ts` tests in the lifted game, gone through** (the gate's list; `test-game.mts`, SCM_SIM_DIR=scm-sim-eud):
+`game-tests`, `game-key-tap`, `game-events-input`, `game-local-players` (with the guard), `game-lowering` (with the
+field sizes) pass. Left, each with what was learned:
+
+- `game-events`, "a listener for each player: each sees its own" — the per-player program `each` (`on.created({ owner:
+  CurrentPlayer, type: Overlord })`, `owner: [P1, P2]`) counts 0 in the game for P1 where the simulator counts 2; the
+  other three tests of the file pass (the Overlords are made: the `events` program counts them). And a per-player
+  program whose handler writes a variable the body then reads — `on.created(…, () => { mine++ })` followed by
+  `print(\`mine ${mine}\`)` or `setDeaths(CurrentPlayer, …, mine)` — is *refused*, "a action it does not lower, line
+  0": the refusal is in the events pass (`passStmt`, whose statements have no line), and the same body with one owner
+  is taken. The probe's `each` program has no such read, so it built; the two are one fault to look into first in the
+  events/per-player follow-up. The repro is five lines: `program(async () => { let mine = 0; on.created({ owner:
+  CurrentPlayer, type: units.ZergOverlord }, () => { mine++; }); await sleep(frames(2)); print(\`mine ${mine}\`); },
+  { owner: [P1, P2] })` — refused; with `owner: P1`, taken.
+- `game-events-2`, on.killed (1 expected, 0) and on.order (6 expected, 0) in the game, the simulator right in both.
+  Remastered's play of the pack's events map (2026-10-25, 12/14) exercised on.killed and on.order on an own build and
+  was right, so what fails is the lifted 1.16.1 game or the harness's `sim.kill(a, P2)` (it writes +0x90 and calls
+  COUNT_DEATH) and its orders, not the build. To be settled with a trace of the watch's reads in the lifted game.
+- `game-key-held`, 12 expected (ten frames held and two more), 11 in the game. The build keeps a bit up for one frame
+  it reads down when the two frames before were up (Remastered drops a held key for a frame as it begins to repeat), so
+  a release goes one frame late; the simulator's `HELD_GRACE` is two frames, from the Python's day. The lifted game
+  loses the second message of every hold, which is not Remastered's behaviour either. The key-held play's sheet
+  (2026-10-24) has the tap and hold rows filled ("solid", one tap each) and the let-go rows blank, so Remastered has
+  not said which number is right; a play that counts the frames after letting go decides it, then the simulator or the
+  build follows.
+
+**Open (added to the lists):** the per-player listener fault above; `sim.kill` / orders in the lifted game; the held
+key's late frames; the Open list's refusals that still stand (a recursive text function, `unit.name` from a made text,
+texts in records in growing arrays, a text made inside a recursive function) — each a compiler slice of its own, none
+taken here; a key-pressing lifted-game test in CI (CI has no lifted game: the own-build tests walk the built map in
+JavaScript, `tests/ownWalk.ts`, which carries no units, so the carriers cannot be modelled there — the game harness is
+the only check of input, run by hand). The perf slice after this step (unit walks, lazy error messages) stands as
+assessed on 2026-10-23.
 
 ## Part C — the game, pushed
 
@@ -6447,7 +6526,13 @@ build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
 - **Magenta on our backend.** Decided 2026-10-23 (the user): a map with Magenta's triggers in it goes on our backend
   too, not through eudplib. Magenta's build rows (text, maths, unit passes, checks, chat, keys, clicks) are expanded
   today by its euddraft plugins in Python; the slice lays them out as TrigScript programs on the own layout, after
-  step 17. Until then a map with Magenta's member is built through eudplib (`whyNotOwn`).
+  step 17. Since step 17 (2026-10-25) a map with Magenta's member is not built: the step refuses it with the reason
+  (`whyNotBuilt`) and Magenta's own build runs alone, since eudplib's build rewrites the strings section the payload
+  sits behind. The slice is next. *How, decided 2026-10-25 (the user): TrigScript is the library.* TrigScript provides a
+  build service as eudplib did (`services.provide`, a `contribute` with an `applies` and a `collect`), Magenta requires
+  plugin-trigscript and hands it its rows as IR, and both go through the one layout call on save; the Magenta refusal in
+  the build step goes with it. Not a third library plugin holding the backend alone: the backend consumes TrigScript's
+  IR and passes, and a split would drag the compiler along or put a second interface in front of it.
 
 ## Facts this plan leans on
 

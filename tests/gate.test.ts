@@ -19,7 +19,7 @@ import { walkBuiltMap } from "./ownWalk";
 const LIB = defaultLib();
 const NAMES = defaultScriptNames();
 const CHK = scenario();
-const compile = (body: string): CompileResult => compileScript(ts, { "main.ts": `program(${/\bawait\b/.test(body) ? "async " : ""}() => {\n${body}\n});` }, NAMES, { lib: LIB, emitter: false, own: OWN });
+const compile = (body: string): CompileResult => compileScript(ts, { "main.ts": `program(${/\bawait\b/.test(body) ? "async " : ""}() => {\n${body}\n});` }, NAMES, { lib: LIB, own: OWN });
 const messages = (body: string) => compile(body).diagnostics.map((d) => d.message);
 /** The simulator's lines for a body that compiles. */
 function sim(body: string, frames = 2): string[] {

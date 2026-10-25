@@ -2,15 +2,14 @@
  * Whole programs made at random, run every way there is (TrigScript 4, step 16: the gate before the Python goes).
  * Without the game, each seed is run as JavaScript, in the simulator and as the built map of our own walked from
  * its bytes (`tests/randomRun.ts`, what CI runs). With `--game`, the seeds are built our way, several to a map, and
- * played in the lifted game, their lines held against the simulator's frame by frame; with `--eudplib` too, the
- * same scripts are built through eudplib and played, the last use of the second build.
+ * played in the lifted game, their lines held against the simulator's frame by frame.
  *
- *   npx tsx scripts/random-scripts.mts [--seeds=1..200] [--programs=3] [--frames=12] [--game [--eudplib] [--batch=8]]
+ *   npx tsx scripts/random-scripts.mts [--seeds=1..200] [--programs=3] [--frames=12] [--game [--batch=8]]
  *   npx tsx scripts/random-scripts.mts --show=SEED            the script as TrigScript
  *   npx tsx scripts/random-scripts.mts --reduce=SEED          the smallest script that still fails the same way
  *
- * The game needs a scm-sim checkout beside this repository (or SCM_SIM_DIR) with its lifted game generated; eudplib a
- * plugin-eudplib checkout (or EUDPLIB_DIR). The maps are built on fixtures/maps/(2)Binary Burghs.scx, as the probes are.
+ * The game needs a scm-sim checkout beside this repository (or SCM_SIM_DIR) with its lifted game generated. The maps
+ * are built on fixtures/maps/(2)Binary Burghs.scx, as the probes are.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -69,10 +68,9 @@ const sim = resolve(process.env.SCM_SIM_DIR ?? join(root, "..", "scm-sim"));
 if (!existsSync(join(sim, "scripts", "exact-eud.ts"))) { console.error(`no scm-sim checkout with scripts/exact-eud.ts at ${sim} (set SCM_SIM_DIR)`); process.exit(2); }
 // (The lifted game is 1.16.1, whose string table names only its first 64 KB: a few programs to a map.)
 const batch = Number(flag("batch") ?? 3);
-const eudplib = flag("eudplib") !== undefined;
 const dir = mkdtempSync(join(tmpdir(), "trigscript-random-"));
 const gameFailed: string[] = [];
-let gameLines = 0, eudLines = 0;
+let gameLines = 0;
 
 /**
  * What the lifted game reports of the simulator's lines: it reads the game's ring of thirteen text lines once a frame
@@ -141,29 +139,24 @@ try {
     const r = compileRandom(g);
     if (r.diagnostics.length) { gameFailed.push(`seeds ${group.join(",")}: ${r.diagnostics[0].message}`); continue; }
     const want = throughTheRing(simLines(r, frames).lines);
-    const seen: Partial<Record<"own" | "eudplib", string[]>> = {};
     const src = join(dir, `random-${group[0]}.ts`);
     writeFileSync(src, renderScript(g));
-    for (const way of eudplib ? ["own", "eudplib"] : ["own"]) {
-      const map = join(dir, `random-${group[0]}-${way}.scx`);
-      const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), src, map], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, ...(way === "eudplib" ? { EUDPLIB: "1" } : {}), MAP_NAME: `random ${group[0]}` } });
-      if (b.status !== 0) { gameFailed.push(`seeds ${group.join(",")} (${way} build): ${(b.stdout + b.stderr).split("\n").filter(Boolean).slice(-3).join(" | ")}`); continue; }
-      const got = played(map);
-      if (typeof got === "string") { gameFailed.push(`seeds ${group.join(",")} (${way}): ${got}`); continue; }
-      if (way === "own") gameLines += got.length; else eudLines += got.length;
-      // The game's lines are a part of the simulator's: every one of them among the simulator's lines of its frame, in
-      // the simulator's order (the game's ring loses lines of a crowded frame, `throughTheRing` models most of it but
-      // not the game's own writes to the ring); and the two builds' lines are the same, line for line.
-      const missing = inOrder(want, got);
-      seen[way] = got;
-      if (missing) gameFailed.push(`seeds ${group.join(",")} (${way} in the lifted game, against the simulator): ${missing}`);
-      else console.log(`seeds ${group[0]}–${group.at(-1)} ${way}: ${got.length} lines, every one the simulator's, in its order (${want.length} in the simulator)`);
-      if (way === "eudplib" && seen.own && seen.own.join("\n") !== got.join("\n")) gameFailed.push(`seeds ${group.join(",")}: the own build and eudplib's print differently in the lifted game: ${diff(seen.own, got)}`);
-    }
+    const map = join(dir, `random-${group[0]}.scx`);
+    const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), src, map], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, MAP_NAME: `random ${group[0]}` } });
+    if (b.status !== 0) { gameFailed.push(`seeds ${group.join(",")} (build): ${(b.stdout + b.stderr).split("\n").filter(Boolean).slice(-3).join(" | ")}`); continue; }
+    const got = played(map);
+    if (typeof got === "string") { gameFailed.push(`seeds ${group.join(",")}: ${got}`); continue; }
+    gameLines += got.length;
+    // The game's lines are a part of the simulator's: every one of them among the simulator's lines of its frame, in
+    // the simulator's order (the game's ring loses lines of a crowded frame, `throughTheRing` models most of it but
+    // not the game's own writes to the ring).
+    const missing = inOrder(want, got);
+    if (missing) gameFailed.push(`seeds ${group.join(",")} (in the lifted game, against the simulator): ${missing}`);
+    else console.log(`seeds ${group[0]}–${group.at(-1)}: ${got.length} lines, every one the simulator's, in its order (${want.length} in the simulator)`);
   }
 } finally {
   if (gameFailed.length) console.log(`(the maps are kept in ${dir})`); else rmSync(dir, { recursive: true, force: true });
 }
 for (const f of gameFailed) console.log(f);
-console.log(`in the lifted game: ${gameLines} lines of maps of our own${eudplib ? ` and ${eudLines} of eudplib's` : ""} against the simulator: ${gameFailed.length ? `${gameFailed.length} groups failed` : "all agree"}`);
+console.log(`in the lifted game: ${gameLines} lines of the maps against the simulator: ${gameFailed.length ? `${gameFailed.length} groups failed` : "all agree"}`);
 process.exit(failed.length + gameFailed.length ? 1 : 0);

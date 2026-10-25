@@ -5,9 +5,9 @@
  * through whatever helpers and loops it likes, records one trigger — and `program()`
  * bodies are the structured level: the run records where each body is and the values
  * of its build-time parts (`hoist.ts`), and `structured.ts` turns the body into IR
- * (`ir.ts`). The IR is the output for a program: eudplib builds it into the map when the
- * map is saved (`python/trigscript.py`), so a program needs StarCraft: Remastered and
- * costs the map no triggers, death counters or switches of its own.
+ * (`ir.ts`). The IR is the output for a program: the backend (`backend/`) lays it out into
+ * the map when the map is saved, so a program needs StarCraft: Remastered and costs the
+ * map no triggers, death counters or switches of its own.
  *
  * Strings are not interned here (the compiler runs in a worker, away from the map):
  * text/wav fields hold local ids into `strings`, resolved by the build step. The
@@ -24,14 +24,14 @@ import { isScriptClass, isScriptFunction, scriptArrow, isTopListener, libraryCal
 import { locate, resolveModule, runModules, STDLIB_DIR, type LinkedFile } from "./link";
 import { isMediaFile, mediaValue } from "./media";
 import { STDLIB, stdlibImports, stdlibPath } from "./stdlib";
-import { checkProgram } from "./eud";
+import { checkProgram } from "./check";
 import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
 import { rangeNumbers } from "./ranges";
-import { emitGraphs, type MapPlayers } from "./backend/emit";
+import type { MapPlayers } from "./backend/emit";
 import { emitOwn } from "./backend/own";
 import { markRecursion, settleRecursion } from "./recursion";
-import { inputPlan, inputsOf, numberSyncSlots, type InputPlan } from "./input";
+import { inputPlan, numberSyncSlots, type InputPlan } from "./input";
 import { declarations, programDeclarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
@@ -163,7 +163,7 @@ export interface CompileResult {
   hints: LineHint[];
   /** Every `locations.X` / `switches.X` / … the files mention, whatever else went wrong (a rename is what makes them not type-check). */
   refs: MapReference[];
-  /** The programs as IR (`ir.ts`), one per `program()` in order — what eudplib builds into the map on save. A map with any needs StarCraft: Remastered. */
+  /** The programs as IR (`ir.ts`), one per `program()` in order — what the build lays out into the map on save. A map with any needs StarCraft: Remastered. */
   ir: Program[];
   /** What the programs read of the players — keys, clicks, the mouse, typed lines — and what carrying it takes from the map (`input.ts`); null when they read none. */
   input: InputPlan | null;
@@ -199,10 +199,6 @@ export interface CompileOptions {
   tests?: TestRunOptions;
   /** false: no value ranges (`ranges.ts`) — what a test compares a program with them against. */
   ranges?: boolean;
-  /** false: no loop is lowered by the emitter (`backend/emit.ts`), all by the Python side — what a test or a bench compares against. */
-  emitter?: boolean;
-  /** Told which loops the emitter took and which it left, and why. */
-  emitterReport?: (line: string) => void;
   /**
    * false: the clips the script plays are named, not made — a check as the user types, whose sounds the map does not
    * get (`sound.ts`'s clips work their samples out only when asked). A build's compile leaves it out.
@@ -554,22 +550,13 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const local = checkLocal(emitted.program);
     // Checked as the script wrote it; only then is a function that calls itself taken apart into what a backend can re-enter.
     const recursion = settleRecursion(emitted.program);
-    // The loops the emitter takes, lowered to triggers of its own (the statements kept for the simulator).
-    if (options.emitter !== false) emitGraphs(emitted.program, options.emitterReport);
     for (const d of [...mixes, ...check.errors, ...local.errors, ...recursion]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }
     hints.push(...check.hints);
   }
-  let input: InputPlan | null = null;
-  try {
-    input = inputPlan(ir, names.locations, names.units, [...collector.reserved.values()]);
-  } catch (err) {
-    // No room in the map for what carries input: said where the first input is asked for.
-    const at = inputsOf(ir).at ?? ir[0]?.at;
-    if (at) diagnostics.push({ file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: err instanceof Error ? err.message : String(err), source: "compiler" });
-  }
+  const input: InputPlan | null = inputPlan(ir, names.units);
   // The tests: listed whatever else, run when the caller gave them a world and the script is whole.
   let tests: TestReport | null = null;
   if (!registry.empty) {

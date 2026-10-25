@@ -26,8 +26,8 @@ export interface Weighed {
 }
 
 /**
- * `byOrigin`: each record under the origin the build gave its trigger ("main.tsx:33:3", "fn:f_dwread_epd", "eudplib"), not
- * carried to the line before it: where the time goes, eudplib's own functions included. A line's `file` is then the origin.
+ * `byOrigin`: each record under the origin the build gave its trigger ("main.tsx:33:3", or "" for the build's own), not
+ * carried to the line before it: where the time goes, the build's own triggers included. A line's `file` is then the origin.
  */
 export async function playWeighed(map: string, frames: number, options: { byOrigin?: boolean } = {}): Promise<Weighed> {
   const root = resolve(import.meta.dirname, "..");

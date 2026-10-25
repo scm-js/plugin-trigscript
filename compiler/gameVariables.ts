@@ -125,7 +125,7 @@ export function programVariables(game: VariableReader, map: VariableMap, name: s
     return id ? cString(map.strings + m.getUint32(map.strings + 4 * id, true)) : "";
   };
   const value = (v: GameVariable): unknown => {
-    // (A map of our own keeps the uniqueness byte itself; eudplib's build the word it sits in, the byte above.)
+    // (A map of our own keeps the uniqueness byte itself; a build through eudplib kept the word it sits in, the byte above.)
     if (v.kind === "unit") { const ptr = where(v, v.cells.ptr); const uid = raw(v.cells.uid, v.rowed, v.stride); return ptr ? game.unitAt(ptr, v.epd ? uid << 8 : uid) : null; }
     if (v.kind === "text") return text(v);
     return num(raw(v.cells.value, v.rowed, v.stride), v);
@@ -165,12 +165,12 @@ export function programVariables(game: VariableReader, map: VariableMap, name: s
   return new Proxy({}, { get: (_, key) => (typeof key === "string" ? lookup(key) : undefined), has: (_, key) => typeof key === "string" && lookup(key) !== undefined });
 }
 
-/** Where each trigger the build made sits in eudplib's payload, and the line it came from (the `triggerMap` setting). */
+/** Where each trigger the build made sits in the payload, and the line it came from. */
 export interface TriggerMap {
   /** The payload's length in bytes: it ends where the strings section does. */
   payload: number;
   /**
-   * Offset in the payload, conditions, actions, origin ("line:column", "file:line:column", "fn:<name>", "eudplib") —
+   * Offset in the payload, conditions, actions, origin ("line:column", "file:line:column", or "" for a trigger no statement made) —
    * and, for a trigger of the emitter's that holds several statements' work, each action's origin.
    */
   triggers: [number, number, number, string, string[]?][];

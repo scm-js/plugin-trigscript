@@ -22,7 +22,7 @@ export const OWN = { players: { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] 
 
 export function compileRandom(g: Generated): CompileResult {
   lib ??= defaultLib();
-  return compileScript(ts, { "main.ts": renderScript(g) }, NAMES, { lib, emitter: false, own: OWN });
+  return compileScript(ts, { "main.ts": renderScript(g) }, NAMES, { lib, own: OWN });
 }
 
 export interface Outcome {

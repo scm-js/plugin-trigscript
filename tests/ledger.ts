@@ -87,7 +87,7 @@ export interface Outcome {
 export function outcome(row: Pick<Row, "file" | "source">): Outcome {
   lib ??= defaultLib();
   names ??= defaultScriptNames();
-  const r = compileScript(ts, { [row.file.endsWith(".tsx") ? "main.tsx" : "main.ts"]: row.source }, names, { lib, emitter: false });
+  const r = compileScript(ts, { [row.file.endsWith(".tsx") ? "main.tsx" : "main.ts"]: row.source }, names, { lib });
   if (r.diagnostics.length) {
     const d = r.diagnostics[0];
     return { error: `line ${d.line}: ${d.message}`, takes: false, ir: r.ir };

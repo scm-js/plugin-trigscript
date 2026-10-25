@@ -1,15 +1,14 @@
 /**
- * Every probe and showpiece built our way and played in the lifted game, beside its eudplib build (TrigScript 4, step
- * 16: the gate before the Python goes — the last time the two builds are held against each other). For each script
- * under probes/: the build command its header gives (the base map among its arguments), the own build and the eudplib
- * build, each played with nobody at it for N frames by scm-sim's lifted game (scripts/exact-eud.ts), the lines of text
- * compared frame by frame; a game-*.ts probe runs its tests in the game instead (scripts/test-game.mts). The result
- * is a table, Markdown, for the plan.
+ * Every probe and showpiece built and played in the lifted game (TrigScript 4, step 16's sweep; until step 17 it built
+ * each through eudplib too and held the two builds' lines against each other). For each script under probes/: the
+ * build command its header gives (the base map among its arguments), the build played with nobody at it for N frames
+ * by scm-sim's lifted game (scripts/exact-eud.ts), its lines of text; a game-*.ts probe runs its tests in the game
+ * instead (scripts/test-game.mts). The result is a table, Markdown, for the plan.
  *
- *   npx tsx scripts/gate-sweep.mts [--frames=300] [--only=name,name] [--no-eudplib] [--out=file.md]
+ *   npx tsx scripts/gate-sweep.mts [--frames=300] [--only=name,name] [--out=file.md]
  *
- * Needs a scm-sim checkout beside this repository (or SCM_SIM_DIR) with its lifted game generated, and for the eudplib
- * builds a plugin-eudplib checkout (or EUDPLIB_DIR). A probe whose base map or library is not on disk is said so.
+ * Needs a scm-sim checkout beside this repository (or SCM_SIM_DIR) with its lifted game generated. A probe whose base
+ * map or library is not on disk is said so.
  */
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -21,13 +20,10 @@ const args = process.argv.slice(2);
 const flag = (n: string) => { const f = args.find((a) => a === `--${n}` || a.startsWith(`--${n}=`)); return f === undefined ? undefined : f.includes("=") ? f.slice(f.indexOf("=") + 1) : ""; };
 const frames = Number(flag("frames") ?? 300);
 const only = flag("only")?.split(",").filter(Boolean);
-const withEudplib = flag("no-eudplib") === undefined;
 const sim = resolve(process.env.SCM_SIM_DIR ?? join(root, "..", "scm-sim"));
 if (!existsSync(join(sim, "scripts", "exact-eud.ts"))) { console.error(`no scm-sim checkout with scripts/exact-eud.ts at ${sim} (set SCM_SIM_DIR)`); process.exit(2); }
-const eudplibDir = resolve(process.env.EUDPLIB_DIR ?? join(root, "..", "plugin-eudplib"));
-const haveEudplib = withEudplib && existsSync(join(eudplibDir, "scripts", "build-map.mts"));
 
-interface Row { probe: string; own: string; eudplib: string; lines: string; note: string }
+interface Row { probe: string; own: string; lines: string; note: string }
 const rows: Row[] = [];
 const dir = mkdtempSync(join(tmpdir(), "trigscript-gate-"));
 
@@ -54,26 +50,25 @@ for (const file of probes) {
   if (/^game-/.test(name) || /test-game\.mts probes/.test(head)) {
     const cmd = /npx tsx scripts\/test-game\.mts probes\/\S+( \S+\.scx)?/.exec(head);
     const base = cmd?.[1]?.trim();
-    if (base && !existsSync(join(root, base))) { rows.push({ probe: name, own: "—", eudplib: "—", lines: "—", note: `needs ${base}` }); continue; }
-    if (/debug-game\.mts/.test(head)) { rows.push({ probe: name, own: "—", eudplib: "—", lines: "—", note: "debug-game: run by hand" }); continue; }
+    if (base && !existsSync(join(root, base))) { rows.push({ probe: name, own: "—", lines: "—", note: `needs ${base}` }); continue; }
+    if (/debug-game\.mts/.test(head)) { rows.push({ probe: name, own: "—", lines: "—", note: "debug-game: run by hand" }); continue; }
     const r = spawnSync("npx", ["tsx", join(root, "scripts", "test-game.mts"), join(root, "probes", file), ...(base ? [join(root, base)] : [])], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, SCM_SIM_DIR: sim } });
     const out = r.stdout + r.stderr;
     const game = /in the game[^\n]*?(\d+) of (\d+)|(\d+) of (\d+) in the game/.exec(out);
     const passed = out.match(/(\d+) passed/g)?.join(", ") ?? "";
-    rows.push({ probe: name, own: r.status === 0 ? "ok" : "FAILED", eudplib: "—", lines: game ? `${game[1] ?? game[3]} of ${game[2] ?? game[4]} in the game` : passed || out.split("\n").filter(Boolean).slice(-1)[0]?.slice(0, 80) || "", note: `${((Date.now() - t0) / 1000).toFixed(0)} s` });
+    rows.push({ probe: name, own: r.status === 0 ? "ok" : "FAILED", lines: game ? `${game[1] ?? game[3]} of ${game[2] ?? game[4]} in the game` : passed || out.split("\n").filter(Boolean).slice(-1)[0]?.slice(0, 80) || "", note: `${((Date.now() - t0) / 1000).toFixed(0)} s` });
     console.log(`${name}: ${rows.at(-1)!.own} ${rows.at(-1)!.lines}`);
     continue;
   }
-  // A played probe: build both ways and play both.
+  // A played probe: built and played.
   const cmd = /build-fixture(?:\.mts)? probes\/\S+ \S+(?: (\S+\.scx))?/.exec(head);
   const base = cmd?.[1];
   const needs = /probes\/lib\/[\w-]+\.mts/.exec(head)?.[0];
-  if (base && !existsSync(join(root, base))) { rows.push({ probe: name, own: "—", eudplib: "—", lines: "—", note: `needs ${base}${needs ? ` (${needs})` : ""}` }); console.log(`${name}: needs ${base}`); continue; }
-  // (A header's own environment — EXTRA_PLUGIN=…, a Python plugin of eudplib's for a measurement — is not passed: it is
-  // the eudplib build's alone, and the gate holds the script, not the plugin.)
-  const build = (way: "own" | "eudplib"): { map: string; error?: string } => {
-    const map = join(dir, `${name}-${way}.scx`);
-    const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), join(root, "probes", file), map, ...(base ? [join(root, base)] : [])], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, ...(way === "eudplib" ? { EUDPLIB: "1" } : {}), MAP_NAME: `${name} ${way}` } });
+  if (base && !existsSync(join(root, base))) { rows.push({ probe: name, own: "—", lines: "—", note: `needs ${base}${needs ? ` (${needs})` : ""}` }); console.log(`${name}: needs ${base}`); continue; }
+  // (A header's own environment is not passed: the sweep holds the script as it is.)
+  const build = (): { map: string; error?: string } => {
+    const map = join(dir, `${name}.scx`);
+    const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), join(root, "probes", file), map, ...(base ? [join(root, base)] : [])], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, MAP_NAME: name } });
     if (b.status !== 0) {
       const text = b.stdout + b.stderr;
       const refused = /refus\w+[: ]+(.*)/i.exec(text)?.[1] ?? text.split("\n").filter((l) => /error|Error|refus/i.test(l)).slice(-1)[0] ?? text.split("\n").filter(Boolean).slice(-1)[0];
@@ -81,39 +76,20 @@ for (const file of probes) {
     }
     return { map };
   };
-  const own = build("own");
-  const row: Row = { probe: name, own: own.error ? `REFUSED: ${own.error}` : "built", eudplib: haveEudplib ? "" : "—", lines: "", note: "" };
-  let ownPlay: ReturnType<typeof play> | undefined;
+  const own = build();
+  const row: Row = { probe: name, own: own.error ? `REFUSED: ${own.error}` : "built", lines: "", note: "" };
   if (!own.error) {
-    ownPlay = play(own.map);
-    row.own = ownPlay.error ? `built; ${ownPlay.error}` : `${ownPlay.lines.length} lines${ownPlay.ended && !/frame limit/.test(ownPlay.ended) ? `; ${ownPlay.ended}` : ""}`;
-  }
-  if (haveEudplib) {
-    const e = build("eudplib");
-    if (e.error) row.eudplib = `build failed: ${e.error}`;
-    else {
-      const p = play(e.map);
-      row.eudplib = p.error ? `built; ${p.error}` : `${p.lines.length} lines${p.ended && !/frame limit/.test(p.ended) ? `; ${p.ended}` : ""}`;
-      if (ownPlay && !ownPlay.error && !p.error) {
-        const same = ownPlay.lines.join("\n") === p.lines.join("\n");
-        const prefix = (a: string[], b: string[]) => a.length < b.length && a.every((l, k) => l === b[k]);
-        if (same) row.lines = "the same";
-        else if (prefix(p.lines, ownPlay.lines)) row.lines = `the same as far as eudplib's go (${ownPlay.lines.length - p.lines.length} more of ours in the frames)`;
-        else if (prefix(ownPlay.lines, p.lines)) row.lines = `the same as far as ours go (${p.lines.length - ownPlay.lines.length} more of eudplib's in the frames)`;
-        else {
-          const i = ownPlay.lines.findIndex((l, k) => l !== p.lines[k]);
-          row.lines = `differ at ${i}: own ${JSON.stringify(ownPlay.lines[i] ?? "")} / eudplib ${JSON.stringify(p.lines[i] ?? "")}`.slice(0, 160);
-        }
-      }
-    }
+    const p = play(own.map);
+    row.own = p.error ? `built; ${p.error}` : `${p.lines.length} lines${p.ended && !/frame limit/.test(p.ended) ? `; ${p.ended}` : ""}`;
+    row.lines = p.lines.slice(0, 3).map((l) => JSON.stringify(l)).join(" ");
   }
   row.note = `${((Date.now() - t0) / 1000).toFixed(0)} s`;
   rows.push(row);
-  console.log(`${name}: own ${row.own} | eudplib ${row.eudplib} | ${row.lines}`);
+  console.log(`${name}: ${row.own} | ${row.lines}`);
 }
 rmSync(dir, { recursive: true, force: true });
 
-const table = ["| Probe | Own build, played | eudplib build, played | Lines | Note |", "| --- | --- | --- | --- | --- |", ...rows.map((r) => `| ${r.probe} | ${r.own} | ${r.eudplib} | ${r.lines} | ${r.note} |`)].join("\n");
+const table = ["| Probe | Built, played | First lines | Note |", "| --- | --- | --- | --- |", ...rows.map((r) => `| ${r.probe} | ${r.own} | ${r.lines} | ${r.note} |`)].join("\n");
 const out = flag("out");
 if (out) writeFileSync(out, table + "\n");
 console.log("\n" + table);

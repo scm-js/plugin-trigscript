@@ -5,11 +5,11 @@
  *
  *   npx tsx scripts/bench-lowering.mts [--frames=N] [--save]
  *
- * Built as a build is (the emitter on; EMITTER=0 for the Python side's lowering alone): a trigger of the emitter's that
+ * Built as a build is: a trigger of the emitter's that
  * holds several lines' work says each action's line, so a line's number is its own.
  *
- * --save writes this run's numbers as the new baseline. Needs a plugin-eudplib checkout and a scm-sim checkout beside
- * this repository (or EUDPLIB_DIR / SCM_SIM_DIR), as build-fixture and the lifted game do.
+ * --save writes this run's numbers as the new baseline. Needs a scm-sim checkout beside this repository (or
+ * SCM_SIM_DIR), as the lifted game does.
  */
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

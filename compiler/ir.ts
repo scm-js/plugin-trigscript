@@ -2,13 +2,12 @@
  * The intermediate representation: what a `program(() => { … })` body means, with
  * everything TypeScript-specific already settled — build-time values evaluated, records
  * split into their fields, functions inlined at their calls, `for…of` unrolled — and
- * nothing about eudplib decided yet. `structured.ts` emits it from the TS AST,
- * `python/trigscript.py` lowers it to eudplib, `simulateIr.ts` interprets it.
- * Plain data, JSON-serialisable (`eud.ts#serializeIr`); `docs/ir.md` is the reference.
+ * nothing about triggers decided yet. `structured.ts` emits it from the TS AST, the
+ * backend (`backend/emit.ts`) lowers it to triggers, `simulateIr.ts` interprets it.
+ * Plain data, JSON-serialisable; `docs/ir.md` is the reference.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
-import type { Graph } from "./backend/graph";
 
 /**
  * 26: a `graph` statement — a loop the emitter (`backend/emit.ts`) lowered to triggers of its own, which a backend makes as they are; `original` is the loop, for what does not lower (the simulator).
@@ -36,9 +35,7 @@ import type { Graph } from "./backend/graph";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 26;
-
-/** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
+/** The most a buffer of `buildText` holds, in bytes. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
 
 /** Where a node came from; `column` is 1-based like `line`. */
@@ -158,8 +155,8 @@ export const HEAP_CELLS_MIN = 1024;
 export const HEAP_CELLS_MAX = 1 << 20;
 /**
  * Up to this many heap cells, growing arrays keep cells of their own beside the heap's (72 bytes each while the map is
- * played, read and written in a few triggers: `python/trigscript.py#list_heap`); past it they share the heap's four-byte
- * cells, as in 3.x, and a read takes about three times as long. The lowering has the same number.
+ * played, read and written in a few triggers); past it they share the heap's four-byte cells, as in 3.x, and a read
+ * takes about three times as long.
  */
 export const CELL_HEAP_MOST = 1 << 16;
 /** A heap size as the build takes it: whole, within the limits; the default for anything that is not a number. */
@@ -702,12 +699,9 @@ export type Stmt =
    * trigger saw there last, its own numbers. A place as it was goes on to the next; one that changed runs `handler`,
    * with `@ev.e` the record's EPD and the current player at the trigger's first condition's number (`emit.ts`).
    */
-  | { kind: "watch"; fields: { dword: number; mask?: number; compare: "atLeast" | "exactly" }[]; handler: Stmt[]; gate?: boolean; at: At; label: string }
-  /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */
-  | { kind: "graph"; graph: Graph; original: Stmt[]; at: At; label: string };
+  | { kind: "watch"; fields: { dword: number; mask?: number; compare: "atLeast" | "exactly" }[]; handler: Stmt[]; gate?: boolean; at: At; label: string };
 
 export interface Program {
-  version: number;
   name?: string;
   owner: number;
   owners: number[];
@@ -838,7 +832,6 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
-      case "graph": s.original.forEach(stmt); break;
       default: break;
     }
   };

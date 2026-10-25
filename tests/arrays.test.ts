@@ -10,7 +10,6 @@ import { describe, expect, it } from "vitest";
 import { compileScript, type CompileResult } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { simulatePrograms } from "../compiler/simulateIr";
-import { serializeIr } from "../compiler/eud";
 import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_DEPTH } from "../compiler/ir";
 import { DEFAULT_SETTINGS, SETTINGS_MEMBER, readSettings, withSettings } from "../script";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -188,13 +187,6 @@ describe("the heap's size is a setting of the map's script", () => {
     expect(readSettings(withSettings(none, { heapCells: 1e12 })).heapCells).toBe(HEAP_CELLS_MAX);
     expect(withSettings(set, { heapCells: HEAP_CELLS }).size).toBe(0);
     expect(readSettings(new Map([[SETTINGS_MEMBER, new TextEncoder().encode("not json")]]))).toEqual(DEFAULT_SETTINGS);
-  });
-  it("goes to the lowering with the IR when an array grows and it is not the default", () => {
-    const grows = compile("const xs: number[] = []; xs.push(1);");
-    expect(JSON.parse(serializeIr(grows.ir, grows.strings, null, { heapCells: 65536 })).heap).toBe(65536);
-    expect(JSON.parse(serializeIr(grows.ir, grows.strings, null, { heapCells: HEAP_CELLS })).heap).toBeUndefined();
-    const fixed = compile("let xs = [1, 2]; xs[0] = 3;");
-    expect(JSON.parse(serializeIr(fixed.ir, fixed.strings, null, { heapCells: 65536 })).heap).toBeUndefined();
   });
   it("and the interpreter runs out where the game will", () => {
     const r = compile("const xs: number[] = []; let i = 0; while (i < 70000) { xs.push(i); i++; } let n = 0; n = xs.length;");

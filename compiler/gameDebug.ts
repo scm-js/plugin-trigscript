@@ -7,8 +7,8 @@
  * - **Steps.** The game runs a frame's triggers one record after another; the host's cost tap says each record, in
  *   order, under the line the build's map of triggers puts it (A1, A4). Records of one line in a row are one step:
  *   "line 12 ran 9 conditions and actions". A loop's turns come out as the lines of its body, again and again.
- * - **Writes.** Every dword of the script's memory a step changed (eudplib's variables and arrays, the heap, the made
- *   texts: everything between the start of `STRx` and the end of the payload), with what it held before and after.
+ * - **Writes.** Every dword of the script's memory a step changed (the variables' cells and the arrays, the heap, the
+ *   made texts: everything between the start of `STRx` and the end of the payload), with what it held before and after.
  *   With both, a step back is the writes put back in reverse, and the variables at any step are read the way
  *   `sim.program()` reads them (`gameVariables.ts`), over a copy of that memory the debugger keeps. What the game wrote
  *   there without a record (a routine of its own) is found at the frame's end, compared, and written down as the
@@ -27,11 +27,11 @@
 import type { GameHandle } from "./gameSim";
 import type { TestResult } from "./testing";
 
-/** Where the script's memory starts: Remastered's strings, where eudplib puts `STRx` and its payload after it. */
+/** Where the script's memory starts: Remastered's strings (`STRx`), the build's payload after them. */
 export const SCRIPT_MEMORY = 0x191943c8;
 
-/** A step's line when it is not a line of the script. */
-export const STEP_EUDPLIB = -1;
+/** A step's line when it is not a line of the script: the build's own triggers (a run's wake, the gates, the routes into a variable's places). */
+export const STEP_BUILD = -1;
 /** What the test did between frames (its own actions), recorded as the step before the frame's first. */
 export const STEP_TEST = -3;
 /** What the game changed in the script's memory with no record to say so, found at the frame's end. */
@@ -228,7 +228,7 @@ export class RecordingHandle<K, P> implements GameHandle {
   /** A record ran under `group`. */
   private ran(group: number) {
     if (!this.recording || !this.stepping || this.full()) return;
-    const line = group < 0 ? STEP_EUDPLIB : group;
+    const line = group < 0 ? STEP_BUILD : group;
     if (line !== this.group) { this.newStep(line); this.group = line; }
     this.stepRecords.a[this.stepRecords.n - 1]++;
   }
@@ -240,9 +240,9 @@ export class RecordingHandle<K, P> implements GameHandle {
     const k = (address - this.lo) >>> 2;
     if (now === this.mirror[k]) return;
     // Between frames (the test's own action did it): the frame-to-be's first step is the test's. In a frame with no
-    // record said yet (a host that does not trace), eudplib's.
+    // record said yet (a host that does not trace), the build's own.
     if (!this.stepping && this.group !== STEP_TEST) { this.newStep(STEP_TEST); this.group = STEP_TEST; }
-    else if (this.stepping && Number.isNaN(this.group)) { this.newStep(STEP_EUDPLIB); this.group = STEP_EUDPLIB; }
+    else if (this.stepping && Number.isNaN(this.group)) { this.newStep(STEP_BUILD); this.group = STEP_BUILD; }
     void was;
     this.writes.push3(address, this.mirror[k], now);
     this.mirror[k] = now;

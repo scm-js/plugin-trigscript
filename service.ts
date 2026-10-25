@@ -9,11 +9,10 @@
  * A script has two outputs. Its `trigger()` calls are ordinary triggers: applying writes
  * them into the map's trigger list as the script's block. Its `program()`s are IR, built
  * into the *saved file* — never into the map the user edits — by TrigScript's own build
- * step (`buildOwn`, `compiler/backend/build.ts`), or, where that does not take the script
- * yet or Magenta's triggers share the map, by the eudplib plugin's build, which the service
- * contributes them to (`collect`). Both happen by themselves whenever the map is saved,
- * tested or exported: the editor runs `bringUpToDate` first (`buildSteps.before`), then
- * the step that applies (`attach`).
+ * step (`buildOwn`, `compiler/backend/build.ts`). That happens by itself whenever the map
+ * is saved, tested or exported: the editor runs `bringUpToDate` first (`buildSteps.before`),
+ * then the build step (`attach`). (Until TrigScript 4's step 17 a program the build did not
+ * take went through the eudplib plugin instead; now it is a failure the notice says.)
  */
 import type { PluginApi, TriggerClaimHandle } from "@scm-js/plugin-api";
 import type { TriggerRecord } from "./vendor/triggers";
@@ -21,9 +20,6 @@ import { buildInBackground, compileInBackground, type CompileInput } from "./com
 import { isRefused, type OwnBuildInput, type OwnBuildOutcome } from "./compiler/backend/build";
 import { ENTRY_FILE, type CompileResult, type OwnCheck, type ScriptDiagnostic, type ScriptFiles } from "./compiler/compiler";
 import { generateDeclarations } from "./compiler/declarations";
-import { serializeIr } from "./compiler/eud";
-import { buildPlugins } from "./compiler/input";
-import { TRIGSCRIPT_PY } from "./compiler/generated/trigscriptPy";
 import { scriptNames, type ScriptNames } from "./compiler/names";
 import { printScript, type PrintOptions } from "./compiler/print";
 import { simulate, type SimulationEvent } from "./compiler/simulate";
@@ -34,7 +30,6 @@ import {
   type BuildOptions, type Extras, type ScriptBlock, type ScriptState,
 } from "./script";
 import { english, msg, type Translate } from "./i18n";
-import { EUDPLIB_SERVICE, type EudplibBuildEvent, type EudplibInput, type EudplibService } from "./vendor/eudplib";
 import { SCM_SIM_SERVICE, type ScmSimEngine } from "./vendor/scmSim";
 
 /**
@@ -96,7 +91,7 @@ export function firstFault(diagnostics: readonly ScriptDiagnostic[]): string {
   return `${d.file}:${d.line} — ${d.message.split("\n")[0]}${diagnostics.length > 1 ? ` (and ${diagnostics.length - 1} more)` : ""}`;
 }
 
-/** The label the editor's notices and the library's install question name the plugin by. */
+/** The label the editor's notices name the plugin by. */
 export const LABEL = "TrigScript";
 
 export interface ScriptSimulation {
@@ -119,14 +114,24 @@ export type Compiler = (input: CompileInput, dist: string) => Promise<CompileRes
 /** What builds a map of our own: `buildInBackground`, or `buildOwnMap` itself in a test. */
 export type OwnBuilder = (input: OwnBuildInput, dist: string) => Promise<OwnBuildOutcome>;
 
-/** The member the Magenta plugin keeps its triggers in: a map with it is built through eudplib, with Magenta's, until Magenta builds on the own layout too. */
+/**
+ * The member the Magenta plugin keeps its triggers in. Magenta builds through the eudplib plugin, whose build rewrites
+ * the strings section TrigScript's payload sits behind, so the two cannot share a map until Magenta builds on
+ * TrigScript's layout: a map with this member in it is not built (`buildOwn` says so), and Magenta's build runs alone.
+ */
 export const MAGENTA_MEMBER = "magenta\\magenta.json";
 
 /**
- * A build of the programs by TrigScript itself, said the way the library says its own (`EudplibBuildEvent`), so the
- * editor hears both alike — and a warning of its own: a trigger of the map's own left out or never run (`OwnBuild.warnings`).
+ * What a build of the programs says as it goes (`onBuild`): its start, each line of its log, its end or its failure —
+ * and a warning: a trigger of the map's own left out or never run (`OwnBuild.warnings`). (The shape is the eudplib
+ * library's build events, which the editor heard beside these until step 17.)
  */
-export type OwnBuildEvent = EudplibBuildEvent | { kind: "warning"; message: string };
+export type OwnBuildEvent =
+  | { kind: "start"; purpose: "save" | "test" | "export"; contributors: string[] }
+  | { kind: "log"; line: string }
+  | { kind: "done"; purpose: "save" | "test" | "export"; contributors: string[]; log: string; chkBytes: number; ms: number }
+  | { kind: "failed"; purpose: "save" | "test" | "export"; contributors: string[]; from: string | null; message: string; log: string }
+  | { kind: "warning"; message: string };
 
 /** The script's members as the map holds them, by their stored names, and the WAVs its last build wrote for its clips. */
 export function snapshotExtras(api: PluginApi): Map<string, Uint8Array> {
@@ -204,11 +209,6 @@ export class ScriptService {
     return scriptState(this.api.triggers.list(), snapshotExtras(this.api));
   }
 
-  /** The eudplib plugin's service, or null when it is not installed or is off. */
-  library(): EudplibService | null {
-    return this.api.services.get<EudplibService>(EUDPLIB_SERVICE);
-  }
-
   /** The scm-sim plugin's engine, or null when it is not installed or is off: where a script's tests run in the game. */
   engine(): ScmSimEngine | null {
     return this.api.services.get<ScmSimEngine>(SCM_SIM_SERVICE);
@@ -219,15 +219,9 @@ export class ScriptService {
     return this.api.services.watch<ScmSimEngine>(SCM_SIM_SERVICE, (s) => listener(s));
   }
 
-  /** Called at once and whenever the eudplib plugin arrives or goes. */
-  watchLibrary(listener: (service: EudplibService | null) => void): { dispose(): void } {
-    return this.api.services.watch<EudplibService>(EUDPLIB_SERVICE, (s) => listener(s));
-  }
-
   /**
    * Take part in saving: bring the map's block up to date before its bytes are produced, then build the programs
-   * into the map — TrigScript's own build step wherever it takes the script (TrigScript 4, step 14), and the eudplib
-   * plugin's build where it does not, or where Magenta's triggers share the map. Dispose when the plugin goes.
+   * into the map (TrigScript 4, step 14). Dispose when the plugin goes.
    */
   attach(): { dispose(): void } {
     const before = this.api.document.buildSteps?.before({
@@ -237,15 +231,10 @@ export class ScriptService {
     });
     const step = this.api.document.buildSteps?.add({
       id: "build", label: LABEL,
-      applies: () => this.buildsOwn(),
+      applies: () => this.hasPrograms(),
       run: (input) => this.buildOwn(input),
     });
-    let mine: { dispose(): void } | null = null;
-    const watch = this.watchLibrary((library) => {
-      mine?.dispose();
-      mine = library?.contribute?.({ id: "trigscript", label: LABEL, applies: () => this.hasPrograms() && !this.buildsOwn(), collect: () => this.collect() }) ?? null;
-    });
-    return { dispose: () => { before?.dispose(); step?.dispose(); mine?.dispose(); watch.dispose(); } };
+    return { dispose: () => { before?.dispose(); step?.dispose(); } };
   }
 
   /** Whether the map's script, as last applied, has programs — read off the manifest, so it costs a save nothing. */
@@ -254,20 +243,11 @@ export class ScriptService {
     return (readManifest(snapshotExtras(this.api))?.programs ?? 0) > 0;
   }
 
-  /**
-   * Whether TrigScript builds the programs itself: the script has programs, its last apply found nothing a map of our
-   * own refuses, and Magenta has no triggers in the map. Read off the manifest and the members, so a save asks for free.
-   */
-  buildsOwn(): boolean {
-    return this.hasPrograms() && this.whyNotOwn() === null;
-  }
-
-  /** Why the programs go through the eudplib plugin instead of TrigScript's own build, in the user's words; null when they do not. */
-  whyNotOwn(): string | null {
+  /** Why the programs cannot be built into this map, in the user's words — Magenta's triggers are in it — or null. */
+  whyNotBuilt(): string | null {
     if (!this.api.document.isOpen()) return null;
-    if (this.api.document.extras.get(MAGENTA_MEMBER) !== null) return this.t("Magenta's triggers are in this map: the programs are built through eudplib, together with them");
-    const refusal = readManifest(snapshotExtras(this.api))?.ownRefusal;
-    return refusal ? this.t("TrigScript's own build does not take the script yet: {reason}", { reason: refusal }) : null;
+    if (this.api.document.extras.get(MAGENTA_MEMBER) !== null) return this.t("Magenta's triggers are in this map: TrigScript's programs are not built beside them yet. Magenta builds through eudplib, which rewrites the part of the map the programs go into.");
+    return null;
   }
 
   /** The open map as a map of our own is checked against while the script is typed: who plays, and its size in pixels. */
@@ -287,7 +267,8 @@ export class ScriptService {
    * The build step: the scenario out of the map Save made (the script applied), the programs laid out into it by
    * TrigScript itself (`compiler/backend/build.ts`, in the compile worker), the scenario back — the editor lays the
    * file out with the user's save options and the map's members as they are. Throws, worded for the editor's notice,
-   * when the script does not compile or a map of our own refuses it; the map is then saved without its programs.
+   * when the script does not compile, the build does not take it, or Magenta's triggers are in the map; the map is
+   * then saved without its programs.
    */
   async buildOwn(input: { map: Uint8Array; purpose: "save" | "test" | "export"; signal: AbortSignal }): Promise<Uint8Array> {
     const started = Date.now();
@@ -299,6 +280,8 @@ export class ScriptService {
     try {
       const state = this.state();
       if (!state?.files) throw new Error(this.t("The map has no script."));
+      const why = this.whyNotBuilt();
+      if (why) throw new Error(why);
       const map = this.names();
       const cached = this.lastArtifact;
       const guard = this.settings().testsGuardBuild;
@@ -308,10 +291,10 @@ export class ScriptService {
       if (guard) this.guardTests(artifact.compiled);
       const chk = await this.api.document.sections.chkOf(input.map);
       const { heapCells, stackDepth } = this.settings();
-      log(this.t("Built by TrigScript itself: {n, plural, one {# program} other {# programs}} laid out into the map, no eudplib", { n: artifact.compiled.ir.length }));
+      log(this.t("Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map", { n: artifact.compiled.ir.length }));
       // (With the maps of where the triggers and the variables are, for a test run in the lifted game: `withVariableMap`.)
       const out = await this.builder({ chk, compiled: { ir: artifact.compiled.ir, strings: artifact.compiled.strings, input: artifact.compiled.input, triggers: [] }, settings: { heapCells, stackDepth }, ...(this.variableMaps ? { maps: true } : {}) }, this.dist());
-      if (isRefused(out)) throw new Error(this.t("TrigScript's own build does not take the script: {reason}. Apply the script again to build it through eudplib.", { reason: out.refused }));
+      if (isRefused(out)) throw new Error(this.t("The programs were not built: TrigScript does not take this yet ({reason}).", { reason: out.refused }));
       for (const line of out.lines) log(line);
       for (const line of out.maps?.lines ?? []) log(line);
       for (const message of out.warnings) say({ kind: "warning", message });
@@ -389,28 +372,6 @@ export class ScriptService {
     throw new Error(`Not built: ${failed.length === 1 ? "a test fails" : `${failed.length} tests fail`} — ${testName(first)}: ${first.message ?? "failed"}. (The script's settings make a failing test refuse the build.)`);
   }
 
-  /** The programs for the library's build: the IR as a data file, the lowering as a source, eudTurbo so the game runs them every frame. */
-  async collect(): Promise<EudplibInput> {
-    const state = this.state();
-    if (!state?.files) throw new Error("The map has no script.");
-    const map = this.names();
-    const cached = this.lastArtifact;
-    const guard = this.settings().testsGuardBuild;
-    const fresh = cached && map && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
-    const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : undefined);
-    if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
-    if (guard) this.guardTests(artifact.compiled);
-    const plugins = buildPlugins(artifact.compiled.input, "/work/files/trigscript.json");
-    // (And where each trigger is, for the lines of a desync between copies of the game, TrigScript 4's A3.)
-    if (this.variableMaps) Object.assign(plugins.trigscript as Record<string, string>, { variableMap: "1", triggerMap: "1" });
-    return {
-      // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
-      plugins,
-      sources: { trigscript: TRIGSCRIPT_PY },
-      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings, artifact.compiled.input, this.settings()) },
-    };
-  }
-
   /**
    * `run` with every build it starts asked to say where the programs' variables and its triggers are — lines of the
    * build's log (`compiler/gameVariables.ts`) — for tests in the lifted game to read them and name lines.
@@ -420,12 +381,10 @@ export class ScriptService {
     try { return await run(); } finally { this.variableMaps--; }
   }
 
-  /** Hear about the builds of the programs — TrigScript's own, and the library's (both run on Save, Test Map and export): the log, and where a failure points. */
+  /** Hear about the builds of the programs (on Save, Test Map and export): the log, and where a failure points. */
   onBuild(listener: (event: OwnBuildEvent) => void): { dispose(): void } {
     this.ownListeners.add(listener);
-    let mine: { dispose(): void } | null = null;
-    const watch = this.watchLibrary((library) => { mine?.dispose(); mine = library?.onBuild?.(listener) ?? null; });
-    return { dispose: () => { this.ownListeners.delete(listener); mine?.dispose(); watch.dispose(); } };
+    return { dispose: () => { this.ownListeners.delete(listener); } };
   }
 
   /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names, custom unit names and sounds. Null with no map. */

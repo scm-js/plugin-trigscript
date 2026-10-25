@@ -5,11 +5,11 @@
  * says what count Remastered feels.
  *
  * A record is put down to a line by the trigger it is in: the build's map says which statement made each trigger.
- * eudplib's variables, its functions and the triggers no statement made are counted under the line that ran just
- * before them in the frame, since a line's work is its own triggers and the variables they go through (measured on a
- * loop: `x += 1` is 7 actions of its own and 2 more in eudplib's variables). What eudplib runs before any line in a
- * frame (its start, once, and its work at the top of every frame) and the map's triggers outside the payload are
- * counted under no line: `TestCost.other`.
+ * The build's own triggers — a variable's cell, the routes into its places, a run's wake, the gates — and the triggers
+ * no statement made are counted under the line that ran just before them in the frame, since a line's work is its own
+ * triggers and the variables they go through. What runs before any line in a frame (the start-up, once, and the
+ * build's work at the top of every frame) and the map's triggers outside the payload are counted under no line:
+ * `TestCost.other`.
  *
  * Where the host's tap can weigh (scm-sim's frame-weights change: it counts triggers too and asks a weigher what each
  * costs), every count also comes as time: `RemasteredWeigh` says what Remastered spends on each trigger and record
@@ -58,7 +58,7 @@ export interface LineCost {
 
 /** A test's frames as time in Remastered (milliseconds), beside the counts, when the host weighs. */
 export interface TestCostMs {
-  /** The script's build, a frame: its lines and eudplib's variables and functions, as `perFrame` counts them. */
+  /** The script's build, a frame: its lines and the build's own triggers, as `perFrame` counts them. */
   perFrame: number[];
   /** The map's other triggers a frame, as `other`. */
   other: number[];
@@ -70,11 +70,11 @@ export interface TestCostMs {
 export interface TestCost {
   /** The frame `perFrame` starts at. */
   from: number;
-  /** Conditions and actions a frame that the script's build ran: its lines, eudplib's variables and functions. */
+  /** Conditions and actions a frame that the script's build ran: its lines and the build's own triggers. */
   perFrame: number[];
   /**
-   * What the map's other triggers ran a frame: eudplib's start (once, by frame 2: tens of thousands on any map) and
-   * any trigger the map has besides the build's. Kept apart so that the script's own peak is not that start.
+   * What the map's other triggers ran a frame: the start-up (once, by frame 2) and any trigger the map has besides the
+   * build's. Kept apart so that the script's own peak is not that start.
    */
   other: number[];
   /** The most of `perFrame`, and the first frame it was that many. */
@@ -99,7 +99,7 @@ export class CostLines {
   private readonly payloadStart: number;
   private readonly payloadEnd: number;
 
-  /** `payloadEnd`: where eudplib's payload ends in the game's memory (the host says; the end of `STRx`). */
+  /** `payloadEnd`: where the build's payload ends in the game's memory (the host says; the end of `STRx`). */
   constructor(map: TriggerMap, payloadEnd: number) {
     this.payloadEnd = payloadEnd;
     this.payloadStart = payloadEnd - map.payload;
@@ -159,7 +159,7 @@ export class CostLines {
   }
 }
 
-/** "main.ts:12:5" or "12:5" → the file and line; null for eudplib's ("fn:…", "eudplib", ""). */
+/** "main.ts:12:5" or "12:5" → the file and line; null for a trigger no line made ("" — or, from a build before step 17, "fn:…" and "eudplib"). */
 function lineOf(origin: string): { file: string; line: number } | null {
   const m = /^(?:(.*):)?(\d+):\d+$/.exec(origin);
   return m ? { file: m[1] || ENTRY_FILE, line: Number(m[2]) } : null;

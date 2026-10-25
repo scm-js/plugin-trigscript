@@ -48,7 +48,7 @@ export type TraceRow = [string, number, number, number, number];
 export interface Trace {
   map?: string;
   frames: number;
-  /** The map's own strings and eudplib's payload behind them, where Remastered keeps them: the map's own memory. */
+  /** The map's own strings and the build's payload behind them, where Remastered keeps them: the map's own memory. */
   strings: { from: number; to: number };
   /** The lifted game's heap (what the game allocated: its trigger lists among it); absent in older traces. */
   heap?: { from: number; to: number };
@@ -56,7 +56,7 @@ export interface Trace {
 }
 
 export interface Finding {
-  /** "12:5" or "file.ts:12:5"; "fn:<name>" for eudplib's own functions, "" for a program's frame, "eudplib", or "?". */
+  /** "12:5" or "file.ts:12:5"; "" for a trigger no line made (a program's frame, the build's own); from a build before step 17, "fn:<name>", "eudplib" or "?". */
   origin: string;
   line: number | null;
   write: boolean;
@@ -89,7 +89,7 @@ function placeOf(address: number): string {
   return "";
 }
 
-/** Whether a line of the script made the access (and not eudplib's own code, or a program's frame). */
+/** Whether a line of the script made the access (and not the build's own triggers, or a program's frame). */
 export function isScriptOrigin(origin: string): boolean {
   return /^(.+:)?\d+:\d+$/.test(origin);
 }
@@ -158,7 +158,7 @@ export function verdictOf(list: Allowlist, byte: number, write: boolean): { verd
 
 /**
  * Holds every row of a trace against the allowlist. The map's own memory is always allowed; the game's heap is
- * allowed to eudplib's own code (its trigger lists live there, reached through the game's pointers) and unknown to
+ * allowed to the build's own triggers (the trigger lists live there, reached through the game's pointers) and unknown to
  * a line of the script. Findings are grouped by origin, direction, verdict and the entry that decided them.
  */
 export function checkTrace(trace: Trace, list: Allowlist): TraceCheck {
@@ -195,7 +195,7 @@ export function checkTrace(trace: Trace, list: Allowlist): TraceCheck {
 
 /** A finding as one line for a person: where, what, and what it rests on. */
 export function describeFinding(f: Finding): string {
-  const where = f.line !== null ? `line ${f.line}` : f.origin === "" ? "a program's frame" : f.origin.startsWith("fn:") ? `eudplib's ${f.origin.slice(3)}` : f.origin === "?" ? "eudplib's start" : f.origin;
+  const where = f.line !== null ? `line ${f.line}` : f.origin === "" ? "a trigger of the build's own" : f.origin.startsWith("fn:") ? `the build's ${f.origin.slice(3)}` : f.origin === "?" ? "the build's start" : f.origin;
   const what = `${f.write ? "writes" : "reads"} ${f.entry ?? "0x" + f.address.toString(16)}${f.addresses > 1 ? ` (${f.addresses} dwords from 0x${f.address.toString(16)})` : f.entry ? ` at 0x${f.address.toString(16)}` : ""}`;
   const verdict = f.verdict === "ends" ? "Remastered ends the game on this" : f.verdict === "ignored" ? "Remastered does nothing with this" : "not seen in Remastered: needs a probe";
   return `${where}: ${what} — ${verdict}${f.evidence.length ? ` (${f.evidence.join("; ")})` : ""}`;
