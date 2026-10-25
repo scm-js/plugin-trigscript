@@ -1,9 +1,11 @@
 # The TrigScript IR
 
 What a `program(() => { … })` body means, written down as data. The compiler's front end
-(`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
-it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 24** (23 had no `held` on a variable, and no function kept as a value used a variable of the block it was written in; 22 had nothing only one computer knows: no `syncSend`, no `select`, no `selected` unit and no `sync` input; 21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+(`compiler/structured.ts`) turns the TypeScript into this, the backend (`compiler/backend/`,
+the map of our own) lays it out into the map when it is saved, and `compiler/simulateIr.ts`
+interprets it for Simulate and the tests. (Until TrigScript 4's step 17, `python/trigscript.py`
+lowered it to eudplib instead; what it decided is the backend's now, and the gate before it —
+step 16, random whole programs run every way — holds the two to the same lines.) **Version 24** (23 had no `held` on a variable, and no function kept as a value used a variable of the block it was written in; 22 had nothing only one computer knows: no `syncSend`, no `select`, no `selected` unit and no `sync` input; 21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -113,8 +115,8 @@ size class — a cell each, or a row of twelve each in a per-player program.
   a block given back waits in its size's list for whoever wants that size next (its first cell links the
   next), and new ground is taken from the bottom of the heap up. Nothing splits or joins blocks. When
   there is no block to take, nothing is pushed and the game says so once, in red; the interpreter
-  records a fault. `compiler/simulateIr.ts` counts blocks exactly as `python/trigscript.py` hands them
-  out, so both run out at the same push — a probe expects the same number from each.
+  records a fault. `compiler/simulateIr.ts` counts blocks exactly as the backend (`compiler/backend/heap.ts`)
+  hands them out, so both run out at the same push — a probe expects the same number from each.
 - `declareArray` of a growing array first gives back the block the handle holds. So an array declared in
   a loop, or in a function called again, holds one block at a time, and what the heap can lose is bounded
   by the number of declarations; there is no other freeing and no collector.
@@ -805,7 +807,7 @@ interpreter agree on every case:
 - A `switch` compares bits: a case of −1 is 0xFFFFFFFF.
 - **Ranges** (version 25). Any number may carry `range: [lo, hi]`: `compiler/ranges.ts` found its
   signed reading never below `lo` nor above `hi`. A backend may use it to take only the bits a
-  value can have — the Python lowering does for a product by a constant, a quotient and a
+  value can have — the backend does for a product by a constant, a quotient and a
   remainder by a constant or by a variable, a shift, and a `min` / `max` / `abs` one side of
   which always wins — and may ignore it. The same pass reads a comparison whose sides are
   never below zero as `unsigned`, and turns one whose ranges settle it (wherever it is met,

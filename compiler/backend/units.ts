@@ -287,6 +287,14 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
       cmp("==", bits(u.e, UID), ranged(bin("*", u.k, k(256)), 0, 0xff00)),
     ]);
   };
+  /** The unit's place holds its record still, dying or not: what a read of its fields asks. A unit handed to a died
+   * handler is on its way out — its order Die, its sprite still there — and its type and place are read as they are,
+   * as the simulator reads them (the first play of the events probe found "died 0 at 0, 0" for every unit, 2026-10-24). */
+  const present = (u: Unit): BoolExpr => {
+    if (isNone(u)) return { kind: "const", value: false };
+    if (u.k === null) return u.none ? cmp(">=", u.e, k(1)) : { kind: "const", value: true };
+    return all([cmp(">=", u.e, k(1)), cmp(">=", peek(of(u.e, SPRITE)), k(1)), cmp("==", bits(u.e, UID), ranged(bin("*", u.k, k(256)), 0, 0xff00))]);
+  };
   /** The unit's uniqueness byte as it is now, for keeping (0 for none). */
   const uidOf = (u: Unit, pre: Stmt[]): NumExpr => {
     if (u.k) return u.k;
@@ -672,7 +680,7 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
         body.push(...readInto(t, e, b));
       }
     }
-    pre.push(dec(t, k(0)), ...when(alive(u), body));
+    pre.push(dec(t, k(0)), ...when(present(u), body));
     return V(t);
   };
 

@@ -64,6 +64,7 @@ import { clockCall, declarationOf, isOnCall, isScriptClass, isScriptFunction, ke
 import { ORDER_NAMES } from "./orders";
 import { DEAF_KEYS, KEY_NAMES, keyName, parseChatPattern, type ChatPattern, type InputSource } from "./input";
 import { scriptParams } from "./api";
+import { brandOfType, wholeArithmetic, wholeQuotient } from "./hoist";
 import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, ScriptError, textParts, type ConditionValue, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue, isSelected, isSelectionCount, SELECTION_ADDRESS } from "./runtime";
 import { cellMax } from "./tables";
 import { markViewWrites, type View } from "./views";
@@ -802,6 +803,9 @@ export class Structured {
     }
     if (depth > 32) return undefined;
     const sub = (x: TS.Expression) => this.evaluate(x, depth + 1);
+    // (A value of the game's — a read, a table, a pick, an input — and a condition of the game, which is a record here
+    // and true or false only when the map is played: nothing is worked out of either.)
+    const inGame = (v: unknown): boolean => isGameValue(v) || isCondition(v);
     if (ts.isIdentifier(e)) {
       const b = this.bindingOf(e);
       if (!b && e.text === "undefined") return { value: undefined };
@@ -851,7 +855,7 @@ export class Structured {
         if (ts.isSpreadElement(a)) { const v = sub(a.expression); if (!v || !Array.isArray(v.value)) return undefined; args.push(...(v.value as unknown[])); continue; }
         const v = sub(a);
         // A read among the arguments makes the call the program's: an action with that amount, a function inlined.
-        if (!v || isGameValue(v.value)) return undefined;
+        if (!v || inGame(v.value)) return undefined;
         args.push(v.value);
       }
       // A text's method over name() or color() — on one, or given one — is the game's too.
@@ -859,7 +863,9 @@ export class Structured {
       // stats(x): a table's index is a plain number when the script runs; its type says which table.
       if (this.isLibraryCall(e, "stats") && e.arguments.length === 1) args.push(this.brandOf(e.arguments[0]));
       try {
-        return { value: (callee.value as (...a: unknown[]) => unknown).apply(self, args) };
+        const value = (callee.value as (...a: unknown[]) => unknown).apply(self, args);
+        // (Math.abs of a whole number is the game's: 32 bits, so abs(−2 147 483 648) is −2 147 483 648, as `| 0` has it.)
+        return { value: callee.value === Math.abs && typeof value === "number" && Number.isInteger(value) && this.brandOf(e.arguments[0]) !== "fixed" ? value | 0 : value };
       } catch (err) {
         throw new LowerError(err instanceof Error ? err.message : String(err));
       }
@@ -868,7 +874,7 @@ export class Structured {
       let out = e.head.text;
       for (const span of e.templateSpans) {
         const v = sub(span.expression);
-        if (!v || isGameValue(v.value)) return undefined;
+        if (!v || inGame(v.value)) return undefined;
         out += String(v.value) + span.literal.text;
       }
       return { value: out };
@@ -877,8 +883,8 @@ export class Structured {
     if (ts.isObjectLiteralExpression(e)) {
       const out: Record<string, unknown> = {};
       for (const p of e.properties) {
-        if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) { const v = sub(p.initializer); if (!v || isGameValue(v.value)) return undefined; out[p.name.text] = v.value; continue; }
-        if (ts.isShorthandPropertyAssignment(p)) { const v = sub(p.name); if (!v || isGameValue(v.value)) return undefined; out[p.name.text] = v.value; continue; }
+        if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) { const v = sub(p.initializer); if (!v || inGame(v.value)) return undefined; out[p.name.text] = v.value; continue; }
+        if (ts.isShorthandPropertyAssignment(p)) { const v = sub(p.name); if (!v || inGame(v.value)) return undefined; out[p.name.text] = v.value; continue; }
         return undefined;
       }
       return { value: out };
@@ -897,9 +903,10 @@ export class Structured {
     if (ts.isPrefixUnaryExpression(e)) {
       const v = sub(e.operand);
       // A read has no value yet: arithmetic over it is the program's, not the script's.
-      if (!v || isGameValue(v.value)) return undefined;
+      if (!v || inGame(v.value)) return undefined;
       switch (e.operator) {
-        case ts.SyntaxKind.MinusToken: return { value: -(v.value as number) };
+        // (The negative of a whole number wraps as the game's does: −(−2 147 483 648) is −2 147 483 648 — a literal past the top is a u32 by the type.)
+        case ts.SyntaxKind.MinusToken: return { value: typeof v.value === "number" && Number.isInteger(v.value) && !ts.isNumericLiteral(this.unwrap(e.operand)) && brandOfType(ts, this.c.checker, this.c.checker.getTypeAtLocation(e.operand)) !== "fixed" ? -(v.value) | 0 : -(v.value as number) };
         case ts.SyntaxKind.PlusToken: return { value: +(v.value as number) };
         case ts.SyntaxKind.TildeToken: return { value: ~(v.value as number) };
         default: return undefined;
@@ -929,7 +936,7 @@ export class Structured {
       // `options.width ?? 3`, `a || b`, `a && b` of values known when the script is built: as JavaScript decides them,
       // the right side only looked at when the left does not decide.
       const l = sub(e.left);
-      if (!l || isGameValue(l.value)) return undefined;
+      if (!l || inGame(l.value)) return undefined;
       const k = e.operatorToken.kind;
       // Only of plain values: a condition or an action of the library is an object, and its truth is the game's.
       const v = l.value;
@@ -938,12 +945,12 @@ export class Structured {
       const decided = k === ts.SyntaxKind.QuestionQuestionToken ? v !== null && v !== undefined : k === ts.SyntaxKind.BarBarToken ? !!v : !v;
       if (decided) return l;
       const r = sub(e.right);
-      return r && !isGameValue(r.value) ? r : undefined;
+      return r && !inGame(r.value) ? r : undefined;
     }
     if (ts.isBinaryExpression(e)) {
       const l = sub(e.left);
       const r = sub(e.right);
-      if (!l || !r || isGameValue(l.value) || isGameValue(r.value)) return undefined;
+      if (!l || !r || inGame(l.value) || inGame(r.value)) return undefined;
       // A text with name() or color() in it is put together with `+` here, and compared in the game (`readsMark` in hoist.ts).
       const markIn = (v: unknown) => typeof v === "string" && hasTextMark(v);
       if ((markIn(l.value) || markIn(r.value)) && e.operatorToken.kind !== ts.SyntaxKind.PlusToken) return undefined;
@@ -956,16 +963,24 @@ export class Structured {
       }
       const a = l.value as number;
       const b = r.value as number;
+      // (Whole numbers add, subtract and multiply as the game does, in 32 bits — wrapping at the ends, or from 0 up for a
+      // u32 — here as there: `i + 2147483647` for i = 1 is −2 147 483 648. A fraction on either side computes as one.)
+      const bits = wholeArithmetic(ts, this.c.checker, e);
+      const whole = typeof a === "number" && typeof b === "number" && Number.isInteger(a) && Number.isInteger(b) && bits !== "fraction";
+      const wrap = (v: number) => (bits === "u32" ? v >>> 0 : v | 0);
       switch (e.operatorToken.kind) {
-        case ts.SyntaxKind.PlusToken: return { value: (a as unknown as string) + (b as unknown as string) };
-        case ts.SyntaxKind.MinusToken: return { value: a - b };
-        case ts.SyntaxKind.AsteriskToken: return { value: a * b };
-        case ts.SyntaxKind.SlashToken: return { value: a / b };
+        case ts.SyntaxKind.PlusToken: return { value: whole ? wrap(a + b) : (a as unknown as string) + (b as unknown as string) };
+        case ts.SyntaxKind.MinusToken: return { value: whole ? wrap(a - b) : a - b };
+        case ts.SyntaxKind.AsteriskToken: return { value: whole ? wrap(Math.imul(a, b)) : a * b };
+        // (Whole numbers divide as whole numbers, towards zero, here as in the game: `7 / 2` is 3, `7 / fixed(2)` 3.5. A
+        // fraction on either side divides as a fraction; a divisor of 0 is left to the check that names it.)
+        case ts.SyntaxKind.SlashToken: return { value: wholeQuotient(ts, this.c.checker, e) && Number.isInteger(a) && Number.isInteger(b) && b !== 0 ? Math.trunc(a / b) : a / b };
         case ts.SyntaxKind.PercentToken: return { value: a % b };
         case ts.SyntaxKind.AsteriskAsteriskToken: return { value: a ** b };
-        case ts.SyntaxKind.LessThanLessThanToken: return { value: a << b };
-        case ts.SyntaxKind.GreaterThanGreaterThanToken: return { value: a >> b };
-        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: return { value: a >>> b };
+        // (A shift by 32 or more, or by a number below zero, leaves nothing but the sign, as the game's does — JavaScript would shift by the remainder.)
+        case ts.SyntaxKind.LessThanLessThanToken: return { value: b >>> 0 >= 32 ? 0 : a << b };
+        case ts.SyntaxKind.GreaterThanGreaterThanToken: return { value: b >>> 0 >= 32 ? (a < 0 ? -1 : 0) : a >> b };
+        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: return { value: b >>> 0 >= 32 ? 0 : a >>> b };
         case ts.SyntaxKind.AmpersandToken: return { value: a & b };
         case ts.SyntaxKind.BarToken: return { value: a | b };
         case ts.SyntaxKind.CaretToken: return { value: a ^ b };
@@ -978,7 +993,7 @@ export class Structured {
     }
     if (ts.isConditionalExpression(e)) {
       const c = sub(e.condition);
-      if (!c || isGameValue(c.value)) return undefined;
+      if (!c || inGame(c.value)) return undefined;
       return c.value ? sub(e.whenTrue) : sub(e.whenFalse);
     }
     return undefined;
@@ -4840,9 +4855,11 @@ export class Structured {
     const { ts } = this;
     const { a } = el;
     if (a.values) { this.c.error(e.left, `${a.name} was computed when the script was built and is only read in a program; declare it with let inside the program to write to it.`); return; }
-    // (`xs[n++] = n * 10`: the index before the value, as JavaScript has it — an index with a call in it is worked out first.)
-    const calls = (x: unknown): boolean => !!x && typeof x === "object" && (Array.isArray(x) ? x.some(calls) : (x as { kind?: string }).kind === "call" || Object.values(x).some(calls));
-    const index = calls(el.index) ? this.temp(el.index, e.left) : el.index;
+    // (`xs[n++] = n * 10`: the index before the value, as JavaScript has it — an index with a call or a pop in it is worked out first.)
+    const calls = (x: unknown): boolean => !!x && typeof x === "object" && (Array.isArray(x) ? x.some(calls) : (x as { kind?: string }).kind === "call" || (x as { kind?: string }).kind === "pop" || Object.values(x).some(calls));
+    // (And one read by the index when the value calls: the call may change what the index reads.)
+    const callsIn = (n: TS.Node): boolean => ts.isCallExpression(n) || ts.isNewExpression(n) || !!ts.forEachChild(n, (c) => callsIn(c) || undefined);
+    const index = calls(el.index) || (el.index.kind !== "const" && callsIn(e.right)) ? this.temp(el.index, e.left) : el.index;
     const emit = (value: NumExpr | BoolExpr) => this.emit({ kind: "store", array: a.id, index, value, at: this.at(e), label: this.label(e) }, e);
     if (a.kind === "boolean") {
       if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "Booleans take = only."); return; }

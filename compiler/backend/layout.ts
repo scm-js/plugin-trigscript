@@ -300,15 +300,21 @@ export function layout(input: LayoutInput): OwnMap {
   // past the program once woken.
   const wake = (i: number) => (i ? `@wake#${i}` : "@wake"), init = (i: number) => (i ? `@init#${i}` : "@init");
   const stop = "@stop", run = "@run", entry = (p: number) => `@entry${p}`, gate = (p: number) => `@gate${p}`;
+  // A run with tasks: the current player set to its owner before its wake, every frame. The game set it to the player
+  // whose list carries the walk (the last one's), and the wake sets it to the owner only when the program runs; the
+  // tasks' turn comes while the program sleeps too, and what a task showed then, the owner did not see. (The first
+  // play of the events probe, 2026-10-24: "back", printed by a task two seconds after a death, never showed.)
+  const cur = (i: number) => (i ? `@cur#${i}` : "@cur");
+  const before = (i: number) => (runs[i].graph.tasks ? cur(i) : wake(i));
   // (A run whose graph holds the map's events pass goes through it first.)
-  const first = (i: number) => runs[i].graph.pass ?? wake(i);
+  const first = (i: number) => runs[i].graph.pass ?? before(i);
   // (A run whose graph holds the map's send pass: the walk goes through it after the last run, before it stops.)
   const sendPass = runs.find((r) => r.graph.after)?.graph.after;
   const after = (i: number) => (i + 1 < runs.length ? first(i + 1) : sendPass ?? stop);
   const list = (p: number) => TRIGGER_LISTS + 12 * p;
   const listEnd = (p: number) => u(~(list(p) + 4));
   // (Where each run's graph ends: the next run.)
-  const ends = new Map<string, string>(runs.flatMap((_, i): [string, string][] => [[i ? `${END}#${i}` : END, after(i)], [i ? `${PASS_END}#${i}` : PASS_END, wake(i)], [i ? `${AFTER_END}#${i}` : AFTER_END, stop]]));
+  const ends = new Map<string, string>(runs.flatMap((_, i): [string, string][] => [[i ? `${END}#${i}` : END, after(i)], [i ? `${PASS_END}#${i}` : PASS_END, before(i)], [i ? `${AFTER_END}#${i}` : AFTER_END, stop]]));
   const endOf = (l: string) => ends.get(l) ?? l;
   // (`flags`: a node's execution flags as written, a trigger of the map's own; else preserved, or `off`.)
   type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number; off?: boolean; flags?: number };
@@ -323,6 +329,7 @@ export function layout(input: LayoutInput): OwnMap {
     return { label: own(p, k), prev: 0, conds: t.conds, acts: t.acts, next: chain[i + 1] ?? gate(p), flags: t.record.flags };
   }));
   const triggers: T[] = runs.flatMap(({ graph, owner }, i) => [
+    ...(graph.tasks ? [{ label: cur(i), conds: [], acts: [{ dword: { game: CURRENT_PLAYER }, modifier: "set", value: owner }], next: wake(i) } satisfies T] : []),
     {
       label: wake(i),
       conds: [{ dword: { var: NOW }, compare: "atLeast", value: 0 }, { dword: { game: list(owner) + 8 }, compare: "atMost", value: 0x7fffffff }],

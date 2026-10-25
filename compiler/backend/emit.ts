@@ -1067,7 +1067,7 @@ class Scope {
       case "unrolled": return s.iterations.every((it) => this.stmts(it, true));
       case "if": return this.test(s.cond) ? this.stmts(s.then, inLoop) && this.stmts(s.else ?? [], inLoop) : this.island(s);
       case "while": return (!s.cond || this.test(s.cond)) ? this.stmts(s.body, true) : this.island(s);
-      case "do": return this.test(s.cond) ? this.stmts(s.body, true) : this.island(s);
+      case "do": return this.stmts(s.body, true) && this.stmts(s.before ?? [], true) && (this.test(s.cond) || this.island(s));
       case "for": {
         if (s.cond && !this.test(s.cond)) return this.island(s);
         this.counters.push(writtenIn(s.update));
@@ -1862,6 +1862,8 @@ class Emitter {
         this.stmts(s.body);
         this.loops.pop();
         this.land(cont);
+        // (What the test needs computed first, at every turn's end — a `continue` lands here too.)
+        if (s.before) this.stmts(s.before);
         this.jump(s.cond, false, exit, s.at);
         this.goto(head);
         this.land(exit);
@@ -5514,10 +5516,24 @@ class Rewriter {
     const read = (k === 0 ? c.left : c.right) as Extract<NumExpr, { kind: "read" }>, other = k === 0 ? c.right : c.left;
     const l = linear(other);
     if (!l || l.terms.length > 1 || !gameRead(read.read)) return null;
+    const base = read.read.record;
     const range: readonly [number, number] | undefined = l.terms.length ? (other as NumExpr & { range?: readonly [number, number] }).range : [l.c, l.c];
-    if (!range || range[0] < 0) return null;
     const flip = { "<": ">", ">": "<", "<=": ">=", ">=": "<=", "==": "==", "!=": "!=" } as const;
     const op = k === 0 ? c.op : flip[c.op];
+    // A constant below zero, compared signed (`i32(deaths(…)) >= -10`): the numbers it holds for, from the lowest to the
+    // highest, as bits — those below zero are above 2 147 483 647 as bits — one or two runs of the condition's own
+    // "at least" and "at most" (as `cellCompare` reads a cell).
+    if (!l.terms.length && (l.c | 0) < 0 && c.unsigned !== true && op !== "==" && op !== "!=") {
+      const epd = read.read.epd ? { epd: read.read.epd } : {};
+      const raw = (comparison: number, amount: number): BoolExpr => ({ kind: "cond", record: { ...base, comparison, amount: u(amount) }, ...epd });
+      const all = (items: BoolExpr[]): BoolExpr => (items.length === 0 ? { kind: "const", value: true } : items.length === 1 ? items[0] : { kind: "and", items });
+      const between = (lo: number, hi: number): BoolExpr => all([...(u(lo) > 0 ? [raw(0, lo)] : []), ...(u(hi) < U32 - 1 ? [raw(1, hi)] : [])]);
+      const K = l.c | 0, MIN_S = -2147483648, MAX_S = 2147483647;
+      const [lo, hi] = op === "<" ? [MIN_S, K - 1] : op === "<=" ? [MIN_S, K] : op === ">" ? [K + 1, MAX_S] : [K, MAX_S];
+      if (lo > hi) return { kind: "const", value: false };
+      return lo >= 0 || hi < 0 ? between(lo, hi) : { kind: "or", items: [between(lo, -1), between(0, hi)] };
+    }
+    if (!range || range[0] < 0) return null;
     const how: Record<string, [number, number]> = { ">=": [0, 0], ">": [0, 1], "<=": [1, 0], "<": [1, -1], "==": [10, 0], "!=": [10, 0] };
     const [comparison, add] = how[op];
     if (range[0] + add < 0) return op === "<" && range[1] < 1 ? { kind: "const", value: false } : null;
@@ -5927,7 +5943,10 @@ class Rewriter {
     if (!el || !inRegion(this.arrays, el.array)) return null;
     const a = this.arrays.get(el.array)!;
     const index = this.flat(el.index, pre, where), r = (index as NumExpr & { range?: readonly [number, number] }).range;
-    const at = this.side(index, pre, where), cell: NumExpr = { ...el, index: at };
+    // (A cell is read at one variable plus a constant: an index under a mask — `xs[i & 3]`, which `side` would keep as a
+    // masked side — and one of more terms — `board[y * W + x]` — are computed first.)
+    const shape = side(index);
+    const at = shape && "mask" in shape && shape.mask !== undefined ? this.sum(index, pre, where) : this.side(index, pre, where), cell: NumExpr = { ...el, index: at };
     const raw = (o: CompareOp, v: number): BoolExpr => ({ kind: "compare", op: o, left: cell, right: { kind: "const", value: u(v) }, unsigned: true, ...where });
     const all = (items: BoolExpr[]): BoolExpr => (items.length === 0 ? { kind: "const", value: true } : items.length === 1 ? items[0] : { kind: "and", items });
     // The bits between two numbers, ends included, read as they are.
@@ -6167,11 +6186,14 @@ class Rewriter {
         return [s.kind === "for" ? { ...s, cond: undefined, body: [...pre, leave, ...body], update } : { ...s, cond: undefined, body: [...pre, leave, ...body] }];
       }
       case "do": {
-        // (A map of our own: the test as rewritten when nothing comes before it — something that did would have to run
-        // at a `continue` too.)
+        // (A map of our own: the test as rewritten; what it needs computed first runs before it at every turn's end,
+        // `before`, where a `continue` lands too — the emitter lays it out at the loop's continue label.)
         const pre: Stmt[] = [];
         const cond = this.own ? this.cond(s.cond, pre, where) : s.cond;
-        return [{ ...s, body: this.stmts(s.body), ...(this.own && !pre.length ? { cond } : {}) }];
+        if (!this.own) return [{ ...s, body: this.stmts(s.body) }];
+        // (What the texts pass put before the test stays, rewritten as statements, and the test's own needs follow it.)
+        const before = [...this.stmts(s.before ?? []), ...pre];
+        return [{ ...s, body: this.stmts(s.body), cond, ...(before.length ? { before } : {}) }];
       }
       case "unrolled": return [{ ...s, iterations: s.iterations.map((it) => this.stmts(it)) }];
       case "try": return [{ ...s, body: this.stmts(s.body), catch: this.stmts(s.catch) }];
@@ -6360,9 +6382,11 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
       at: { data: WAKE_AT },
       reset: { dword: { data: WAKE_NEXT }, modifier: "set", value: { label: e.tasksLabel } },
       yieldTo: e.tasksLabel,
-      // At its end the program wakes no more.
+      // At its end the program wakes no more — unless it started tasks, which run on after it (the simulator's rule,
+      // and the Python side's): its wake then comes every frame and goes straight to the tasks' turn.
       end: () => {
-        e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } });
+        if (scope.slots.size) e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: 0 } }, { act: { dword: { data: WAKE_AT }, modifier: "set", value: { label: e.tasksLabel } } });
+        else e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } });
         e.goto(e.tasksLabel);
       },
     };

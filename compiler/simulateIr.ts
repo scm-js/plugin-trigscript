@@ -1,7 +1,10 @@
 /**
  * The program interpreter: runs `program()` bodies from the IR, one player, frame by
  * frame. It is what Simulate shows and what the tests prove programs with; the model is
- * the Python lowering's (`python/trigscript.py`), which is what the game runs.
+ * the backend's (`compiler/backend/`, the map of our own), which is what the game runs — and was
+ * the Python lowering's (`python/trigscript.py`), which laid the same programs out through eudplib
+ * until TrigScript 4's step 17; the gate before it (step 16, `tests/random-scripts.test.ts`) holds
+ * the two to the same lines.
  *
  * A program is a coroutine the game resumes every frame. Its body runs until it sleeps or
  * ends: loops run to completion within the frame, only `sleep` gives the frame back
@@ -56,7 +59,7 @@ export const FRAMES_PER_SECOND = 24;
 /** What Elapsed Time and the countdown count: a game second is sixteen frames (the slice 2 probe: 21 after 336 frames), not the twenty-four of a second at Fastest. */
 export const FRAMES_PER_GAME_SECOND = 16;
 const U32 = 0x1_0000_0000;
-/** Frames with no message before a held key counts as let go; python/trigscript.py has the same number (Input.HELD_GRACE). */
+/** Frames with no message before a held key counts as let go; the backend's input has the same number (`compiler/backend/input.ts`). */
 const HELD_GRACE = 2;
 
 /** The code of the game's texts nearest each player's colour, by slot, when the map does not change them: red, blue, teal, purple, orange, brown, white, yellow. */
@@ -463,7 +466,7 @@ class ProgramRun {
   }
 
   /**
-   * Room for `cells` in a growing array, as the game finds it (`python/trigscript.py`): a block twice the size from the
+   * Room for `cells` in a growing array, as the game finds it (`compiler/backend/heap.ts`): a block twice the size from the
    * heap, the old one given back. False, and said once, when the heap has none left.
    */
   private grow(a: { decl: ArrayDecl; cells: Value[]; room: number }, cells: number, at: At): boolean {
@@ -564,7 +567,7 @@ class ProgramRun {
   /* ── expressions ── */
 
   /**
-   * A number, the way the game computes it (`python/trigscript.py`): 32 bits, given here as the
+   * A number, the way the game computes it (`compiler/backend/emit.ts`): 32 bits, given here as the
    * signed reading of them (`| 0`). + − × and the bitwise operators are the same bits whichever
    * way they are read; what reads them one way or the other — ÷, %, a shift right, min and max, a
    * comparison — says which in the IR. A divisor of 0 gives 0, as `(a / 0) | 0` does.
@@ -640,7 +643,7 @@ class ProgramRun {
   /* ── texts ── */
 
   /**
-   * A text that was just made, as the game keeps it (`python/trigscript.py`): past `TEXT_BYTES` it is cut, and its
+   * A text that was just made, as the game keeps it (`compiler/backend/texts.ts`): past `TEXT_BYTES` it is cut, and its
    * bytes go into a block of the heap. When the heap has none, the text is empty — and both are said.
    */
   private made(s: string, at: At, cameTo = bytesOf(s)): TextValue {
@@ -899,7 +902,7 @@ class ProgramRun {
 
   /**
    * A call that may come back into the function it is in: what that function holds goes on the stack, as the game
-   * keeps it (`python/trigscript.py`) — its variables, and the handle of each array declared in it, which is "no block"
+   * keeps it (`compiler/backend/emit.ts`, `Emitter.keep`) — its variables, and the handle of each array declared in it, which is "no block"
    * for the length of the call. Past the depth the map allows the program stops, and says where.
    */
   private keep(c: Call): Frame {
@@ -1301,7 +1304,7 @@ class ProgramRun {
         const message = this.textVars.get(errors.message)?.s ?? "";
         const at = this.thrownAt ?? s.at;
         this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `Uncaught ${name}${message ? `: ${message}` : ""}` });
-        // The game says it in red to the player it ran as, as python/trigscript.py does.
+        // The game says it in red to the player it ran as (`compiler/backend/errors.ts`).
         this.sim.print(this, `\x06TrigScript: uncaught ${name}: ${message}, line ${at.line}.`, 13, s.at);
         this.store(errors.thrown, 0);
         return "next";

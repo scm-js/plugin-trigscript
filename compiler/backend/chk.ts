@@ -244,7 +244,7 @@ export function markInTransit(s: Sections, slot: number): void {
   const view = new DataView(uprp.buffer);
   const at = (slot - 1) * CUWP_STRIDE;
   view.setUint16(at, view.getUint16(at, true) | IN_TRANSIT, true);
-  view.setUint16(at + 16, view.getUint16(at + 16, true) | IN_TRANSIT, true);
+  view.setUint16(at + 14, view.getUint16(at + 14, true) | IN_TRANSIT, true);
   s.set("UPRP", uprp);
   const upus = s.get("UPUS");
   if (upus && upus.length >= slot) { const next = upus.slice(); next[slot - 1] = 1; s.set("UPUS", next); }

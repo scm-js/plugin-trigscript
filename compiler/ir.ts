@@ -588,7 +588,8 @@ export type Stmt =
   | { kind: "if"; cond: BoolExpr; then: Stmt[]; else?: Stmt[]; at: At; label: string }
   /** `cond` absent means `while (true)`. */
   | { kind: "while"; cond?: BoolExpr; body: Stmt[]; at: At; label: string }
-  | { kind: "do"; body: Stmt[]; cond: BoolExpr; at: At; label: string; condLabel: string }
+  /** `before`: statements run before the test each turn, a `continue` included — made by the emitter's rewriter for a map of our own (a test that needs a value computed first); the front end writes none. */
+  | { kind: "do"; body: Stmt[]; cond: BoolExpr; at: At; label: string; condLabel: string; before?: Stmt[] }
   /** `for` over a variable: `init` ran already (it is emitted before), this is the loop with its update. */
   | { kind: "for"; cond?: BoolExpr; update: Stmt[]; body: Stmt[]; at: At; label: string; /** The loop is `name.sort(…)`: for the hint on its line; a lowering takes no notice. */ sorts?: string }
   /** A loop unrolled when the script was built: the body once per value, in order. */
