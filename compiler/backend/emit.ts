@@ -1182,6 +1182,20 @@ function nativeArray(a: ArrayDecl): boolean {
 /** (A base `addr:<id>` is the address of an array's first cell, a trigger; any other the EPD of its first cell's value.) */
 const num = (n: number, base?: string): Num => (!base ? n : base.startsWith("addr:") ? { addrOf: base.slice(5), plus: n } : { epdOf: base, plus: n });
 
+/**
+ * How many dwords a printed number's field takes: 3 (12 bytes, the most a 32-bit number and its sign need), or fewer
+ * when the value ranges (`ranges.ts`) know the number never takes more characters than 4 or 8 — a `?:` of 0 and 1 is
+ * one character, so a line of them stays within the game's text line.
+ */
+function fieldWords(p: Extract<TextPart, { kind: "number" }>): 1 | 2 | 3 {
+  const range = (p.expr as NumExpr & { range?: [number, number] }).range;
+  if (!range || p.fixed) return 3;
+  // (An unsigned print of a value that may be below zero reads it from 0 up: ten digits.)
+  if (p.unsigned && range[0] < 0) return 3;
+  const chars = Math.max(String(range[0]).length, String(range[1]).length);
+  return chars <= 4 ? 1 : chars <= 8 ? 2 : 3;
+}
+
 class Emitter {
   protos: Proto[] = [];
   n = 0;
@@ -2206,12 +2220,14 @@ class Emitter {
 
   /**
    * A text printed with values in it (a map of our own). Its template is laid out when the map is built: the text,
-   * and for each number a field of 12 bytes on a dword's start, the bytes before it to the dword's start 0x0D (they draw
-   * nothing); for each byte from a number (a colour code), one byte. Nothing in the text moves, however wide the number
-   * is: the routine writes the number at the right end of its field, 0x0D before it. A print hands each number to the
-   * routine, copies its three dwords into the field, writes each byte where it goes (0x0D for a 0, which writes
-   * nothing), and shows the template with Display Text. (The rewriter has already put the values in the order
-   * JavaScript works them out.)
+   * and for each number a field on a dword's start — 12 bytes, or 4 or 8 when the value ranges know the number never
+   * takes more characters than that (`fieldWords`) — the bytes before it to the dword's start 0x0D (they draw nothing);
+   * for each byte from a number (a colour code), one byte. Nothing in the text moves, however wide the number is: the
+   * routine writes the number at the right end of its three dwords, 0x0D before it, and the print copies the last of
+   * them into the field. A print hands each number to the routine, writes each byte where it goes (0x0D for a 0, which
+   * writes nothing), and shows the template with Display Text. (The rewriter has already put the values in the order
+   * JavaScript works them out.) The game's text line holds 218 bytes: a line of many numbers with 12-byte fields was cut
+   * short in the lifted game (step 17's `game-lowering` probe, 24 one-digit numbers).
    */
   /**
    * A print at the centre of the screen, as eudplib's `f_eprintln`: for each player it is for, with that player the
@@ -2288,7 +2304,7 @@ class Emitter {
       } else if (p.kind === "number") {
         while (bytes.length % 4) bytes.push(PAD);
         values.push({ part: p, at: bytes.length });
-        bytes.push(...Array(12).fill(PAD));
+        bytes.push(...Array(4 * fieldWords(p)).fill(PAD));
       } else if (p.kind === "char") {
         values.push({ part: p, at: bytes.length });
         bytes.push(PAD);
@@ -2318,7 +2334,9 @@ class Emitter {
         this.open().items.push({ act: { dword: nextOf(it.exit), modifier: "set", value: { label: back } } });
         this.goto(part.unsigned || f ? it.unsigned : it.signed);
         this.land(back);
-        it.out.forEach((from, w) => this.open().items.push({ route: { from, into: [{ template: id, word: at / 4 + w }] } }));
+        // (The routine's last dwords into the field: the number is at their right end.)
+        const words = f ? 3 : fieldWords(part);
+        it.out.slice(3 - words).forEach((from, w) => this.open().items.push({ route: { from, into: [{ template: id, word: at / 4 + w }] } }));
         continue;
       }
       if (part.kind === "pick") {
