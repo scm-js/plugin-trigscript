@@ -177,7 +177,10 @@ ${kw}interface Unit {
   speedUpgrade: boolean;
   readonly cloaked: boolean;
   readonly burrowed: boolean;
-  /** True for about a second after something hit the unit. */
+  /**
+   * True for about a second after the game raised its "under attack" alert for the unit: a hit out of the player's view.
+   * A unit hit on the player's screen does not count — the game keeps no other "recently hit" mark a map may read.
+   */
   readonly underAttack: boolean;
   /** True while the unit's order is aimed at another unit (attacking, following, repairing …). */
   readonly hasTarget: boolean;

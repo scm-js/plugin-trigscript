@@ -1481,7 +1481,7 @@ describe("a map of our own, units", () => {
       put(at + 0x38, u.speed ?? 0);
       put(at + 0x5c, u.hasTarget ? 0x700000 + 4 : 0);
       put(at + 0x8e, u.rank ?? 0, 1);
-      if (u.underAttack) { put(at + 0x8a, 12, 1); put(at + 0x8b, 174, 1); }
+      if (u.underAttack) put(at + 0x87, 12, 1);
       put(at + 0xac, u.buildTime ?? 0, 2);
       put(at + 0x114, u.matrix ?? 0, 1);
       put(at + 0xdc, (u.invincible ? 0x04000000 : 0) | (u.hallucinated ? 0x40000000 : 0) | (u.speedUpgrade ? 0x10000000 : 0) | (u.inTransport ? 0x40 : 0) | (u.burrowed ? 0x10 : 0));
