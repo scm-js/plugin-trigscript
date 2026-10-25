@@ -6528,7 +6528,11 @@ build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
   today by its euddraft plugins in Python; the slice lays them out as TrigScript programs on the own layout, after
   step 17. Since step 17 (2026-10-25) a map with Magenta's member is not built: the step refuses it with the reason
   (`whyNotBuilt`) and Magenta's own build runs alone, since eudplib's build rewrites the strings section the payload
-  sits behind. The slice is next.
+  sits behind. The slice is next. *How, decided 2026-10-25 (the user): TrigScript is the library.* TrigScript provides a
+  build service as eudplib did (`services.provide`, a `contribute` with an `applies` and a `collect`), Magenta requires
+  plugin-trigscript and hands it its rows as IR, and both go through the one layout call on save; the Magenta refusal in
+  the build step goes with it. Not a third library plugin holding the backend alone: the backend consumes TrigScript's
+  IR and passes, and a split would drag the compiler along or put a second interface in front of it.
 
 ## Facts this plan leans on
 
