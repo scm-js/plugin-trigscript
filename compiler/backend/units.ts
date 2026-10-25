@@ -67,7 +67,13 @@ const FIELDS: Partial<Record<UnitNumField, Bits>> = {
   stim: word(0x115, 1), ensnare: word(0x116, 1), lockdown: word(0x117, 1), irradiate: word(0x118, 1), stasis: word(0x119, 1), plague: word(0x11a, 1), maelstrom: word(0x124, 1),
   buildTime: word(0xac, 2), rank: word(0x8e, 1), matrix: word(0x114, 1), speed: word(0x38, 4),
 };
-const HP = 0x08 >> 2, SHIELDS = 0x60 >> 2, ENERGY = word(0xa2, 2), STATUS = 0xdc >> 2, ATTACKED = word(0x87, 1), USER_ACTION = word(0x93, 1);
+const HP = 0x08 >> 2, SHIELDS = 0x60 >> 2, ENERGY = word(0xa2, 2), STATUS = 0xdc >> 2, USER_ACTION = word(0x93, 1);
+/**
+ * "Under attack": the unit's last event is a hit (+0x8B, 174) and its timer (+0x8A) is still running — about a second,
+ * as BWAPI reads it. (Not +0x87, the attack-notify timer: that one runs only when the "under attack" alert sounds, so a
+ * unit hit on screen in a game played alone never shows it — Remastered, Magenta probe 6, 2026-10-25.)
+ */
+const LAST_EVENT = 0x88 >> 2, LAST_EVENT_MASK = 0xffff0000, HIT_EVENT = 174, HIT_LEAST = (HIT_EVENT * 2 ** 24 + 2 ** 16) >>> 0, HIT_MOST = (HIT_EVENT * 2 ** 24 + 0xff * 2 ** 16) >>> 0;
 /** The status bits a flag is (cloaked: both of two). */
 const FLAG_BITS: Partial<Record<UnitFlag, number>> = { invincible: 0x04000000, hallucinated: 0x40000000, burrowed: 0x10, cloaked: 0x300, speedUpgrade: 0x10000000, inTransport: 0x40 };
 /** The unit an order is aimed at (a pointer, 0 for none), and the defensive matrix's hit points (a word, 256 a point) beside its timer. */
@@ -691,7 +697,7 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
   const flag = (u: Unit, f: UnitFlag, pre: Stmt[]): BoolExpr => {
     if (isNone(u)) return { kind: "const", value: false };
     u = held(u, pre);
-    if (f === "underAttack") return all([alive(u), cmp(">=", bits(u.e, ATTACKED), k(1))]);
+    if (f === "underAttack") return all([alive(u), cmp(">=", peek(of(u.e, LAST_EVENT), LAST_EVENT_MASK), k(HIT_LEAST)), cmp("<=", peek(of(u.e, LAST_EVENT), LAST_EVENT_MASK), k(HIT_MOST))]);
     if (f === "hasTarget") return all([alive(u), cmp(">=", peek(of(u.e, ORDER_TARGET)), k(1))]);
     const mask = FLAG_BITS[f];
     if (mask === undefined) throw new Leave();
