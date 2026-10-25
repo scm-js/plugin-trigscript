@@ -198,6 +198,13 @@ class GameUnit implements SimUnit {
   get cloaked() { return this.read("cloaked", () => this.flag(0x00000300)); }
   get burrowed() { return this.read("burrowed", () => this.flag(0x00000010)); }
   get hallucinated() { return this.read("hallucinated", () => this.flag(0x40000000)); }
+  get buildTime() { return this.read("buildTime", () => this.m.getUint16(this.at + 0xac, true)); }
+  get rank() { return this.read("rank", () => this.game.u8[this.at + 0x8e]); }
+  get matrix() { return this.read("matrix", () => this.game.u8[this.at + 0x114]); }
+  get speed() { return this.read("speed", () => this.m.getInt32(this.at + 0x38, true)); }
+  get speedUpgrade() { return this.read("speedUpgrade", () => this.flag(0x10000000)); }
+  get hasTarget() { return this.read("hasTarget", () => this.m.getUint32(this.at + 0x5c, true) !== 0); }
+  get inTransport() { return this.read("inTransport", () => this.flag(0x00000040)); }
   // Not read from the game yet: the spell timers and whether the unit is under attack.
   stim = 0; ensnare = 0; plague = 0; lockdown = 0; maelstrom = 0; irradiate = 0; stasis = 0; underAttack = false;
 }

@@ -145,8 +145,16 @@ ${kw}interface Unit {
   kills: number;
   /** What the unit is doing: \`if (u.orderId == orders.Move)\`. orders.PlayerGuard is standing guard, orders.AttackUnit attacking. */
   readonly orderId: Order;
-  /** Frames until the unit can attack or cast again, 0 … 255; writing it holds the unit's fire that long. */
+  /** Frames until the unit can attack or cast again, 0 … 255; writing it holds the unit's fire that long (the ground weapon's, the air weapon's and the spells' alike). */
   cooldown: number;
+  /** Frames left of a unit's or building's making, 0 … 65535; 0 once complete. Writing it lengthens or shortens the making. */
+  buildTime: number;
+  /** The unit's rank, added to the type's (the one shown on its panel: Private, Corporal …), 0 … 255. */
+  rank: number;
+  /** Frames left of a defensive matrix, 0 … 255: writing one gives the unit a matrix of 250 points for that long; 0 takes it away. */
+  matrix: number;
+  /** How fast the unit is moving now, in 256ths of a pixel a frame: 0 standing still, 1024 a Marine's walk. Read only. */
+  readonly speed: number;
   /** What a mineral field or a geyser still holds. */
   resources: number;
   /** Frames left of each effect, 0 … 255: write one to start, lengthen or end it. Stim, ensnare and the rest tick down about every eighth frame. */
@@ -159,11 +167,18 @@ ${kw}interface Unit {
   stasis: number;
   /** Whether the unit cannot be hurt. */
   invincible: boolean;
-  readonly hallucinated: boolean;
+  /** Whether the unit is a hallucination: made so, it takes double damage and dies after a while, as a Templar's do. */
+  hallucinated: boolean;
+  /** Whether the unit moves at its upgraded speed (a Zergling's metabolic boost, a Vulture's ion thrusters) regardless of the upgrade. */
+  speedUpgrade: boolean;
   readonly cloaked: boolean;
   readonly burrowed: boolean;
   /** True for about a second after something hit the unit. */
   readonly underAttack: boolean;
+  /** True while the unit's order is aimed at another unit (attacking, following, repairing …). */
+  readonly hasTarget: boolean;
+  /** True while the unit rides in a transport or a bunker. */
+  readonly inTransport: boolean;
   /** Send the unit somewhere, as the Order action does, this unit alone. */
   order(order: "move" | "patrol" | "attack", target: Location): void;
   /** Hand the unit to another player. */
@@ -819,6 +834,12 @@ ${kw}function centerLocation(location: Location, x: number, y: number): void;
  * old size is read, so it costs less than keeping the size: \`centerLocation(spot, x, y, 32, 32)\`.
  */
 ${kw}function centerLocation(location: Location, x: number, y: number, width: number, height: number): void;
+/**
+ * A location's edges as the game holds them now, in pixels (32 to a tile), inside program() only: \`const b =
+ * bounds(locations.Pen);\` then \`b.left\`, \`b.top\`, \`b.right\`, \`b.bottom\` read them, and \`b.left += 32\`
+ * moves one. A location centerLocation() or Move Location moved is read where it is now.
+ */
+${kw}function bounds(location: Location): { left: number; top: number; right: number; bottom: number };
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -1084,6 +1105,7 @@ export interface SimUnit {
   readonly type: UnitType; readonly owner: Player; readonly x: number; readonly y: number;
   readonly hp: number; readonly maxHp: number; readonly shields: number; readonly maxShields: number; readonly energy: number;
   readonly kills: number; readonly orderId: Order; readonly resources: number; readonly invincible: boolean; readonly burrowed: boolean; readonly cloaked: boolean; readonly hallucinated: boolean;
+  readonly buildTime: number; readonly rank: number; readonly matrix: number; readonly speed: number; readonly speedUpgrade: boolean; readonly hasTarget: boolean; readonly inTransport: boolean;
   /** Still on the map. */
   readonly alive: boolean;
 }

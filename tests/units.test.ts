@@ -142,6 +142,31 @@ describe("units: in the simulated game", () => {
     const sim = run(`const u = first(); if (u) { u.energy = 900; u.kills += 300; u.stim = 1000; u.invincible = true; u.cooldown = 24; }`);
     expect(sim.units[0]).toMatchObject({ energy: 255, kills: 255, stim: 255, invincible: true, cooldown: 24 });
   });
+  it("the fields Magenta's rows need: build time, rank, matrix, speed and the flags", () => {
+    const sim = run(`const u = first(); if (u) { u.buildTime = 70000; u.rank = 300; u.matrix = 40; u.hallucinated = true; u.speedUpgrade = true; }
+      const z = first({ owner: P2 }); let fast = 0; let aimed = 0; let riding = 0; if (z) { fast = z.speed; if (z.hasTarget) aimed = 1; if (z.inTransport) riding = 1; }`);
+    expect(sim.units[0]).toMatchObject({ buildTime: 65535, rank: 255, matrix: 40, hallucinated: true, speedUpgrade: true });
+    expect([sim.value("fast"), sim.value("aimed"), sim.value("riding")]).toEqual([0, 0, 0]);
+  });
+  it("speed, hasTarget and inTransport are the game's to write", () => {
+    expect(errors("const u = first(); if (u) { u.speed = 5; u.hasTarget = true; u.inTransport = false; u.cloaked = true; }")).toEqual([
+      "2:Cannot assign to 'speed' because it is a read-only property.",
+      "2:Cannot assign to 'hasTarget' because it is a read-only property.",
+      "2:Cannot assign to 'inTransport' because it is a read-only property.",
+      "2:Cannot assign to 'cloaked' because it is a read-only property.",
+    ]);
+  });
+  it("bounds() reads a location where it is now and writes move it; centerLocation() and bounds() agree", () => {
+    const sim = run(`const b = bounds(${at(2)}); let w = b.right - b.left; b.left += 100; b.right += 100; let l = 0; l = bounds(${at(2)}).left;
+      centerLocation(${at(1)}, 1000, 1000); const { left, top, right, bottom } = bounds(${at(1)}); let sum = 0; sum = left + top + right + bottom; bounds(${at(1)}).bottom = 1200;`);
+    expect([sim.value("w"), sim.value("l"), sim.value("sum")]).toEqual([40, 580, 872 + 872 + 1128 + 1128]);
+    expect(sim.locations.get(2)).toEqual({ left: 580, top: 80, right: 620, bottom: 120 });
+    expect(sim.locations.get(1)).toEqual({ left: 872, top: 872, right: 1128, bottom: 1200 });
+  });
+  it("bounds() takes a location of the map, and is a program's", () => {
+    expect(errors("const b = bounds(0 as Location);")).toEqual(["2:bounds() takes one of locations.*. — this constant is computed when the script is built, not in the game."]);
+    expect(compileFile("const b = bounds(1 as Location); const n = b.left + 1; program(() => { print(`${n}`); });").diagnostics.map((d) => d.message)).toEqual(["bounds(location 1).left is where the location is while the game runs: it has no value when the script is built. Inside program(), assign it to a let, or use it in the program's own arithmetic and comparisons."]);
+  });
   it("give, locate and order", () => {
     const sim = run(`const u = first({ owner: P2 }); if (u) { u.give(P1); u.locate(${at(2)}); u.order("attack", ${at(1)}); } let n = 0; for (const v of unitsAt(${at(2)}, { owner: P1 })) n++;`);
     expect(sim.units[2].owner).toBe(0);

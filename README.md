@@ -1456,13 +1456,18 @@ if (target) target.order("move", locations.Exit);
 
 A unit has `hp`, `shields` and `energy` in whole points, `maxHp` / `maxShields` of its
 type, `owner`, `type`, `x`, `y`, `kills`, `orderId`, `cooldown`, `resources` (a mineral
-field's), the timers `stim` `ensnare` `plague` `lockdown` `maelstrom` `irradiate` `stasis`
-in the game's own ticks, and the booleans `invincible`, `hallucinated`, `cloaked`,
-`burrowed`, `underAttack`. Hit points, shields, energy, kills, the cooldown, the
-resources, the timers and `invincible` can be written (`u.hp = 0` kills). The rest the
-game keeps for itself (a position write ends the game with "EUD not supported", a cloak
-write showed nothing), and the declarations have them `readonly`, so the editor says so as
-you type. A unit can be told:
+field's), `buildTime` (frames left of its making), `rank`, `matrix` (frames left of a
+defensive matrix), `speed` (how fast it is moving now, in 256ths of a pixel a frame), the
+timers `stim` `ensnare` `plague` `lockdown` `maelstrom` `irradiate` `stasis` in the game's
+own ticks, and the booleans `invincible`, `hallucinated`, `speedUpgrade`, `cloaked`,
+`burrowed`, `underAttack`, `hasTarget` (its order is aimed at a unit) and `inTransport`.
+Hit points, shields, energy, kills, the cooldown (the ground weapon's, the air weapon's and
+the spells' at once), the resources, the build time, the rank, the matrix (a write gives
+250 points of matrix for that many frames; 0 takes it away), the timers, `invincible`,
+`hallucinated` and `speedUpgrade` can be written (`u.hp = 0` kills). The rest the game
+keeps for itself (a position write ends the game with "EUD not supported", a cloak write
+showed nothing), and the declarations have them `readonly`, so the editor says so as you
+type. A unit can be told:
 
 - `order("move" | "patrol" | "attack", location)`, the game's own Order, reaching this
   unit alone;
@@ -1619,6 +1624,10 @@ program(() => {
   tile). `const at = mouse(p)` keeps the place, and `centerLocation(location, x, y)` moves a
   location there, its size kept (or `centerLocation(location, x, y, width, height)`), so
   that `createUnit` and the rest can happen under the cursor.
+- `bounds(location)` is where a location is now: `left`, `top`, `right`, `bottom` in
+  pixels, read in the game (so a location `centerLocation` or Move Location moved is read
+  where it went) and written one edge at a time — `const b = bounds(locations.Pen);
+  b.left += 32; b.right += 32;` slides it a tile to the right, its size kept.
 - `underMouse(player, filter?)` is the unit nearest the mouse and no farther than `within`
   pixels from it (48 unless the filter says), or `null`.
 - `on.key("F7", (p) => …)` runs a function each time a player presses the key
