@@ -216,15 +216,18 @@ export interface UnitFilter { type?: number; owner?: number; at?: number }
  */
 export type EventSource = "created" | "died" | "killed" | "ordered" | "morphed";
 
-/** A number of a unit on the map. Hit points, shields and energy are whole points; the timers and the cooldown frames. */
+/**
+ * A number of a unit on the map. Hit points, shields and energy are whole points; the timers, the cooldown and the
+ * remaining build time frames; `matrix` the defensive matrix's frames; `speed` the current speed in 256ths of a pixel a frame.
+ */
 export type UnitNumField = "hp" | "maxHp" | "shields" | "maxShields" | "energy" | "owner" | "type" | "x" | "y" | "kills" | "orderId" | "cooldown" | "resources"
-  | "stim" | "ensnare" | "plague" | "lockdown" | "maelstrom" | "irradiate" | "stasis";
+  | "stim" | "ensnare" | "plague" | "lockdown" | "maelstrom" | "irradiate" | "stasis" | "buildTime" | "rank" | "matrix" | "speed";
 /** The ones a program may write; the rest the game keeps for itself (a position write ends the game). */
-export const UNIT_WRITABLE: ReadonlySet<string> = new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
-export const UNIT_NUM_FIELDS: readonly UnitNumField[] = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
-/** A true / false of a unit on the map; only `invincible` takes a write. */
-export type UnitFlag = "hallucinated" | "cloaked" | "burrowed" | "invincible" | "underAttack";
-export const UNIT_FLAGS: readonly UnitFlag[] = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+export const UNIT_WRITABLE: ReadonlySet<string> = new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "buildTime", "rank", "matrix", "invincible", "hallucinated", "speedUpgrade"]);
+export const UNIT_NUM_FIELDS: readonly UnitNumField[] = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "buildTime", "rank", "matrix", "speed"];
+/** A true / false of a unit on the map; `invincible`, `hallucinated` and `speedUpgrade` take a write. */
+export type UnitFlag = "hallucinated" | "cloaked" | "burrowed" | "invincible" | "underAttack" | "speedUpgrade" | "hasTarget" | "inTransport";
+export const UNIT_FLAGS: readonly UnitFlag[] = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack", "speedUpgrade", "hasTarget", "inTransport"];
 
 /** A unit on the map, or none. */
 export type UnitExpr =

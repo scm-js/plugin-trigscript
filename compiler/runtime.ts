@@ -26,7 +26,7 @@ import { DEAF_KEYS, keyName, KEY_NAMES, LAST_SLOT, MOUSE_BUTTONS, parseChatPatte
 import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
 import type { HoistedThunks } from "./hoist";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
-import { LOCAL_FIELDS, localName, MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
+import { LOCAL_FIELDS, LOCATION_SIDES, localName, locationField, MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
 import { coverValue } from "./cover";
 import { isVideo } from "./media";
 import { clipFile, fm, isClip, mixdown, noise, pluck, silence, together, tone, type ClipFile } from "./sound";
@@ -648,6 +648,18 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.fm = built(fm);
   rt.pluck = built(pluck);
   rt.centerLocation = () => { throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement — centerLocation(locations.Cursor, x, y)."); };
+  /** `bounds(location)`: the four edges as cells of the game's location table, read and written where the location is now. */
+  rt.bounds = (location: unknown) => {
+    const n = integer(location, "bounds: location");
+    if (n < 1 || n > 255) throw new ScriptError("bounds() takes one of locations.*.");
+    const who = `bounds(${names.locations.entries.find((l) => l.value === n)?.keys[0] ?? `location ${n}`})`;
+    return Object.freeze(Object.fromEntries(LOCATION_SIDES.map((side) => {
+      const field = locationField(side), ident = `${who}.${side}`;
+      const fail = (): never => { throw new ScriptError(`${ident} is where the location is while the game runs: it has no value when the script is built. Inside program(), assign it to a let, or use it in the program's own arithmetic and comparisons.`); };
+      const cell: TableCell = { name: `location.${side}`, base: field.base, stride: field.stride, index: n - 1, width: 4 };
+      return [side, { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail } as TableValue];
+    })));
+  };
 
   /* ── The game's tables ── */
   const tableValue = (kind: TableKind, field: TableField, index: number, ident: string, key?: number): TableValue => {
@@ -824,7 +836,7 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "sync", "select", "local", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
-  out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
+  out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES, "bounds");
   out.push("textColors", "ui", "on", "reserveLocation", "cover", "tone", "noise", "silence", "mixdown", "together", "fm", "pluck", "__jsx", "__fragment", "__class", "__fn", "__listen");
   return out;
 }

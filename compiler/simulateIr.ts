@@ -41,7 +41,7 @@ import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
 import { ORDER_OF_VERB } from "./orders";
-import { BUILD_BYTES, ERROR_CODES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, STACK_OVERFLOW_MESSAGE, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
+import { BUILD_BYTES, ERROR_CODES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, STACK_OVERFLOW_MESSAGE, TEXT_BYTES, TEXT_FIELD_BYTES, UNIT_FLAGS, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
 import type { TextExpr, ArrayDecl, At, BoolExpr, Call, EventSource, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
@@ -80,7 +80,7 @@ export interface ProgramEvent {
 }
 
 /** The most a field of a unit holds: a byte for the timers, the cooldown and the kills, 255 points of energy, a word of resources. */
-const UNIT_FIELD_MAX: Partial<Record<UnitNumField, number>> = { hp: 0xff_ffff, shields: 0xff_ffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
+const UNIT_FIELD_MAX: Partial<Record<UnitNumField, number>> = { hp: 0xff_ffff, shields: 0xff_ffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255, buildTime: 0xffff, rank: 255, matrix: 255 };
 export interface ProgramSimulationOptions extends Pick<SimulationOptions, "player" | "condition" | "random" | "strings" | "players" | "forces" | "properties"> {
   /** The trigger interpreter holding the world; one is made when absent. */
   world?: Simulation;
@@ -1036,7 +1036,7 @@ class ProgramRun {
       case "unitWrite": {
         const u = yield* this.living(s.unit);
         const field = s.field;
-        if (field === "invincible") { const on = yield* this.bool(s.value as BoolExpr); if (u) u.invincible = on; return "next"; }
+        if ((UNIT_FLAGS as readonly string[]).includes(field)) { const on = yield* this.bool(s.value as BoolExpr); if (u) (u as unknown as Record<string, boolean>)[field] = on; return "next"; }
         const value = yield* this.amount(s.value as NumExpr);
         if (!u) return "next";
         (u as unknown as Record<string, number>)[field] = Math.min(value, UNIT_FIELD_MAX[field as UnitNumField] ?? 0xffff_ffff);
@@ -1671,6 +1671,8 @@ export class ProgramSimulation {
     if (c.name === "memory.vision.countdown") return this.countdown;
     const local = c.name.startsWith("local.") ? this.localRead(c.name) : undefined;
     if (local !== undefined) return local;
+    // A location's edge (bounds()): the location as the simulator holds it, which centerLocation() moves too.
+    if (c.name.startsWith("location.")) return this.locations.get(c.index + 1)?.[c.name.slice("location.".length) as keyof SimBounds] ?? 0;
     const stored = this.tables.get(this.cellKey(c));
     if (typeof stored === "number") return Math.floor(stored / (c.scale ?? 1));
     const given = this.tableOf?.(c);
@@ -1724,6 +1726,11 @@ export class ProgramSimulation {
   /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
   tableWrite(c: TableCell, value: number, scaled: boolean, text?: string): void {
     if (c.name === "memory.vision.countdown") this.countdown = value;
+    if (c.name.startsWith("location.")) {
+      const n = c.index + 1, b = this.locations.get(n) ?? { left: 0, top: 0, right: 0, bottom: 0 };
+      this.locations.set(n, { ...b, [c.name.slice("location.".length)]: Math.min(value, cellMax(4)) });
+      return;
+    }
     if (text !== undefined) { this.tables.set(this.cellKey(c), text); return; }
     const raw = scaled ? value : value * (c.scale ?? 1);
     this.tables.set(this.cellKey(c), Math.min(raw, cellMax(c.width)));

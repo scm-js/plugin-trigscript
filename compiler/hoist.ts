@@ -665,9 +665,30 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && isText(n.expression.expression) && (carriesMark(n.expression.expression) || n.arguments.some((a) => isText(a) && carriesMark(a)))) return true;
     return ts.isBinaryExpression(n) && COMPARES.has(n.operatorToken.kind) && ((isText(n.left) && carriesMark(n.left)) || (isText(n.right) && carriesMark(n.right)));
   };
-  /** `memory.vision.countdown`, `local.camera.x` — a field of one of GAME_CELL_ROOTS, two names down; or `local.player`, one. */
+  /** `bounds(locations.Pen)`: a record of four cells of the game's location table, which a const may hold (`const b = bounds(…)`). */
+  const isBoundsCall = (x: TS.Expression): boolean => {
+    while (ts.isParenthesizedExpression(x) || ts.isAsExpression(x) || ts.isNonNullExpression(x)) x = x.expression;
+    return ts.isCallExpression(x) && libraryCallName(ts, checker, x) === "bounds";
+  };
+  const holdsBounds = (id: TS.Identifier): boolean => {
+    const decl = declarationOf(ts, checker, id);
+    return !!decl && ts.isVariableDeclaration(decl) && !!decl.initializer && isBoundsCall(decl.initializer);
+  };
+  /** `const { left, top } = bounds(…)`: each name one of the cells. */
+  const isBoundsEdge = (id: TS.Identifier): boolean => {
+    const decl = declarationOf(ts, checker, id);
+    if (!decl || !ts.isBindingElement(decl) || !ts.isObjectBindingPattern(decl.parent)) return false;
+    const v = decl.parent.parent;
+    return ts.isVariableDeclaration(v) && !!v.initializer && isBoundsCall(v.initializer);
+  };
+  /**
+   * `memory.vision.countdown`, `local.camera.x` — a field of one of GAME_CELL_ROOTS, two names down; or `local.player`, one;
+   * or an edge of a location, `bounds(…).left` and `b.left` with `const b = bounds(…)`.
+   */
   const isGameCell = (n: TS.Node): boolean => {
     if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && libraryName(ts, checker, n.expression) === "local") return true;
+    if (ts.isPropertyAccessExpression(n) && (isBoundsCall(n.expression) || (ts.isIdentifier(n.expression) && holdsBounds(n.expression)))) return true;
+    if (ts.isIdentifier(n) && !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) && isBoundsEdge(n)) return true;
     if (!ts.isPropertyAccessExpression(n) || !ts.isPropertyAccessExpression(n.expression)) return false;
     const root = n.expression.expression;
     if (!ts.isIdentifier(root)) return false;

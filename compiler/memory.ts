@@ -50,6 +50,14 @@ export const MEMORY_FIELDS: MemoryField[] = [
   },
 ];
 
+/** The game's locations: 255 records of 20 bytes — left, top, right, bottom in pixels, then the elevation flags. */
+export const LOCATION_TABLE = 0x58dc60, LOCATION_BYTES = 20;
+export const LOCATION_SIDES = ["left", "top", "right", "bottom"] as const;
+/** `bounds(location).left`: one edge of a location as a table cell, which the program reads and writes where it is now. */
+export function locationField(side: (typeof LOCATION_SIDES)[number]): TableField {
+  return { name: side, doc: `The location's ${side} edge, in pixels.`, base: LOCATION_TABLE + 4 * LOCATION_SIDES.indexOf(side), stride: LOCATION_BYTES, width: 4 };
+}
+
 /**
  * `local`: what only the computer the game runs on knows (TrigScript 4, B5) — who sits at it, where its screen is, where
  * its mouse is on the screen. Each is a cell read as `memory`'s are, and every one is a `Local` value: it may differ from

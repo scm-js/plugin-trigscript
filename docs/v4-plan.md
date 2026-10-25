@@ -5923,6 +5923,20 @@ reads listed). D, Magenta's probe maps 6, 7, 10 and 11 (`scripts/make-probe-maps
 eudplib from hand-written specs) redone on this build and played in Remastered, with answer sheets. Then plugin-eudplib
 is required by nothing we ship.
 
+**Part C, the language (built 2026-10-25, branch `magenta-language`).** `bounds(location)` is a record of four cells of
+the game's location table (`memory.ts` `locationField`: 0x58DC60 + 20·(n−1) + {0, 4, 8, 12}, dwords), read and written
+as `memory.*` cells are (`tableRead` / `tableWrite`, so `b.left += 32` is one write); `hoist.ts` knows `bounds(…).left`,
+`b.left` with `const b = bounds(…)` and `const { left } = bounds(…)` as game cells, so the record is the script's and
+every edge the program's; the IR simulator keeps the edges in its locations, which `centerLocation()` moves too. Units:
+`buildTime` (+0xAC, a word), `rank` (+0x8E), `matrix` (+0x114; a write puts 250 points of matrix at +0x112 for frames
+≥ 1 and 0 for 0), `speed` (+0x38, read only), the flags `speedUpgrade` (0x10000000, written), `hallucinated`
+(0x40000000, now written too), `hasTarget` (+0x5C ≠ 0) and `inTransport` (0x40); `cooldown` wrote the three cooldowns
+at once already, so Magenta's "ground only" note goes. Ledger: 14 rows (step 6 for the bounds, step 10 for the units),
+all taken; `tests/emitter.test.ts` walks the own payload beside the simulator for every new field and for the bounds.
+Left out, on purpose: `{rest:text}` chat capture (Magenta's `^…$` patterns stay unrendered), the status writes cloak /
+noclip / cooldownUpgrade (a cloak write showed nothing; the others are not in the renderer's list), the camera and the
+bgm (the renderer's: `centerView` each frame, and the sound library).
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

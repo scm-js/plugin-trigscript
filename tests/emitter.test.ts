@@ -1478,6 +1478,12 @@ describe("a map of our own, units", () => {
       put(at + 0x64, u.type, 2);
       put(at + 0x8f, u.kills ?? 0, 1);
       put(at + 0xa2, (u.energy ?? 0) * 256, 2);
+      put(at + 0x38, u.speed ?? 0);
+      put(at + 0x5c, u.hasTarget ? 0x700000 + 4 : 0);
+      put(at + 0x8e, u.rank ?? 0, 1);
+      put(at + 0xac, u.buildTime ?? 0, 2);
+      put(at + 0x114, u.matrix ?? 0, 1);
+      put(at + 0xdc, (u.invincible ? 0x04000000 : 0) | (u.hallucinated ? 0x40000000 : 0) | (u.speedUpgrade ? 0x10000000 : 0) | (u.inTransport ? 0x40 : 0) | (u.burrowed ? 0x10 : 0));
     });
     for (const [type, hp] of Object.entries(MAX_HP)) put(0x662350 + 4 * Number(type), hp * 256);
     for (const [type, g] of Object.entries(GROUPS)) put(0x6637a0 + Number(type), g, 1);
@@ -1573,6 +1579,41 @@ describe("a map of our own, units", () => {
       "  let hp = 0;",
       "  for (const u of unitsOf(P2)) hp += u.hp;",
       "  print(`${lings} ${hp}`);",
+    ].join("\n"), UNITS, HOME);
+  });
+
+  it("reads and writes the fields Magenta's rows need: build time, rank, matrix, speed and the flags", () => {
+    const units: SimUnitInit[] = [
+      { type: 106, owner: 0, x: 400, y: 300, buildTime: 900, rank: 2, speed: 0 },
+      { type: 0, owner: 0, x: 420, y: 340, speed: 1024, hasTarget: true, speedUpgrade: true, matrix: 100 },
+      { type: 0, owner: 0, x: 430, y: 330, inTransport: true, hallucinated: true },
+    ];
+    same([
+      "  const cc = first({ type: units.TerranCommandCenter })!;",
+      "  const m = first({ type: units.TerranMarine })!;",
+      "  const t = first({ type: units.TerranMarine, owner: P1 })!;",
+      "  let second: Unit | null = null;",
+      "  for (const u of unitsOf(P1, { type: units.TerranMarine })) second = u;",
+      "  print(`${cc.buildTime} ${cc.rank} ${cc.speed} ${m.speed} ${m.hasTarget} ${m.speedUpgrade} ${m.matrix} ${m.inTransport} ${m.hallucinated}`);",
+      "  if (second) print(`${second.inTransport} ${second.hallucinated} ${second.hasTarget} ${second.speedUpgrade}`);",
+      "  cc.buildTime = 60; cc.rank = 7; m.matrix = 40; m.speedUpgrade = false; m.hallucinated = true; cc.rank += 1;",
+      "  print(`${cc.buildTime} ${cc.rank} ${m.matrix} ${m.speedUpgrade} ${m.hallucinated}`);",
+      "  m.matrix = 0; cc.buildTime = 70000; m.rank = 300;",
+      "  print(`${m.matrix} ${cc.buildTime} ${m.rank}`);",
+    ].join("\n"), units, HOME);
+  });
+
+  it("reads a location's bounds and moves one edge at a time", () => {
+    same([
+      "  const b = bounds(1 as Location);",
+      "  print(`${b.left} ${b.top} ${b.right} ${b.bottom}`);",
+      "  b.left += 32; b.right += 32; b.top = 0; b.bottom -= 16;",
+      "  print(`${b.left} ${b.top} ${b.right} ${b.bottom} ${bounds(1 as Location).right - bounds(1 as Location).left}`);",
+      "  const { left, top } = bounds(1 as Location);",
+      "  print(`${left} ${top}`);",
+      "  let n = 0;",
+      "  for (const u of unitsAt(1 as Location)) n += 1;",
+      "  print(`${n}`);",
     ].join("\n"), UNITS, HOME);
   });
 

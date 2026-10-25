@@ -65,12 +65,15 @@ const X = word(0x28, 2), Y = word(0x2a, 2);
 const FIELDS: Partial<Record<UnitNumField, Bits>> = {
   owner: OWNER, type: TYPE, x: X, y: Y, kills: word(0x8f, 1), orderId: ORDER, cooldown: word(0x55, 1), resources: word(0xd0, 2),
   stim: word(0x115, 1), ensnare: word(0x116, 1), lockdown: word(0x117, 1), irradiate: word(0x118, 1), stasis: word(0x119, 1), plague: word(0x11a, 1), maelstrom: word(0x124, 1),
+  buildTime: word(0xac, 2), rank: word(0x8e, 1), matrix: word(0x114, 1), speed: word(0x38, 4),
 };
 const HP = 0x08 >> 2, SHIELDS = 0x60 >> 2, ENERGY = word(0xa2, 2), STATUS = 0xdc >> 2, ATTACKED = word(0x87, 1), USER_ACTION = word(0x93, 1);
 /** The status bits a flag is (cloaked: both of two). */
-const FLAG_BITS: Partial<Record<UnitFlag, number>> = { invincible: 0x04000000, hallucinated: 0x40000000, burrowed: 0x10, cloaked: 0x300 };
+const FLAG_BITS: Partial<Record<UnitFlag, number>> = { invincible: 0x04000000, hallucinated: 0x40000000, burrowed: 0x10, cloaked: 0x300, speedUpgrade: 0x10000000, inTransport: 0x40 };
+/** The unit an order is aimed at (a pointer, 0 for none), and the defensive matrix's hit points (a word, 256 a point) beside its timer. */
+const ORDER_TARGET = 0x5c >> 2, MATRIX_HP = word(0x112, 2), MATRIX_POINTS = 250 * 256;
 /** The most a field written holds, as the simulator stops it: points for hit points and shields, a byte, a word. */
-const TOPS: Partial<Record<UnitNumField, number>> = { hp: 0xffffff, shields: 0xffffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
+const TOPS: Partial<Record<UnitNumField, number>> = { hp: 0xffffff, shields: 0xffffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255, buildTime: 0xffff, rank: 255, matrix: 255 };
 /** The Order action's orders. */
 const ORDERS = { move: 0, patrol: 1, attack: 2 } as const;
 const SET_DEATHS = 45, ORDER_ACTION = 46, SET_TO = 7, MASKED = 0x4353;
@@ -689,6 +692,7 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
     if (isNone(u)) return { kind: "const", value: false };
     u = held(u, pre);
     if (f === "underAttack") return all([alive(u), cmp(">=", bits(u.e, ATTACKED), k(1))]);
+    if (f === "hasTarget") return all([alive(u), cmp(">=", peek(of(u.e, ORDER_TARGET)), k(1))]);
     const mask = FLAG_BITS[f];
     if (mask === undefined) throw new Leave();
     return all([alive(u), cmp("==", peek(of(u.e, STATUS), mask), k(mask))]);
@@ -700,13 +704,14 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
   /** `u.hp = v` and the rest: nothing happens when the unit is none or gone. */
   const write = (s: Extract<Stmt, { kind: "unitWrite" }>, pre: Stmt[]): void => {
     const u0 = unit(s.unit, pre);
-    if (s.field === "invincible") {
+    if (s.field === "invincible" || s.field === "hallucinated" || s.field === "speedUpgrade") {
+      const mask = FLAG_BITS[s.field]!;
       const on = fixBool(s.value as BoolExpr, pre);
       const t = fresh("b");
       pre.push(dec(t, k(0), 1), ...when(on, [set(t, k(1))]));
       if (isNone(u0)) return;
       const u = held(u0, pre);
-      pre.push(...when(alive(u), [poke(of(u.e, STATUS), bin("*", ranged(V(t), 0, 1), k(0x04000000)), 0x04000000)]));
+      pre.push(...when(alive(u), [poke(of(u.e, STATUS), bin("*", ranged(V(t), 0, 1), k(mask)), mask)]));
       return;
     }
     const f = s.field as UnitNumField;
@@ -724,6 +729,12 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
       case "energy": body = [poke(of(e, ENERGY.dword), bin("*", v, k(2 ** 24)), ENERGY.mask)]; break;
       // (Each of the three cooldowns: the ground weapon's, the air weapon's, the spells'.)
       case "cooldown": body = [poke(of(e, 0x54 >> 2), bin("*", v, k(0x01010100)), 0xffffff00)]; break;
+      // (The matrix's frames, with 250 points for them to take off — as the Science Vessel's cast gives — or 0 points when the frames are 0.)
+      case "matrix": {
+        const b = FIELDS.matrix!;
+        body = [poke(of(e, b.dword), v, b.mask), ...when(cmp(">=", v, k(1)), [poke(of(e, MATRIX_HP.dword), k(MATRIX_POINTS * 2 ** MATRIX_HP.shift), MATRIX_HP.mask)], [poke(of(e, MATRIX_HP.dword), k(0), MATRIX_HP.mask)])];
+        break;
+      }
       default: {
         const b = FIELDS[f]!;
         body = [poke(of(e, b.dword), b.shift ? bin("*", v, k(2 ** b.shift)) : v, b.mask)];
