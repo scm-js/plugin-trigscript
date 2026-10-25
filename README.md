@@ -2187,7 +2187,7 @@ A plugin whose rows need code in the map writes that code as TrigScript — `pro
 of building anything itself. The service is `trigscript.build` (`contract.d.ts` in this
 repository is its shape; take it with `import type`):
 
-```ts
+```typescript
 import type { TrigScriptBuildService } from "./vendor/trigscript";
 api.services.watch<TrigScriptBuildService>("trigscript.build", (build) => {
   mine?.dispose();
