@@ -1075,3 +1075,20 @@ describe("structured: actions with a variable amount", () => {
     expect(compile(program('let a = 0; let b = 0; setResources(P1, "add", a, b);')).diagnostics[0].message).toMatch(/must be known when the script is built/);
   });
 });
+
+describe("structured: entries another plugin contributes", () => {
+  it("run after the script's entry, in their order, and their programs come after the script's", () => {
+    const r = compileScript(ts, {
+      "main.ts": `program(() => { displayText("a"); }, { name: "a" });`,
+      "magenta/main.ts": `import { k } from "./rows";\nprogram(() => { displayText("b"); setDeaths(P1, units.TerranMarine, "set", k); }, { name: "b" });`,
+      "magenta/rows.ts": `export const k = 3;`,
+      "other/main.ts": `program(() => { displayText("c"); }, { name: "c" });`,
+    }, defaultScriptNames(), { lib: LIB, entries: ["other/main.ts", "magenta/main.ts"] });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.ir.map((p) => p.name)).toEqual(["a", "c", "b"]);
+  });
+  it("an entry the files lack is an error", () => {
+    const r = compileScript(ts, { "main.ts": `program(() => { displayText("a"); });` }, defaultScriptNames(), { lib: LIB, entries: ["magenta/main.ts"] });
+    expect(r.diagnostics.map((d) => d.message)).toEqual(["The build names magenta/main.ts as an entry, and the script has no such file."]);
+  });
+});

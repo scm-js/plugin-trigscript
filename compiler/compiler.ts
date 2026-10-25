@@ -209,6 +209,12 @@ export interface CompileOptions {
    * as a problem while the script is typed, so that a map does not change builds without anyone seeing.
    */
   own?: OwnCheck;
+  /**
+   * Files among `files` that run as entries of their own after the entry, in order — what another plugin contributes
+   * to the build (`service.ts`, `contribute`): their `program()`s come after the script's. One that is not among the
+   * files is an error.
+   */
+  entries?: readonly string[];
 }
 
 export { LowerError };
@@ -421,8 +427,12 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   registry.where = () => where(new Error()) ?? { file: ENTRY_FILE, line: 1 };
   const runtime = { ...createRuntime(names, collector), ...registry.library() };
   collector.running = true;
-  // The entry first, so the programs are there; then the test files, which nothing imports.
-  const failure = runModules(linked, entry, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort(), media: (path) => { const text = media.get(path); return text === undefined ? undefined : mediaValue(path, text); } });
+  // The entry first, so the programs are there; then the contributed entries, in their order; then the test files,
+  // which nothing imports.
+  const entries = options.entries ?? [];
+  for (const e of entries) if (!scripts.has(normalizePath(e))) diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: `The build names ${e} as an entry, and the script has no such file.`, source: "compiler" });
+  if (diagnostics.length) return result();
+  const failure = runModules(linked, entry, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: [...entries.map(normalizePath), ...fileNames.filter(isTestFile).sort()], media: (path) => { const text = media.get(path); return text === undefined ? undefined : mediaValue(path, text); } });
   collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;

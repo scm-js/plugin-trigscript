@@ -12,7 +12,7 @@ import { ActionType, emptyAction, emptyTrigger, type TriggerRecord } from "../ve
 import { compileScript } from "../compiler/compiler";
 import { buildOwnMap } from "../compiler/backend/build";
 import { Sections, readFacts, writeChunks } from "../compiler/backend/chk";
-import { firstFault, MAGENTA_MEMBER, positionIn, ScriptService, type Compiler } from "../service";
+import { firstFault, MAGENTA_MEMBER, positionIn, refusalAt, ScriptService, type BuildContribution, type Compiler } from "../service";
 import { readFiles, readManifest, scriptState } from "../script";
 import type { OwnBuildEvent } from "../service";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -87,7 +87,7 @@ function host() {
 /** The real compiler, at once — with a hook to run something between the compile starting and its result landing. */
 function compiler(during: () => void = () => {}): Compiler {
   return async (input) => {
-    const r = compileScript(ts, input.files, input.names, { lib: LIB, ...(input.own ? { own: input.own } : {}) });
+    const r = compileScript(ts, input.files, input.names, { lib: LIB, ...(input.own ? { own: input.own } : {}), ...(input.entries ? { entries: input.entries } : {}) });
     during();
     return r;
   };
@@ -277,7 +277,7 @@ describe("service: saving applies the script and builds its programs", () => {
     await svc.build(PROGRAM);
     expect(svc.whyNotBuilt()).toBeNull();
     d.extras.set(MAGENTA_MEMBER, new Uint8Array([123, 125]));
-    expect(svc.whyNotBuilt()).toMatch(/^Magenta's triggers are in this map: TrigScript's programs are not built beside them yet/);
+    expect(svc.whyNotBuilt()).toMatch(/^Magenta's triggers are in this map, and this Magenta builds them through eudplib/);
     expect(h.steps[0].applies()).toBe(true);
     await expect(h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "save", signal: new AbortController().signal })).rejects.toThrow(/^Magenta's triggers are in this map/);
     d.extras.delete(MAGENTA_MEMBER);
@@ -333,5 +333,102 @@ describe("service: saving applies the script and builds its programs", () => {
     expect(positionIn("trigscript: unknown variable 'n' at main.ts:12:5")).toEqual({ file: "main.ts", line: 12, column: 5 });
     expect(positionIn("eudplib said no")).toBeNull();
     expect(firstFault([])).toBe("The script has errors.");
+  });
+});
+
+describe("service: what other plugins contribute to the build", () => {
+  const ROWS = `program(() => { while (true) { setDeaths(P1, units.TerranMarine, "set", 7); sleep(frames(1)); } });`;
+  const run = (h: ReturnType<typeof host>) => h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "save", signal: new AbortController().signal });
+  /** A stand-in for Magenta: its rows as a program, under a folder of its own. */
+  const magenta = (source: string, on = () => true): BuildContribution => ({ id: "magenta", label: "Magenta", applies: on, collect: async () => ({ files: { "magenta/main.ts": source }, entries: ["magenta/main.ts"] }) });
+
+  it("a map with no script of its own is built from a contribution alone, and the events name the contributor", async () => {
+    const h = host();
+    h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler(), builder);
+    svc.attach();
+    let on = false;
+    const handle = svc.buildService("4.0.0").contribute(magenta(ROWS, () => on));
+    expect(h.steps[0].applies()).toBe(false);
+    on = true;
+    expect(h.steps[0].applies()).toBe(true);
+    const heard: OwnBuildEvent[] = [];
+    svc.onBuild((e) => heard.push(e));
+    const out = await run(h);
+    expect(new Sections(out).get("TRIG")!.length).toBeGreaterThan(0);
+    expect(heard[0]).toMatchObject({ kind: "start", contributors: ["trigscript", "magenta"] });
+    expect(heard.find((e) => e.kind === "log" && /Built by TrigScript: 1 program laid out into the map, Magenta among them/.test(e.line))).toBeTruthy();
+    expect(heard.at(-1)).toMatchObject({ kind: "done", contributors: ["trigscript", "magenta"] });
+    // Gone with its handle: the step no longer applies.
+    handle.dispose();
+    expect(h.steps[0].applies()).toBe(false);
+  });
+
+  it("the map's own programs and the contribution's go into one build, the contribution's after", async () => {
+    const h = host();
+    h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler(), builder);
+    svc.attach();
+    await svc.build(`${SRC}\nprogram(() => { let n = 0; while (true) { n++; displayText("tick"); sleep(seconds(1)); } });`);
+    svc.contribute(magenta(ROWS));
+    const heard: OwnBuildEvent[] = [];
+    svc.onBuild((e) => heard.push(e));
+    await run(h);
+    expect(heard.find((e) => e.kind === "log" && /Built by TrigScript: 2 programs laid out into the map, Magenta among them/.test(e.line))).toBeTruthy();
+  });
+
+  it("a contribution that does not compile, or that the build does not take, fails the build in the contributor's name", async () => {
+    const h = host();
+    h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler(), builder);
+    svc.attach();
+    const heard: OwnBuildEvent[] = [];
+    svc.onBuild((e) => heard.push(e));
+    const bad = svc.contribute(magenta(`program(() => { nope(); });`));
+    await expect(run(h)).rejects.toThrow(/^Magenta: magenta\/main\.ts:1 — Cannot find name 'nope'/);
+    expect(heard.at(-1)).toMatchObject({ kind: "failed", from: "magenta" });
+    bad.dispose();
+    svc.contribute(magenta(`program(() => { while (true) { wait(1000); sleep(frames(1)); } });`));
+    await expect(run(h)).rejects.toThrow(/^Magenta: TrigScript does not take this yet \(the action Wait .*, line 1 of magenta\/main\.ts\)\.$/);
+    expect(heard.at(-1)).toMatchObject({ kind: "failed", from: "magenta" });
+    // A trigger() among the programs: nothing would write it into the list.
+    svc.contribute(magenta(`trigger(P1, [always()], [displayText("x")]);\n${ROWS}`));
+    await expect(run(h)).rejects.toThrow(/^Magenta brought trigger\(\) calls, and a contribution holds programs only\.$/);
+    // A file outside the contribution's folder is refused.
+    svc.contribute({ id: "magenta", label: "Magenta", applies: () => true, collect: async () => ({ files: { "main.ts": ROWS }, entries: ["main.ts"] }) });
+    await expect(run(h)).rejects.toThrow(/^Magenta: Magenta brought the file main\.ts, which is not under its own folder \(magenta\/\)\./);
+  });
+
+  it("check() says what a build would: the problems at their file and line, and how many programs", async () => {
+    const h = host();
+    h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler(), builder);
+    const service = svc.buildService("4.0.0");
+    expect(service.versions.plugin).toBe("4.0.0");
+    const ok = await service.check({ "magenta/main.ts": ROWS }, ["magenta/main.ts"]);
+    expect(ok).toEqual({ problems: [], programs: 1 });
+    const typo = await service.check({ "magenta/main.ts": `program(() => { nope(); });` }, ["magenta/main.ts"]);
+    expect(typo.problems).toEqual([{ file: "magenta/main.ts", line: 1, column: 17, message: "Cannot find name 'nope'." }]);
+    const refused = await service.check({ "magenta/main.ts": `program(() => { while (true) { wait(1000); sleep(frames(1)); } });` }, ["magenta/main.ts"]);
+    expect(refused.problems).toEqual([{ file: "magenta/main.ts", line: 1, column: 1, message: expect.stringMatching(/^TrigScript does not take this yet \(the action Wait/) }]);
+    const triggers = await service.check({ "magenta/main.ts": `trigger(P1, [always()], [displayText("x")]);` }, ["magenta/main.ts"]);
+    expect(triggers.problems.map((p) => p.message)).toEqual(["A contribution holds programs only: its trigger() calls are not written into the map."]);
+    expect(refusalAt("the action Wait (…), line 3 of magenta/main.ts")).toEqual({ reason: "the action Wait (…)", line: 3, file: "magenta/main.ts" });
+    expect(refusalAt("no human player")).toEqual({ reason: "no human player", line: null, file: null });
+  });
+
+  it("Magenta's member in the map is refused only while no Magenta contributes", async () => {
+    const h = host();
+    const d = h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler(), builder);
+    svc.attach();
+    await svc.build(`${SRC}\nprogram(() => { let n = 0; while (true) { n++; displayText("tick"); sleep(seconds(1)); } });`);
+    d.extras.set(MAGENTA_MEMBER, new Uint8Array([123, 125]));
+    expect(svc.whyNotBuilt()).toMatch(/Update Magenta to the version that builds with TrigScript/);
+    const handle = svc.contribute(magenta(ROWS, () => false));
+    expect(svc.whyNotBuilt()).toBeNull();
+    await expect(run(h)).resolves.toBeInstanceOf(Uint8Array);
+    handle.dispose();
+    expect(svc.whyNotBuilt()).not.toBeNull();
   });
 });
