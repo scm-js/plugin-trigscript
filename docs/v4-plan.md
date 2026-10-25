@@ -5908,11 +5908,20 @@ see, and a scan reads the units before the game's tick between the frames. With 
 run every frame, whether or not *Run triggers every frame* is ticked (a program's map does). A map that holds both a
 TrigScript script and Magenta's rows is built in one pass, in one layout, which is what the step 17 refusal was for.
 
-**Parts.** A, this (built 2026-10-25). B, Magenta: `renderScript`, `requires: plugin-trigscript`, the Build dialog as
-a preflight (`check`) and the options, the Python and the eudplib contract deleted, tests that compile the rendered
-source with TrigScript's testing bundle and run it in TrigScript's simulator. C, the language additions above, as B
-needs them. D, Magenta's test maps rebuilt on our build and played in Remastered (the counters map, the input rows,
-a pass, a pick, a chat command), with answer sheets. Then plugin-eudplib is required by nothing we ship.
+**Parts.** A, this (built 2026-10-25). B, Magenta (built 2026-10-25, branch `trigscript-library` of plugin-magenta):
+`src/model/trigscript.ts` renders the rows (`renderScript`, pure: the list of what it cannot take yet and what it took
+in part), `src/ui/contribute.ts` contributes them (`applies` when the map has a row, a chat command, an input or an
+option; `collect` refuses with the first unrenderable row's reason, which the save's notice shows), the Build dialog
+is a preflight — the rows against the map, the unrenderable ones at their triggers, and the rendered file compiled by
+TrigScript's `check` there and then — with the options kept and said to be not built yet; `requires:
+plugin-trigscript`; the Python, the embedding, the eudplib contract, `composePlugins` and the build-freshness record
+deleted; `tests/trigscript.test.ts` holds each kind's rendering and, with this repository beside it, compiles the
+rendered file with the compiler and asks the own build (one program, taken). Magenta's `requires` resolves to
+TrigScript's latest release, which has no service until 4.0 is tagged: the Magenta PR waits for that. C, the language
+additions above, as B needs them (the camera, the bgm, *move by*, the mouse over a moving location, the verbs and
+reads listed). D, Magenta's probe maps 6, 7, 10 and 11 (`scripts/make-probe-maps.mts`, which still builds through
+eudplib from hand-written specs) redone on this build and played in Remastered, with answer sheets. Then plugin-eudplib
+is required by nothing we ship.
 
 ## Part C — the game, pushed
 
