@@ -5733,6 +5733,17 @@ both: the events map prints its made, died, back and E lines in the lifted game 
 4 and `game-cutscene` 3 of 3 still; `game-events` and `game-events-2` fail as before, on the action counts the
 harness has only from an eudplib build. The whole pack was rebuilt (every map with tasks or unit reads is touched).
 
+**The pack, played out (2026-10-25).** Twelve of the fourteen play as their sheets ask on the build of our own, in
+Remastered: tetris, snake, own-input, input, key-held, local-select, local-ui, events (every step, F included),
+cutscene (the scene and the references), raycaster (Classic; the way out in 27 s), fog-lib (the disc and the heart
+held), korobeiniki (A fit 1.000, B 0.995 against the files, no drift) and music-demo (the mixed song fit 0.999; the
+note-by-note song follows it within 30 ms). ui-spike-2 was in the pack by mistake: its content was a hand-written
+eudplib plugin, and built our way it says one line. One observation from the music demo for the sound library, not
+the build: the note-by-note song is 2.5 dB quieter than the mixed one in every band, because a note's clip is a
+mono WAV and Remastered plays a mono sound 2.4 dB quieter (the render is a stereo Ogg since ead7eab; the 2026-10-19
+play, before that, had them equal) — short clips should go in with two channels too. Four faults the plays found
+are fixed above; the gate's part 2 is done.
+
 *Open:*
 - Step 16's leftovers (2026-10-23). *A function that calls itself with a `finally`* in it, refused (a text on the
   stack); the generator leaves the shape out until then. *A function that calls itself and gives back a text* — the
@@ -5758,7 +5769,9 @@ harness has only from an eudplib build. The whole pack was rebuilt (every map wi
   (`i + 2147483647` inside it is 2 147 483 648, then an error naming the result). *The lifted game's strings:* 1.16.1
   names the first 64 KB, so `--game` puts three seeds (nine programs) to a map and says so when a map is past it.
   *`EUDPLIB=1`* is now unused by anything but `gate-sweep.mts` and `random-scripts.mts --eudplib`: step 17 removes it
-  with the Python.
+  with the Python. *A mono clip plays 2.4 dB quieter* than a stereo one in Remastered, and a note of the music library
+  goes in as a mono WAV while the rendered song is a stereo Ogg: the short clips should go in with two channels too
+  (the music demo's play, 2026-10-25).
 
 ## Part C — the game, pushed
 
