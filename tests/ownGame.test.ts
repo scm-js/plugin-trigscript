@@ -18,7 +18,7 @@ import { defaultLib } from "../bundle/lib.mjs";
 let lib: ReturnType<typeof defaultLib> | undefined;
 function own(body: string) {
   lib ??= defaultLib();
-  const r = compileScript(ts, { "main.ts": `program(() => {\n${body}\n});\n` }, defaultScriptNames(), { lib, emitter: false });
+  const r = compileScript(ts, { "main.ts": `program(() => {\n${body}\n});\n` }, defaultScriptNames(), { lib });
   expect(r.diagnostics).toEqual([]);
   const o = emitOwn(r);
   if (typeof o === "string") throw new Error(o);
@@ -180,7 +180,7 @@ describe("a map of our own, the game's tables", () => {
 describe("a map of our own, programs, owners and players", () => {
   const script = (source: string, players?: MapPlayers) => {
     lib ??= defaultLib();
-    const r = compileScript(ts, { "main.ts": source }, defaultScriptNames(), { lib, emitter: false });
+    const r = compileScript(ts, { "main.ts": source }, defaultScriptNames(), { lib });
     expect(r.diagnostics).toEqual([]);
     return emitOwn(r, players);
   };
@@ -266,7 +266,7 @@ describe("a map of our own, programs, owners and players", () => {
 describe("a map of our own, texts known when built chosen while the game runs", () => {
   const ownOf = (body: string, base = 1) => {
     lib ??= defaultLib();
-    const r = compileScript(ts, { "main.ts": `program(() => {\n  let n = 0;\n  let i = 0;\n  while (n < 12) n += 5;\n  while (i < 3) i += 1;\n${body}\n});\n` }, defaultScriptNames(), { lib, emitter: false });
+    const r = compileScript(ts, { "main.ts": `program(() => {\n  let n = 0;\n  let i = 0;\n  while (n < 12) n += 5;\n  while (i < 3) i += 1;\n${body}\n});\n` }, defaultScriptNames(), { lib });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r, undefined, base);
     if (typeof o === "string") throw new Error(o);
@@ -312,7 +312,7 @@ describe("a map of our own, the map's own triggers", () => {
   /** A script of `trigger()` records beside a program, for a map whose humans and computers are `slots`. */
   const script = (source: string, slots: number[], forces = [0, 1, 1, 0, 0, 0, 0, 0]) => {
     lib ??= defaultLib();
-    const r = compileScript(ts, { "main.ts": source }, defaultScriptNames(), { lib, emitter: false });
+    const r = compileScript(ts, { "main.ts": source }, defaultScriptNames(), { lib });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r, { slots, forces });
     if (typeof o === "string") throw new Error(o);

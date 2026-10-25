@@ -11,7 +11,6 @@ import { describe, expect, it } from "vitest";
 import { compileScript, type CompileResult } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { simulatePrograms } from "../compiler/simulateIr";
-import { serializeIr } from "../compiler/eud";
 import { STACK_DEPTH, eachCall, type Call, type Stmt } from "../compiler/ir";
 import { largestFrame } from "../compiler/recursion";
 import { readSettings, withSettings } from "../script";
@@ -173,13 +172,9 @@ describe("recursion: the depth the map allows", () => {
     expect(simulate(compile(DEEP.replace("n >= 0", "n < 100"))).value("after")).toBe(1);
   });
 
-  it("is the map's script setting, carried in the IR file only when it differs and something recurses", () => {
+  it("is the map's script setting", () => {
     const r = compile(DEEP);
     expect(simulate(r, { stackDepth: 40 }).value("reached")).toBe(40);
-    expect(JSON.parse(serializeIr(r.ir, r.strings, null, { stackDepth: 40 })).stack).toBe(40);
-    expect(JSON.parse(serializeIr(r.ir, r.strings, null, { stackDepth: STACK_DEPTH })).stack).toBeUndefined();
-    const flat = compile("let x = 1; x++;");
-    expect(JSON.parse(serializeIr(flat.ir, flat.strings, null, { stackDepth: 40 })).stack).toBeUndefined();
     const none = new Map<string, Uint8Array>();
     expect(readSettings(withSettings(none, { stackDepth: 40 }))).toMatchObject({ stackDepth: 40 });
     expect(readSettings(withSettings(none, { stackDepth: 1 })).stackDepth).toBe(16);

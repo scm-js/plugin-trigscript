@@ -71,9 +71,9 @@ export function withSettings(extras: Extras, settings: Partial<ScriptSettings>):
 export interface ScriptManifest {
   version: 2;
   /**
-   * How many `program()`s the script had when it was last applied: what tells the eudplib
-   * contribution, without compiling, whether the map has anything to build. Absent in a
-   * manifest from before 3.0, whose programs were triggers of the block.
+   * How many `program()`s the script had when it was last applied: what tells the build step,
+   * without compiling, whether the map has anything to build. Absent in a manifest from
+   * before 3.0, whose programs were triggers of the block.
    */
   programs?: number;
   /** Index of the first generated trigger. */
@@ -89,11 +89,6 @@ export interface ScriptManifest {
   sourceHash: string;
   /** `hashRecord` of each generated record, so an edited block can be taken apart; absent in a manifest from before 2.4.1. */
   records?: string[];
-  /**
-   * Why the programs are not built by TrigScript itself (`CompileResult.ownRefusal`), as of the last apply: the map
-   * is then built through the eudplib plugin. Absent when TrigScript builds it, or there are no programs.
-   */
-  ownRefusal?: string;
 }
 
 export interface ScriptBlock {
@@ -192,7 +187,7 @@ export function readManifest(extras: Extras): ScriptManifest | null {
     const sources = Array.isArray(m.sources) ? m.sources.map((s) => (s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null)) : [];
     const files = Array.isArray(m.files) ? m.files.filter((f): f is string => typeof f === "string") : [];
     const records = Array.isArray(m.records) && m.records.length === m.count && m.records.every((r) => typeof r === "string") ? m.records : undefined;
-    return { version: 2, ...programs, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...(records ? { records } : {}), ...(typeof m.ownRefusal === "string" && m.ownRefusal ? { ownRefusal: m.ownRefusal } : {}) };
+    return { version: 2, ...programs, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...(records ? { records } : {}) };
   } catch {
     return null;
   }
@@ -277,7 +272,7 @@ export interface ScriptState {
   edited: { unchanged: number; changed: number } | null;
   /** The files differ from what the block was built from (or were never built). */
   unbuilt: boolean;
-  /** The script had programs when it was last applied: the saved map is built by eudplib and needs StarCraft: Remastered. */
+  /** The script had programs when it was last applied: the saved map is built with them and needs StarCraft: Remastered. */
   programs: number;
 }
 
@@ -389,7 +384,7 @@ export function buildScript(triggers: TriggerRecord[], extras: Extras, files: Sc
   } else {
     start = triggers.length; before = triggers.slice(); after = [];
   }
-  const manifest: ScriptManifest = { version: 2, programs: compiled.ir.length, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord), ...(compiled.ir.length && compiled.ownRefusal ? { ownRefusal: compiled.ownRefusal } : {}) };
+  const manifest: ScriptManifest = { version: 2, programs: compiled.ir.length, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
   return { list: [...before, ...records, ...after], extras: withSounds(withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), compiled.sounds ?? []), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
 }
 

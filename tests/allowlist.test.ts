@@ -43,8 +43,8 @@ describe("the allowlist", () => {
 });
 
 describe("checkTrace", () => {
-  it("lets the map's own memory and eudplib's walk of the game's heap through", () => {
-    const r = checkTrace(trace([["12:3", 0x19191000, 1, 0xffffffff, 4], ["eudplib", 0x30a30010, 0, 0xffffffff, 2], ["", 0x30a30014, 1, 0xffffffff, 1]]), list);
+  it("lets the map's own memory and the build's own walk of the game's heap through", () => {
+    const r = checkTrace(trace([["12:3", 0x19191000, 1, 0xffffffff, 4], ["", 0x30a30010, 0, 0xffffffff, 2], ["", 0x30a30014, 1, 0xffffffff, 1]]), list);
     expect(r.findings).toEqual([]);
     expect(r.counted).toMatchObject({ own: 1, heap: 2 });
   });
@@ -72,9 +72,9 @@ describe("checkTrace", () => {
     expect(r.findings.map((f) => f.verdict)).toEqual(["ends", "ignored", "unknown"]);
     expect(describeFinding(r.findings[2])).toBe("line 20: reads 0x7fff0000 — not seen in Remastered: needs a probe");
   });
-  it("calls eudplib's own code by its name", () => {
-    const r = checkTrace(trace([["fn:f_dwread_epd", 0x7fff0000, 0, 0xffffffff, 1]]), list);
-    expect(describeFinding(r.findings[0])).toMatch(/^eudplib's f_dwread_epd: reads/);
+  it("calls a trigger of the build's own what it is", () => {
+    const r = checkTrace(trace([["", 0x7fff0000, 0, 0xffffffff, 1]]), list);
+    expect(describeFinding(r.findings[0])).toMatch(/^a trigger of the build's own: reads/);
   });
 });
 

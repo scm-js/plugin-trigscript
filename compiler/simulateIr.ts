@@ -1137,7 +1137,6 @@ class ProgramRun {
           if (up === "return") return up;
         }
       }
-      case "graph": return yield* this.block(s.original, ctx);
       case "unrolled": {
         for (const iteration of s.iterations) {
           const flow = yield* this.block(iteration, ctx);

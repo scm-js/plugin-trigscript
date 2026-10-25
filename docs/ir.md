@@ -3,9 +3,12 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, the backend (`compiler/backend/`,
 the map of our own) lays it out into the map when it is saved, and `compiler/simulateIr.ts`
-interprets it for Simulate and the tests. (Until TrigScript 4's step 17, `python/trigscript.py`
-lowered it to eudplib instead; what it decided is the backend's now, and the gate before it —
-step 16, random whole programs run every way — holds the two to the same lines.) **Version 24** (23 had no `held` on a variable, and no function kept as a value used a variable of the block it was written in; 22 had nothing only one computer knows: no `syncSend`, no `select`, no `selected` unit and no `sync` input; 21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+interprets it for Simulate and the tests. Until TrigScript 4's step 17 a second backend read it
+too — `python/trigscript.py`, which lowered it to eudplib — and the IR carried a version number
+for the two to agree on; now the front end, the backend and the simulator ship together, and
+there is none. The history, for what each addition was: **26** a `graph` statement, a loop the
+emitter had lowered for the Python side to make as it was (gone with the Python); **25** value
+ranges; **24** (23 had no `held` on a variable, and no function kept as a value used a variable of the block it was written in; 22 had nothing only one computer knows: no `syncSend`, no `select`, no `selected` unit and no `sync` input; 21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -47,7 +50,7 @@ What is *not* settled is anything the lowering decides: what a temporary is, how
 ## Programs
 
 ```
-Program { version, name?, owner, owners, perPlayer, arrays: ArrayDecl[], functions?: FuncDecl[], errors?: { thrown, message, names }, body: Stmt[], at }
+Program { name?, owner, owners, perPlayer, arrays: ArrayDecl[], functions?: FuncDecl[], errors?: { thrown, message, names }, body: Stmt[], at }
 ```
 
 `owner` is the first player slot among the owners (what a simulation runs the program
@@ -125,9 +128,9 @@ size class — a cell each, or a row of twelve each in a per-player program.
   (`xs.pop() ?? d` arrives as a `ternary` on the length). `setLength` only cuts.
 - `length` of an array that does not grow never reaches a backend: `numbers.ts` makes it a constant on
   its final pass, when every push has been met.
-- **Where the eudplib backend keeps an array's cells.** Blocks are counted and handed out as above, but a growing
-  array's cells are not the heap's dwords: they are an EUDVArray as long as the heap (a variable a cell, 72 bytes,
-  which a read jumps to), made when the first array grows; the dwords are left to texts, whose copies need bytes. A
+- **Where the backend keeps an array's cells.** Blocks are counted and handed out as above, but a growing
+  array's cells are not the heap's dwords: they are a region of cell triggers as long as the heap (a cell every 72
+  bytes, which a read jumps into; `compiler/backend/heap.ts`); the dwords are left to texts, whose copies need bytes. A
   block that moves is copied a cell at a time. Past `CELL_HEAP_MOST` (65 536) heap cells, 72 bytes a cell is too much
   memory and arrays keep the dwords, read a bit at a time, as before. A variable whose every store is a constant or
   itself plus or minus one, read anywhere else only as a value, keeps its offset into such cells beside it, so a read
@@ -812,21 +815,12 @@ interpreter agree on every case:
   which always wins — and may ignore it. The same pass reads a comparison whose sides are
   never below zero as `unsigned`, and turns one whose ranges settle it (wherever it is met,
   its sides doing nothing but give a value) into a constant: the program means what it did.
-- **Graphs** (version 26). With the emitter on (`CompileOptions.emitter`), a loop may arrive as
-  `{ kind: "graph", graph, original }`: `compiler/backend/emit.ts` lowered it to triggers of its
-  own (`compiler/backend/graph.ts`), which a backend makes as they are, where the statement was —
-  its conditions and actions on dwords of the game, the program's variables' cells, data of the
-  graph's own and the fields of its own triggers (a condition's player field among them: it reads
-  the cell of a list that field says), its copies of variables on the way in, its calls of the
-  lowering's fixed-point functions and the statements it leaves to the lowering (islands). `original`
-  is the loop, for what does not make triggers: the simulator runs it, and a walk over the
-  statements finds the declarations in it.
 
 ## Records
 
 `ActionRecord` and `ConditionRecord` are the map's own trigger records, as
 `vendor/triggers.ts` names their fields. Inside the compiler an action's `text` and
-`wav` hold *local* string ids (into the compile's `strings`); `serializeIr` in
-`compiler/eud.ts` writes the JSON with the text itself in their place — eudplib adds it
-to the built map's string table, so a program's strings never enter the map the user
-edits — or a number where the script named an index of the map's own.
+`wav` hold *local* string ids (into the compile's `strings`); the build interns the text
+itself into the built map's string table (`compiler/backend/build.ts`), so a program's
+strings never enter the map the user edits — or keeps a number where the script named an
+index of the map's own.

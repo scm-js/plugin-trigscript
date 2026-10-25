@@ -17,7 +17,7 @@ const cases = [
 ];
 const ys = [1, 3, 655, 32768, 65536, 98304, 1000000, 2147483647, -1, -65536, -1000000, -2147483648];
 const want = (c, op) => xs.map((x) => (op === "c/x" ? fdiv(c, x) : op === "x/c" ? fdiv(x, c) : fmul(x, c)));
-// (x first into a variable of its own: the cell of the list is read by the Python side, the quotient or the product
+// (x first into a variable of its own: the cell of the list was read by the Python side, the quotient or the product
 // worked out by whatever the build gives it — the emitter's own triggers when the loop is the emitter's.)
 const expr = (name, op) => (op === "c/x" ? `${name} / xv` : op === "x/c" ? `xv / ${name}` : `xv * ${name}`);
 let src = `// TrigScript 4, the backend, part 3: fixed products and quotients with one side known when the map is built — \`c / x\`,
@@ -46,7 +46,7 @@ for (const group of ["c/x", "x/c", "x*c"]) {
     if (op !== group) return;
     src += `    {
       let bad = 0, first = -1;
-      // (A while loop: a for loop's reads at its counter are the Python side's registers', and the loop with them.)
+      // (A while loop: a for loop's reads at its counter were the Python side's registers', and the loop with them.)
       let i = none;
       while (i < xs.length + none) {
         const xv: Fixed = xs[i] + zero;

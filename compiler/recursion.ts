@@ -19,7 +19,7 @@
  * A function off every cycle is left exactly as it was, and so is the program's body: only what recurses pays.
  */
 import { STACK_DEPTH, UNIT_FLAGS, declarations, eachCall, isTextExpr, mapText, mapTextOperands, type TextExpr, type TextMap, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
-import type { ProgramDiagnostic } from "./eud";
+import type { ProgramDiagnostic } from "./check";
 
 type Kind = "number" | "boolean" | "unit";
 type Expr = NumExpr | BoolExpr | UnitExpr;

@@ -1,8 +1,7 @@
 /**
  * The service against a stand-in host: applying lands on the map the script was compiled
- * for, and only there; saving applies the script first and builds its programs — by
- * TrigScript's own build step, or, where that does not take the script, by handing them to
- * the eudplib plugin's build. The compiler is the real one, run synchronously; the host is
+ * for, and only there; saving applies the script first and builds its programs by
+ * TrigScript's own build step. The compiler is the real one, run synchronously; the host is
  * the handful of calls `prepare`, `install` and `buildOwn` make, over a trigger list and a
  * member map per "document".
  */
@@ -15,7 +14,6 @@ import { buildOwnMap } from "../compiler/backend/build";
 import { Sections, readFacts, writeChunks } from "../compiler/backend/chk";
 import { firstFault, MAGENTA_MEMBER, positionIn, ScriptService, type Compiler } from "../service";
 import { readFiles, readManifest, scriptState } from "../script";
-import type { EudplibBuildEvent, EudplibContribution, EudplibService } from "../vendor/eudplib";
 import type { OwnBuildEvent } from "../service";
 import { defaultLib } from "../bundle/lib.mjs";
 
@@ -32,11 +30,9 @@ function host() {
   let front: Doc | null = null;
   const statuses: string[] = [];
   const doc = () => { if (!front) throw new Error("no map"); return front; };
-  /** What the editor's save path holds for the plugin: the work before the bytes, the build steps, and the library the service watches for. */
+  /** What the editor's save path holds for the plugin: the work before the bytes, and the build steps. */
   const before: { id: string; label: string; applies?: () => boolean; run: (ctx: { purpose: "save"; signal: AbortSignal }) => void | Promise<void> }[] = [];
   const steps: Step[] = [];
-  let library: EudplibService | null = null;
-  const watchers = new Set<(s: EudplibService | null) => void>();
   const api = {
     document: {
       isOpen: () => front !== null,
@@ -74,10 +70,7 @@ function host() {
     query: { locationsIn: () => doc().locations.map((_, i) => i) },
     names: { location: (i: number) => doc().locations[i] ?? null, string: (i: number) => doc().strings[i] ?? null },
     storage: { get: (_k: string, d: unknown) => d },
-    services: {
-      get: () => library,
-      watch: (_name: string, listener: (s: EudplibService | null) => void) => { watchers.add(listener); listener(library); return { dispose: () => { watchers.delete(listener); } }; },
-    },
+    services: { get: () => null, watch: () => ({ dispose() {} }) },
     ui: { status: (text: string) => { statuses.push(text); } },
   };
   return {
@@ -85,8 +78,6 @@ function host() {
     statuses,
     before,
     steps,
-    /** The eudplib plugin arrives (or goes): what it was asked to build with is kept for the test to look at. */
-    provide(svc: EudplibService | null) { library = svc; for (const w of [...watchers]) w(svc); },
     open(id: number, locations: string[] = []): Doc { const d: Doc = { id, triggers: [], extras: new Map(), strings: [""], locations }; docs.push(d); front = d; return d; },
     activate(d: Doc) { front = d; },
     close() { front = null; },
@@ -208,50 +199,32 @@ describe("service: a build lands on the map it was compiled for", () => {
 });
 
 /** A stand-in for the eudplib plugin's service: it keeps what is contributed and lets a test ask for it as a build would. */
-function libraryStub() {
-  const contributions: EudplibContribution[] = [];
-  const listeners = new Set<(e: EudplibBuildEvent) => void>();
-  const svc = {
-    versions: { plugin: "0.4.0", eudplib: "0.81.0", pyodide: "314", euddraft: "x" }, state: () => "ready" as const, downloadBytes: 0,
-    ensure: async () => true, build: async () => { throw new Error("not in this test"); },
-    contribute: (c: EudplibContribution) => { contributions.push(c); return { dispose: () => { contributions.splice(contributions.indexOf(c), 1); } }; },
-    onBuild: (l: (e: EudplibBuildEvent) => void) => { listeners.add(l); return { dispose: () => { listeners.delete(l); } }; },
-  } satisfies EudplibService;
-  return { svc, contributions, emit: (e: EudplibBuildEvent) => { for (const l of [...listeners]) l(e); } };
-}
 const ctx = { purpose: "save" as const, signal: new AbortController().signal };
 
 describe("service: saving applies the script and builds its programs", () => {
   const PROGRAM = `${SRC}\nprogram(() => { let n = 0; while (true) { n++; displayText("tick"); sleep(seconds(1)); } });`;
-  /** A program TrigScript's own build does not take (Wait is refused on purpose): built through eudplib. */
-  const THROUGH_EUDPLIB = `${SRC}\nprogram(() => { let n = 0; while (true) { n++; displayText("tick"); wait(1000); sleep(seconds(1)); } });`;
+  /** A program the build does not take (Wait is refused on purpose). */
+  const REFUSED = `${SRC}\nprogram(() => { let n = 0; while (true) { n++; displayText("tick"); wait(1000); sleep(seconds(1)); } });`;
 
-  it("builds the programs itself: the step applies, the contribution does not, and the scenario comes back a Remastered one with the payload in it", async () => {
+  it("builds the programs: the step applies, and the scenario comes back a Remastered one with the payload in it", async () => {
     const h = host();
     h.open(1);
-    const lib = libraryStub();
     let compiles = 0;
     const svc = new ScriptService(h.api, () => {}, compiler(() => { compiles++; }), builder);
     svc.attach();
-    h.provide(lib.svc);
     expect(h.steps).toHaveLength(1);
     const step = h.steps[0];
     expect(step).toMatchObject({ id: "build", label: "TrigScript" });
-    // Nothing applied, then triggers alone: nothing to build either way.
+    // Nothing applied, then triggers alone: nothing to build.
     expect(step.applies()).toBe(false);
-    expect(lib.contributions[0].applies()).toBe(false);
     await svc.build(SRC);
     expect(step.applies()).toBe(false);
-    expect(lib.contributions[0].applies()).toBe(false);
-    // A program the own build takes: the step, not the contribution; the manifest says nothing was refused.
+    // A program: the step applies.
     await svc.build(PROGRAM);
     expect(step.applies()).toBe(true);
-    expect(lib.contributions[0].applies()).toBe(false);
-    expect(svc.buildsOwn()).toBe(true);
-    expect(svc.whyNotOwn()).toBeNull();
+    expect(svc.whyNotBuilt()).toBeNull();
     const manifest = readManifest(new Map([...h.api.document.extras.list().map((n) => [n, h.api.document.extras.get(n)!] as const)]));
     expect(manifest?.programs).toBe(1);
-    expect(manifest?.ownRefusal).toBeUndefined();
     // The step: the scenario in, the built one out — no second compile, the apply's is fresh.
     const heard: OwnBuildEvent[] = [];
     svc.onBuild((e) => heard.push(e));
@@ -267,8 +240,8 @@ describe("service: saving applies the script and builds its programs", () => {
     expect(heard.map((e) => e.kind)).toEqual(["start", "log", "log", "log", "log", "done"]);
     expect(heard[0]).toMatchObject({ kind: "start", purpose: "save", contributors: ["trigscript"] });
     expect(heard.at(-1)).toMatchObject({ kind: "done", purpose: "save", chkBytes: out.length });
-    expect((heard[1] as { line: string }).line).toMatch(/^Built by TrigScript itself: 1 program laid out into the map, no eudplib$/);
-    // A build asked for the maps of where the triggers and the variables are says them as the Python build did, in the log.
+    expect((heard[1] as { line: string }).line).toMatch(/^Built by TrigScript: 1 program laid out into the map$/);
+    // A build asked for the maps of where the triggers and the variables are says them in the log.
     heard.length = 0;
     await svc.withVariableMap(() => step.run({ map: chk(), fileName: "x.scx", purpose: "test", signal: new AbortController().signal }));
     const logged = heard.flatMap((e) => (e.kind === "log" ? [e.line] : []));
@@ -279,48 +252,37 @@ describe("service: saving applies the script and builds its programs", () => {
     svc.attach().dispose();
   });
 
-  it("a program its own build does not take goes through eudplib, and the manifest says why", async () => {
+  it("a program the build does not take: the step runs and fails with the reason, said to the listeners too", async () => {
     const h = host();
     h.open(1);
-    const lib = libraryStub();
     const svc = new ScriptService(h.api, () => {}, compiler(), builder);
     svc.attach();
-    h.provide(lib.svc);
-    await svc.build(THROUGH_EUDPLIB);
-    const manifest = readManifest(new Map([...h.api.document.extras.list().map((n) => [n, h.api.document.extras.get(n)!] as const)]));
-    expect(manifest?.ownRefusal).toMatch(/^the action Wait \(.*\), line 2$/);
-    expect(svc.buildsOwn()).toBe(false);
-    expect(svc.whyNotOwn()).toMatch(/^TrigScript's own build does not take the script yet: the action Wait/);
-    expect(h.steps[0].applies()).toBe(false);
-    expect(lib.contributions[0].applies()).toBe(true);
-    // Asked to build all the same (an older manifest, say): the refusal is the error, said to the listeners too.
+    await svc.build(REFUSED);
+    expect(h.steps[0].applies()).toBe(true);
     const heard: OwnBuildEvent[] = [];
     svc.onBuild((e) => heard.push(e));
-    await expect(h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "test", signal: new AbortController().signal })).rejects.toThrow(/^TrigScript's own build does not take the script: the action Wait .*\. Apply the script again to build it through eudplib\.$/);
+    await expect(h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "test", signal: new AbortController().signal })).rejects.toThrow(/^The programs were not built: TrigScript does not take this yet \(the action Wait .*, line 2\)\.$/);
     expect(heard.at(-1)).toMatchObject({ kind: "failed", purpose: "test", from: "trigscript" });
-    // Made right, the next apply takes it back.
+    // Made right, the next apply builds.
     await svc.build(PROGRAM);
-    expect(svc.buildsOwn()).toBe(true);
-    expect(h.steps[0].applies()).toBe(true);
-    expect(lib.contributions[0].applies()).toBe(false);
+    const out = await h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "test", signal: new AbortController().signal });
+    expect(new Sections(out).get("TRIG")!.length).toBeGreaterThan(0);
   });
 
-  it("Magenta's triggers in the map send the programs through eudplib, with them", async () => {
+  it("Magenta's triggers in the map: the programs are not built, and the notice says why", async () => {
     const h = host();
     const d = h.open(1);
-    const lib = libraryStub();
     const svc = new ScriptService(h.api, () => {}, compiler(), builder);
     svc.attach();
-    h.provide(lib.svc);
     await svc.build(PROGRAM);
-    expect(svc.buildsOwn()).toBe(true);
+    expect(svc.whyNotBuilt()).toBeNull();
     d.extras.set(MAGENTA_MEMBER, new Uint8Array([123, 125]));
-    expect(svc.buildsOwn()).toBe(false);
-    expect(svc.whyNotOwn()).toMatch(/^Magenta's triggers are in this map/);
-    expect(h.steps[0].applies()).toBe(false);
-    expect(lib.contributions[0].applies()).toBe(true);
-    d.extras.delete(MAGENTA_MEMBER);
+    expect(svc.whyNotBuilt()).toMatch(/^Magenta's triggers are in this map: TrigScript's programs are not built beside them yet/);
     expect(h.steps[0].applies()).toBe(true);
+    await expect(h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "save", signal: new AbortController().signal })).rejects.toThrow(/^Magenta's triggers are in this map/);
+    d.extras.delete(MAGENTA_MEMBER);
+    expect(svc.whyNotBuilt()).toBeNull();
+    await expect(h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "save", signal: new AbortController().signal })).resolves.toBeInstanceOf(Uint8Array);
   });
 
   it("the work before a save applies a script that is newer than its block, and only then", async () => {
@@ -367,78 +329,7 @@ describe("service: saving applies the script and builds its programs", () => {
     await expect(stale.before[0].run(ctx)).rejects.toThrow(/edited or removed outside the script/);
   });
 
-  it("contributes its programs to the library's build: the IR with every text written out, the lowering, eudTurbo", async () => {
-    const h = host();
-    h.open(1);
-    const lib = libraryStub();
-    let compiles = 0;
-    const svc = new ScriptService(h.api, () => {}, compiler(() => { compiles++; }));
-    svc.attach();
-    expect(lib.contributions).toHaveLength(0);
-    h.provide(lib.svc);
-    expect(lib.contributions).toHaveLength(1);
-    const mine = lib.contributions[0];
-    expect(mine).toMatchObject({ id: "trigscript", label: "TrigScript" });
-    // Nothing applied yet, then a script of triggers alone: nothing for eudplib, so Save stays what it was. A program
-    // TrigScript builds itself is nothing for eudplib either; one it does not take is.
-    expect(mine.applies()).toBe(false);
-    await svc.build(SRC);
-    expect(mine.applies()).toBe(false);
-    await svc.build(PROGRAM);
-    expect(mine.applies()).toBe(false);
-    await svc.build(THROUGH_EUDPLIB);
-    expect(mine.applies()).toBe(true);
-    const before = compiles;
-    const input = await mine.collect(ctx);
-    // The apply that just ran compiled these very files against these very names: no second compile.
-    expect(compiles).toBe(before);
-    expect(Object.keys(input.plugins)).toEqual(["trigscript", "eudTurbo"]);
-    expect(input.plugins.trigscript).toEqual({ ir: "/work/files/trigscript.json" });
-    expect(input.sources!.trigscript).toContain("IR_VERSION = 26");
-    const ir = JSON.parse(input.files!["trigscript.json"]);
-    expect(ir.version).toBe(26);
-    expect(ir.programs).toHaveLength(1);
-    expect(JSON.stringify(ir)).toContain('"text":"tick"');
-    // The library going away takes the contribution with it; coming back, it is made again.
-    h.provide(null);
-    expect(lib.contributions).toHaveLength(0);
-    h.provide(lib.svc);
-    expect(lib.contributions).toHaveLength(1);
-  });
-
-  it("collect compiles when it has to, and a script with errors fails the build in one line", async () => {
-    const h = host();
-    h.open(1);
-    const lib = libraryStub();
-    const svc = new ScriptService(h.api, () => {}, compiler());
-    svc.attach();
-    h.provide(lib.svc);
-    await svc.build(PROGRAM);
-    svc.writeFiles({ "main.ts": `${PROGRAM}\nnope();` });
-    await expect(lib.contributions[0].collect(ctx)).rejects.toThrow(/^main\.ts:3 — /);
-    // A library older than 0.4 has no contribute(): the service simply does not take part.
-    const old = host();
-    old.open(1);
-    const svc2 = new ScriptService(old.api, () => {}, compiler());
-    svc2.attach();
-    old.provide({ ...lib.svc, contribute: undefined, onBuild: undefined });
-    expect(svc2.library()?.contribute).toBeUndefined();
-  });
-
-  it("hears the library's builds, and finds the line a failure names", () => {
-    const h = host();
-    h.open(1);
-    const lib = libraryStub();
-    h.provide(lib.svc);
-    const svc = new ScriptService(h.api, () => {}, compiler());
-    const heard: string[] = [];
-    const sub = svc.onBuild((e) => heard.push(e.kind));
-    lib.emit({ kind: "start", purpose: "save", contributors: ["trigscript"] });
-    lib.emit({ kind: "failed", purpose: "save", contributors: ["trigscript"], from: null, message: "trigscript: unknown variable 'n' at main.ts:12:5", log: "" });
-    expect(heard).toEqual(["start", "failed"]);
-    sub.dispose();
-    lib.emit({ kind: "log", line: "x" });
-    expect(heard).toHaveLength(2);
+  it("finds the line a failure names", () => {
     expect(positionIn("trigscript: unknown variable 'n' at main.ts:12:5")).toEqual({ file: "main.ts", line: 12, column: 5 });
     expect(positionIn("eudplib said no")).toBeNull();
     expect(firstFault([])).toBe("The script has errors.");

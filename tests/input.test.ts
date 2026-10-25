@@ -1,13 +1,11 @@
 /**
  * What the players do (slice 4): keys, clicks, the mouse and typed lines — what the front end
- * makes of them, what it refuses, what the interpreter does with them, and the settings the
- * build hands to chatEvent and MSQC.
+ * makes of them, what it refuses, and what the interpreter does with them.
  */
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { compileScript, type CompileResult } from "../compiler/compiler";
-import { serializeIr } from "../compiler/eud";
-import { buildPlugins, inputPlugins, matchChat, parseChatPattern } from "../compiler/input";
+import { matchChat, parseChatPattern } from "../compiler/input";
 import { defaultScriptNames, scriptNames } from "../compiler/names";
 import { ProgramSimulation, type ProgramSimulationOptions } from "../compiler/simulateIr";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -113,7 +111,7 @@ describe("input: the front end", () => {
   it("centerLocation with every argument known when the script is built is still the program's, in a function too", () => {
     const r = compileFile(`program(() => { function at(x: number, y: number) { centerLocation(3 as Location, x * 64, y * 64); } centerLocation(3 as Location, 4, 5); at(1, 2); });`);
     expect(r.diagnostics).toEqual([]);
-    expect(serializeIr(r.ir, r.strings, r.input).match(/"kind":"centerLocation"/g)).toHaveLength(2);
+    expect(JSON.stringify(r.ir).match(/"kind":"centerLocation"/g)).toHaveLength(2);
   });
 
   it("says what is wrong", () => {
@@ -138,59 +136,39 @@ describe("input: the front end", () => {
   });
 });
 
-describe("input: the plan and the build's plugins", () => {
-  it("no input, no plugins but the lowering", () => {
+describe("input: the plan", () => {
+  it("no input, no plan", () => {
     const r = compile(`displayText("hi");`);
     expect(r.input).toBeNull();
-    expect(Object.keys(buildPlugins(r.input, "/ir.json"))).toEqual(["trigscript", "eudTurbo"]);
-    expect(JSON.parse(serializeIr(r.ir, r.strings, r.input)).input).toBeUndefined();
   });
 
-  it("keys and clicks: MSQC with one location of its own, the highest free among the first 63", () => {
+  it("keys and clicks, each once, in the order met", () => {
     const r = compile(`while (true) { if (keyPressed(P1, "A") || keyPressed(P1, "Escape") || keyPressed(P2, "A") || clicked(P1)) displayText("x"); sleep(frames(1)); }`);
-    expect(r.input).toEqual({ keys: ["A", "Escape"], buttons: ["left"], chats: [], qcLocation: 62, mouseBase: null });
-    const plugins = buildPlugins(r.input, "/ir.json");
-    expect(Object.keys(plugins)).toEqual(["trigscript", "MSQC", "eudTurbo"]);
-    expect(plugins.MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyDown(A); NotTyping": "tsin_key0, 1", "KeyDown(ESC); NotTyping": "tsin_key1, 1", "MouseDown(L)": "tsin_button0, 1" });
+    expect(r.input).toEqual({ keys: ["A", "Escape"], buttons: ["left"], chats: [], mouse: false });
   });
 
-  it("keyHeld: MSQC's KeyPress, every frame the key is down, into cells of its own", () => {
+  it("keyHeld: every key goes as held once one is, and a press is worked out where it arrives", () => {
     const r = compile(`while (true) { if (keyHeld(P1, "D") || keyPressed(P1, "D")) displayText("x"); sleep(frames(1)); }`);
-    expect(r.input).toEqual({ keys: ["D"], held: ["D"], buttons: [], chats: [], qcLocation: 62, mouseBase: null });
-    // No KeyDown with a held key in the game: two frames' commands may arrive at once, the later replacing the earlier, and
-    // a press of its own would be lost; a press is worked out from the held key where it arrives.
-    expect(buildPlugins(r.input, "/ir.json").MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyPress(D); NotTyping": "tsin_held0, 1" });
+    expect(r.input).toEqual({ keys: ["D"], held: ["D"], buttons: [], chats: [], mouse: false });
+    // With a held key in the game, two frames' commands may arrive at once, the later replacing the earlier, and a press
+    // of its own would be lost; so every key goes as held, and a press is worked out from the held key where it arrives.
     const both = compile(`while (true) { if (keyHeld(P1, "D") || keyPressed(P1, "W")) displayText("x"); sleep(frames(1)); }`);
     expect(both.input?.held).toEqual(["D", "W"]);
-    expect(Object.keys(buildPlugins(both.input, "/ir.json").MSQC)).toEqual(["QCUnit", "QCLoc", "QCPlayer", "QCDebug", "KeyPress(D); NotTyping", "KeyPress(W); NotTyping"]);
   });
 
-  it("the mouse: eight locations in a row, clear of the map's own and of Anywhere", () => {
-    const names = scriptNames({ locations: [{ index: 62, name: "Top" }, { index: 58, name: "Gate" }] });
-    const r = compileFile(`program(() => { while (true) { const u = underMouse(P1); if (u) u.kill(); sleep(frames(1)); } });`, names);
-    expect(r.diagnostics).toEqual([]);
-    // Slot 62 and 58 are the map's: MSQC's own is 61, and the run of eight ends below 58.
-    expect(r.input).toMatchObject({ qcLocation: 61, mouseBase: 51 });
-    expect(inputPlugins(r.input!).after.MSQC.Mouse).toBe(51);
-  });
-
-  it("a map with no room is told so, where the input is read", () => {
+  it("the mouse is in the plan, and takes no location of the map's", () => {
     const names = scriptNames({ locations: Array.from({ length: 63 }, (_, index) => ({ index, name: `L${index}` })) });
-    const r = compileFile(`program(() => {\n while (true) {\n if (clicked(P1)) displayText("x");\n sleep(frames(1)); } });`, names);
-    expect(r.diagnostics.map((d) => `${d.line}:${d.message}`)).toEqual([expect.stringMatching(/^3:.*one free location among the map's first 63/)]);
+    const r = compileFile(`program(() => { while (true) { const u = underMouse(P1); if (u) u.kill(); if (clicked(P1)) displayText("x"); sleep(frames(1)); } });`, names);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.input).toMatchObject({ mouse: true, buttons: ["left"] });
   });
 
-  it("chat: chatEvent before the lowering, MSQC after it, one value channel per capture", () => {
+  it("chat: each pattern once, with the unit names a {…:unit} capture knows", () => {
     const r = compile(`while (true) { const m = chatted(P1, "-spawn {n} {unit:unit}"); if (m || chatted(P1, "-help")) displayText("x"); sleep(frames(1)); }`);
-    const plugins = buildPlugins(r.input, "/ir.json");
-    expect(Object.keys(plugins)).toEqual(["chatEvent", "trigscript", "MSQC", "eudTurbo"]);
-    expect(plugins.chatEvent).toEqual({ __addr__: "tsin_heard", __ptrAddr__: "tsin_pointer", __lenAddr__: "tsin_length", __patternAddr__: "tsin_pattern" });
-    expect(plugins.MSQC).toMatchObject({ "tsin_chat.AtLeast(1); val, tsin_chat": "tsin_chat_in", "tsin_chat.AtLeast(1); val, tsin_capture0": "tsin_capture0_in", "tsin_chat.AtLeast(1); val, tsin_capture1": "tsin_capture1_in" });
-    const ir = JSON.parse(serializeIr(r.ir, r.strings, r.input));
-    expect(ir.input.chats.map((c: { pattern: string }) => c.pattern)).toEqual(["-spawn {n} {unit:unit}", "-help"]);
+    expect(r.input!.chats.map((c) => c.pattern)).toEqual(["-spawn {n} {unit:unit}", "-help"]);
     // A unit's name is known by its identifier and by the name the game shows.
-    expect(ir.input.unitNames).toEqual(expect.arrayContaining([["terranmarine", 0], ["terran marine", 0]]));
-    expect(ir.input.unitNames.every(([, id]: [string, number]) => id < 228)).toBe(true);
+    expect(r.input!.unitNames).toEqual(expect.arrayContaining([["terranmarine", 0], ["terran marine", 0]]));
+    expect(r.input!.unitNames!.every(([, id]) => id < 228)).toBe(true);
   });
 });
 

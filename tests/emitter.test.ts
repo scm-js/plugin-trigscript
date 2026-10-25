@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarDecl } from "../compiler/ir";
-import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
+import { emitBody, emitterCounts } from "../compiler/backend/emit";
 import type { ConditionRecord } from "../vendor/triggers";
 import { END, SWITCHES, TRIGGER_BYTES, type Dword, type Graph, type Num } from "../compiler/backend/graph";
 import { layout, type OwnTriggerInput } from "../compiler/backend/layout";
@@ -295,9 +295,6 @@ function key(d: Dword): string {
   if ("var" in d) return `var:${d.var}`;
   if ("data" in d) return `data:${d.data}`;
   if ("element" in d) throw new Error("an element is read through a condition's player field");
-  if ("param" in d) return `param:${d.param.fn}:${d.param.c ?? ""}:${d.index}`;
-  if ("counter" in d) return `counter:${d.counter}:${d.part}`;
-  if ("getter" in d) return `getter:${d.getter}`;
   // (A scratch cell is the cell of a variable named after it, as the layout has it.)
   if ("temp" in d) return `var:@${d.temp}`;
   if ("template" in d) return `template:${d.template}:${d.word}`;
@@ -385,28 +382,6 @@ function exec(g: Graph, env: Env): Env {
       continue;
     }
     const t = byLabel.get(pc)!;
-    if (t.island) {
-      // As the Python side does: the statement on the variables' cells.
-      const cells = asEnv();
-      run([t.island], cells, { n: 1e6 });
-      for (const [id, x] of cells) {
-        if (!id.startsWith("cell:")) {
-          mem.set(`var:${id}`, x);
-          // (The Python side steps the offsets it keeps beside a counter at its own stores of it.)
-          if (INDEXED.has(id)) mem.set(`counter:${id}:bytes`, u(Math.imul(72, x))), mem.set(`counter:${id}:dwords`, u(Math.imul(18, x)));
-          continue;
-        }
-        const [, arr, i] = id.split(":");
-        mem.set(cellEpd(arr, Number(i)), x);
-      }
-    }
-    if (t.call) {
-      // As the Python side's function does: from its parameters' cells, into the dword the call names.
-      const arg = (i: number) => (read(`param:${t.call!.fn}:${t.call!.c ?? ""}:${i}`) as number) | 0;
-      const c = t.call.c ?? 0, f = t.call.fn;
-      const r = f === "fmul_vars" ? fixedMul(arg(0), arg(1)) : f === "fdiv_vars" ? fixedDiv(arg(0), arg(1)) : f === "fmul_by" ? fixedMul(arg(0), c) : f === "fdiv_by" ? fixedDiv(c, arg(0)) : fixedDiv(arg(0), c);
-      mem.set(key(t.call.into), u(r));
-    }
     const from = t.copy && `var:${t.copy.from}`;
     // (A label — where a function goes back to — is copied as it is: it is an address only once laid out.)
     for (const c of t.copy?.into ?? []) {
@@ -505,189 +480,6 @@ function rng(seed: number) {
 
 const EDGES = [0, 1, -1, 2, 7, -7, 100, 2147483647, -2147483648, 2147483646, -2147483647];
 
-function program(seed: number) {
-  const r = rng(seed);
-  const decls = new Map<string, VarDecl>();
-  const decl = (name: string): VarDecl => {
-    const d: VarDecl = { id: `${name}#${decls.size}`, name, kind: "number", shared: false, at };
-    decls.set(d.id, d);
-    return d;
-  };
-  const vars = ["a", "b", "c", "d", "e"].map(decl);
-  const flags = ["f", "g"].map((name) => { const d = decl(name); d.kind = "boolean"; return d; });
-  // Two lists known when the program is built, a short one (the Python side's EUDVArray) and a long one (packed), and
-  // a function that is one return of a cell of one.
-  TABLES.clear();
-  FUNCTIONS.clear();
-  WRITABLE.clear();
-  TOPS.clear();
-  const arrays = new Map<string, ArrayDecl>();
-  for (const [name, length] of [["T", 5 + r.int(9)], ["L", 256 + r.int(40)]] as const) {
-    // (Mostly small numbers, which the emitter reads where they are; now and then a wide one, which it leaves.)
-    const values = Array.from({ length }, () => (r.next() < 0.03 ? r.pick(EDGES) : r.int(r.next() < 0.5 ? 4 : 60)));
-    const a: ArrayDecl = { id: `${name}#t`, name, kind: "number", length, shared: true, values, at } as ArrayDecl;
-    arrays.set(a.id, a);
-    TABLES.set(a.id, values);
-  }
-  // An array the program stores into (and reads, which the emitter leaves to the Python side).
-  const W = { id: "W#w", name: "W", kind: "number", length: 4 + r.int(7), shared: true, at } as ArrayDecl;
-  arrays.set(W.id, W);
-  WRITABLE.set(W.id, W.length);
-  const fp = decl("p"), fq = decl("q");
-  const cellAt: FuncDecl = { id: "cellAt#f", name: "cellAt", params: [fp, fq], body: [{ kind: "return", value: { kind: "element", array: "L#t", index: { kind: "binary", op: "+", left: { kind: "binary", op: "*", left: { kind: "var", id: fp.id }, right: { kind: "const", value: 16 }, at, label: "" }, right: { kind: "var", id: fq.id }, at, label: "" }, at }, at, label: "" }], at } as FuncDecl;
-  FUNCTIONS.set(cellAt.id, cellAt);
-  const v = (d: VarDecl): NumExpr => ({ kind: "var", id: d.id });
-  const k = (n: number): NumExpr => ({ kind: "const", value: n });
-  const bin = (op: "+" | "-" | "*" | "<<" | ">>" | ">>>" | "&", left: NumExpr, right: NumExpr): NumExpr => ({ kind: "binary", op, left, right, at, label: "" });
-  let counters = 0;
-  const busy = new Set<string>();
-  const free = () => vars.filter((d) => !busy.has(d.id));
-  const value = (target: VarDecl): NumExpr => {
-    switch (r.int(9)) {
-      case 7: return bin("*", v(r.pick(vars)), k(r.pick([3, -1, 2, 65536, -7, 0x7fffffff])));
-      case 8: return bin("+", bin("<<", v(r.pick(vars)), k(r.int(32))), bin("*", k(r.pick([5, -3])), v(r.pick(vars))));
-      case 0: return k(r.pick(EDGES));
-      case 1: return v(r.pick(vars));
-      case 2: return bin("+", v(r.pick(vars)), k(r.pick(EDGES)));
-      case 3: return bin("-", v(r.pick(vars)), v(r.pick(vars)));
-      case 4: return bin("+", bin("+", v(r.pick(vars)), v(r.pick(vars))), k(r.int(10)));
-      case 5: return { kind: "unary", op: "-", expr: v(r.pick(vars)), at };
-      default: return bin(r.next() < 0.5 ? "+" : "-", v(target), r.next() < 0.5 ? k(r.pick(EDGES)) : v(r.pick(vars.filter((x) => x !== target))));
-    }
-  };
-  const side = (): NumExpr => (r.next() < 0.6 ? (r.next() < 0.3 ? bin("+", v(r.pick(vars)), k(r.pick(EDGES))) : v(r.pick(vars))) : k(r.pick(EDGES)));
-  const cmp = (): BoolExpr => r.next() < 0.15
-    // A variable's bits under a mask against a constant (`(frame & 2) != 0`).
-    ? { kind: "compare", op: r.pick(["<", "<=", ">", ">=", "==", "!="] as const), left: bin("&", v(r.pick(vars)), k(r.pick([1, 2, 6, 0xff, 0x7fffffff, -2147483648, 0x30]))), right: k(r.pick([0, 0, 2, 1, 6, 0x10, -1, 0x7fffffff])), ...(r.next() < 0.5 ? {} : { unsigned: true }), at, label: "" }
-    : { kind: "compare", op: r.pick(["<", "<=", ">", ">=", "==", "!="] as const), left: side(), right: side(), ...(r.next() < 0.5 ? {} : { unsigned: r.pick([true, "left", "right"] as const) }), at, label: "" };
-  const cond = (depth: number): BoolExpr => {
-    const x = r.int(10);
-    if (depth > 1 || x < 6) return cmp();
-    if (x < 8) return { kind: r.next() < 0.5 ? "and" : "or", items: [cond(depth + 1), cond(depth + 1), ...(r.next() < 0.3 ? [cond(depth + 1)] : [])] };
-    if (x < 9) return r.next() < 0.5 ? { kind: "var", id: r.pick(flags).id } : { kind: "not", expr: cond(depth + 1) };
-    return { kind: "test", expr: side(), at, label: "" };
-  };
-  const block = (depth: number, inLoop: boolean): Stmt[] => {
-    const out: Stmt[] = [];
-    for (let n = 1 + r.int(4); n > 0; n--) {
-      const x = r.int(12);
-      const f = free();
-      if (x < 5 && f.length) {
-        const t = r.pick(f);
-        // Now and then a product of two variables (a statement the emitter leaves to the Python side), a cell of a list,
-        // a call of a function that is a cell of one.
-        const y = r.next();
-        const index = (): NumExpr => (r.next() < 0.5 ? bin("+", v(r.pick(vars)), k(r.int(4))) : bin("-", v(r.pick(vars)), v(r.pick(vars))));
-        const pick: NumExpr = y < 0.12 ? bin("*", v(r.pick(vars)), v(r.pick(vars)))
-          : y < 0.24 ? { kind: "element", array: r.pick(["T#t", "L#t", "W#w"]), index: index(), at }
-          : y < 0.4 ? { kind: "intrinsic", name: r.pick(["fmul", "fdiv"] as const), args: [r.next() < 0.3 ? k(r.pick([65536, 3 << 15, 7, -65536, 100 << 16])) : v(r.pick(vars)), r.next() < 0.3 ? k(r.pick([65536, 3 << 15, 7, -65536, 100 << 16])) : bin("+", v(r.pick(vars)), k(r.int(3)))], at, label: "" }
-          : y < 0.46 ? bin("+", bin(r.pick([">>", ">>>"] as const), r.next() < 0.5 ? v(r.pick(vars)) : bin("-", v(r.pick(vars)), k(r.pick(EDGES))), k(1 + r.int(31))), bin("*", v(r.pick(vars)), k(r.pick([1, 65536, 3]))))
-          : y < 0.58 ? (r.next() < 0.5
-            ? { kind: "ternary", cond: cond(1), whenTrue: value(t), whenFalse: bin("+", { kind: "intrinsic", name: "abs", args: [v(r.pick(vars))], at, label: "" }, k(r.int(5))), at, label: "" }
-            : { kind: "intrinsic", name: r.pick(["min", "max", "abs"] as const), args: [r.next() < 0.5 ? v(r.pick(vars)) : { kind: "intrinsic", name: "fdiv", args: [k(65536), v(r.pick(vars))], at, label: "" }, bin("+", v(r.pick(vars)), k(r.pick(EDGES)))], ...(r.next() < 0.3 ? { unsigned: true } : {}), at, label: "" })
-          : y < 0.62 ? { kind: "call", call: { name: "cellAt", fn: "cellAt#f", at, label: "", params: [{ decl: fp, init: v(r.pick(vars)), label: "" }, { decl: fq, init: bin("+", v(r.pick(vars)), k(r.int(3))), label: "" }], body: [], result: { decl: decl("(cellAt result)"), kind: "number" } } }
-          : value(t);
-        out.push({ kind: "assign", target: t.id, value: pick, at, label: "" });
-      }
-      else if (x === 5 && r.next() < 0.6) {
-        // A store: at a variable, a sum, past either end now and then; of a variable, a sum, a constant, a cell.
-        const index: NumExpr = r.next() < 0.5 ? v(r.pick(vars)) : bin("+", v(r.pick(vars)), k(r.int(5) - 1));
-        const t = r.pick(vars);
-        const stored: NumExpr = r.next() < 0.2 ? { kind: "element", array: "W#w", index: v(r.pick(vars)), at } : r.next() < 0.5 ? value(t) : k(r.pick(EDGES));
-        out.push({ kind: "store", array: "W#w", index, value: stored, at, label: "" });
-      }
-      else if (x === 6 && r.next() < 0.5) {
-        // A boolean set from a test, a switch (falling through, break and continue in it), a loop the front end unrolled.
-        const y = r.next();
-        if (y < 0.4) out.push({ kind: "assignBool", target: r.pick(flags).id, value: cond(0), at, label: "" });
-        else if (y < 0.75 && depth < 3) {
-          const values = [r.pick([0, 1, 2, 3, -1, 7]), r.pick([0, 1, 2, 3, -1, 7]), r.pick([2, 5, 2147483647, -2147483648])];
-          const cases = values.map((value) => ({ value, body: [...block(depth + 1, true), ...(r.next() < 0.5 ? [{ kind: "break", at, label: "" } as Stmt] : [])] }));
-          if (r.next() < 0.5) cases.push({ value: null as unknown as number, body: block(depth + 1, true) });
-          out.push({ kind: "switch", value: r.next() < 0.7 ? v(r.pick(vars)) : bin("+", v(r.pick(vars)), k(1)), cases, at, label: "" } as Stmt);
-        } else if (depth < 3) {
-          out.push({ kind: "unrolled", iterations: [block(depth + 1, true), block(depth + 1, true)], at, label: "" } as Stmt);
-        }
-      }
-      else if (x < 8 && depth < 3) out.push({ kind: "if", cond: cond(0), then: block(depth + 1, inLoop), ...(r.next() < 0.5 ? { else: block(depth + 1, inLoop) } : {}), at, label: "" });
-      else if (x < 10 && depth < 2) out.push(...loop(depth + 1));
-      else if (inLoop) out.push({ kind: "if", cond: cond(0), then: [{ kind: r.next() < 0.5 ? "break" : "continue", at, label: "" }], at, label: "" });
-    }
-    return out;
-  };
-  /** A loop that ends: a counter of its own up to a small bound, which nothing else writes. */
-  function loop(depth: number): Stmt[] {
-    const c = decl(`i${counters++}`);
-    busy.add(c.id);
-    const bound = 1 + r.int(6);
-    const unsigned = r.pick([undefined, true, "left"] as const);
-    const test: BoolExpr = { kind: "compare", op: r.pick(["<", "<="] as const), left: v(c), right: k(bound), ...(unsigned === undefined ? {} : { unsigned }), at, label: "" };
-    const step: Stmt = { kind: "assign", target: c.id, value: bin("+", v(c), k(1)), at, label: "" };
-    const body = block(depth, true);
-    busy.delete(c.id);
-    const init: Stmt = { kind: "declare", decl: c, init: k(r.int(3)), at, label: "" };
-    const kind = r.int(3);
-    if (kind === 0) return [init, { kind: "for", cond: test, update: [step], body, at, label: "" }];
-    if (kind === 1) return [init, { kind: "while", cond: test, body: [step, ...body], at, label: "" }];
-    return [init, { kind: "do", body: [step, ...body], cond: test, at, label: "", condLabel: "" }];
-  }
-  const outer = loop(0);
-  // Small values often, so that indexes land inside the lists too.
-  const env: Env = new Map(vars.map((d) => [d.id, u(r.next() < 0.4 ? r.int(20) : r.next() < 0.5 ? r.pick(EDGES) : Math.floor(r.next() * U32))]));
-  for (let i = 0; i < W.length; i++) env.set(cellKey(W.id, i), u(r.pick(EDGES)));
-  for (const f of flags) env.set(f.id, r.int(2));
-  return { decls, outer, env, arrays };
-}
-
-describe("the emitter", () => {
-  it("lowers random loops of numbers to graphs that leave every variable as the loops do", () => {
-    let taken = 0, stores = 0;
-    const left = new Map<string, number>();
-    for (let seed = 1; seed <= 4000; seed++) {
-      const { decls, outer, env, arrays } = program(seed);
-      const [init, loop] = outer;
-      INDEXED.clear();
-      const indexes = (x: unknown): void => {
-        if (!x || typeof x !== "object") return;
-        if (Array.isArray(x)) { x.forEach(indexes); return; }
-        const o = x as Record<string, unknown>;
-        if ((o.kind === "element" || o.kind === "store") && (o.index as NumExpr)?.kind === "var") INDEXED.add((o.index as { id: string }).id);
-        Object.values(o).forEach(indexes);
-      };
-      indexes([loop, ...FUNCTIONS.values()]);
-      const g = emitLoop(loop, decls, `s${seed}`, FUNCTIONS, INDEXED, arrays);
-      if (typeof g === "string") { left.set(g, (left.get(g) ?? 0) + 1); continue; }
-      taken++;
-      if (g.triggers.some((t) => t.acts.some((a) => "element" in a.dword))) stores++;
-      const want = new Map(env);
-      run([init], want, { n: 1e6 });
-      const start = new Map(want);
-      run([loop], want, { n: 1e6 });
-      if (process.env.EMITTER_SEED === String(seed)) console.log(JSON.stringify({ loop, env: [...start], g }, null, 1));
-      let got: Env;
-      try { got = exec(g, start); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
-
-      for (const [id, value] of want) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
-    }
-    if (process.env.EMITTER_LEFT) console.log(taken, stores, emitterCounts, [...left].sort((a, b) => b[1] - a[1]));
-    expect(emitterCounts.reciprocals).toBeGreaterThan(200);
-    expect(emitterCounts.jumps).toBeGreaterThan(200);
-    expect(emitterCounts.hoisted).toBeGreaterThan(200);
-    expect(taken).toBeGreaterThan(3900);
-    expect(stores).toBeGreaterThan(1000);
-  });
-});
-
-// ── random programs with functions, as a map of our own lays them out ──
-
-/**
- * A whole program for `emitBody`: its variables declared first, then statements that call functions — as statements,
- * inside sums, in comparisons, in a later part of `&&` / `||`, as arguments of other calls — and inlined calls (a body
- * of their own, as the front end makes a function called once). A function calls only those made before it (nothing
- * calls itself); it reads and writes the program's variables, its parameters and its own, and gives back a number, a
- * boolean or nothing, from inside ifs and loops or off its end.
- */
-/** Each index of an array the evaluator reads or stores at: the lowest and highest it was, signed (`observeRanges`). */
 const SEEN = new Map<NumExpr, [number, number]>();
 /** How many indexes `observeRanges` gave a range. */
 const RANGED = { n: 0, arith: 0 };
@@ -1007,38 +799,6 @@ describe("the emitter, calls in a map of our own", () => {
   }, RANDOM_PROGRAMS);
 });
 
-describe("the emitter, a loop's test", () => {
-  it("tests every turn a part of `&&` that a boolean set in the loop, or a call in it, changes", () => {
-    // while (i < 10 && go) { i += 1; go = i < 5; }   and   while (i < 10 && n > 0) { i += 1; shrink(); }
-    TABLES.clear();
-    WRITABLE.clear();
-    TOPS.clear();
-    FUNCTIONS.clear();
-    const d = (name: string, kind: "number" | "boolean" = "number"): VarDecl => ({ id: `${name}#t`, name, kind, shared: false, at });
-    const [i, n, go] = [d("i"), d("n"), d("go", "boolean")];
-    const decls = new Map([i, n, go].map((x) => [x.id, x]));
-    const v = (x: VarDecl): NumExpr => ({ kind: "var", id: x.id });
-    const k = (x: number): NumExpr => ({ kind: "const", value: x });
-    const lt = (a: NumExpr, b: NumExpr): BoolExpr => ({ kind: "compare", op: "<", left: a, right: b, at, label: "" });
-    const step: Stmt = { kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: v(i), right: k(1), at, label: "" }, at, label: "" };
-    const shrink: FuncDecl = { id: "shrink#t", name: "shrink", params: [], body: [{ kind: "assign", target: n.id, value: { kind: "binary", op: "-", left: v(n), right: k(1), at, label: "" }, at, label: "" }], at };
-    FUNCTIONS.set(shrink.id, shrink);
-    const loops: Stmt[] = [
-      { kind: "while", cond: { kind: "and", items: [lt(v(i), k(10)), { kind: "var", id: go.id }] }, body: [step, { kind: "assignBool", target: go.id, value: lt(v(i), k(5)), at, label: "" }], at, label: "" },
-      { kind: "while", cond: { kind: "and", items: [lt(v(i), k(10)), lt(k(0), v(n))] }, body: [step, { kind: "call", call: { name: "shrink", fn: shrink.id, params: [], body: [], at, label: "" }, at, label: "" }], at, label: "" },
-    ];
-    for (const loop of loops) {
-      const g = emitLoop(loop, decls, "t", FUNCTIONS);
-      expect(typeof g).not.toBe("string");
-      const start: Env = new Map([[i.id, 0], [n.id, 3], [go.id, 1]]);
-      const want = new Map(start);
-      run([loop], want, { n: 1e4 });
-      const got = exec(g as Graph, start);
-      expect(got.get(i.id)).toBe(want.get(i.id));
-    }
-  });
-});
-
 describe("the emitter, a map of our own's texts", () => {
   it("shows a text for other players than the owner to each in turn: a player, All Players and a force by the map's slots", () => {
     // print("hi", { to: AllPlayers })  and  print("hi", { to: P2 }): Display Text with each player of the group the
@@ -1302,7 +1062,7 @@ describe("a map of our own, a sum of bit-slices of one read", () => {
 describe("a map of our own, texts made while the game runs", () => {
   /** What a one-program script prints, its payload walked from its bytes (one pass: it sleeps nowhere). */
   const printed = (body: string, file = "main.ts", memory?: Map<number, number>): string[] => {
-    const r = compileScript(ts, { [file]: `program(() => {\n  let n = 0;\n  while (n < 12) n += 5;\n${body}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { [file]: `program(() => {\n  let n = 0;\n  while (n < 12) n += 5;\n${body}\n});\n` }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r);
     if (typeof o === "string") throw new Error(o);
@@ -1380,7 +1140,7 @@ describe("a map of our own, arrays that grow", () => {
    * nowhere), every program's run laid out — and what the payload said that the simulator keeps as a fault, apart.
    */
   const both = (source: string, file = "main.ts"): { want: string[]; got: string[]; said: string[]; bytes: number } => {
-    const r = compileScript(ts, { [file]: source }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { [file]: source }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
     const want = simulatePrograms(r.ir, 1, { strings: r.strings }).events.filter((e) => e.text !== undefined).map((e) => hex(e.text!));
@@ -1729,7 +1489,7 @@ describe("a map of our own, units", () => {
   };
   /** What a program prints as the simulator runs it among these units, and as its payload does, walked from its bytes. */
   const both = (body: string, units: SimUnitInit[], locations: Record<number, SimBounds> = {}): { want: string[]; got: string[] } => {
-    const r = compileScript(ts, { "main.ts": `program(() => {\n${body}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { "main.ts": `program(() => {\n${body}\n});\n` }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
     const full = units.map((u) => ({ hp: MAX_HP[u.type], maxHp: MAX_HP[u.type], orderId: 3, ...u }));
@@ -1848,7 +1608,7 @@ describe("a map of our own, units", () => {
 describe("a map of our own, errors", () => {
   /** What a script prints as the simulator runs it, and as its payload does, walked from its bytes (one pass). */
   const both = (script: string): { want: string[]; got: string[] } => {
-    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
     const want = simulatePrograms(r.ir, 1, { strings: r.strings }).events.filter((e) => e.text !== undefined && e.action.type === 9).map((e) => hex(e.text!));
@@ -2000,7 +1760,7 @@ describe("a map of our own, errors", () => {
   it("lays a loop out the same on an error's way, a throw after it", () => {
     // (Only what runs once before a throw is cold, its reads refreshed from their cells: a loop may turn many times.)
     const lines = (end: string) => {
-      const r = compileScript(ts, { "main.ts": `program(() => {\n  let i = 0, s = 0;\n  while (i < 100) {\n    s += i * 3;\n    i += 1;\n  }\n  ${end}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+      const r = compileScript(ts, { "main.ts": `program(() => {\n  let i = 0, s = 0;\n  while (i < 100) {\n    s += i * 3;\n    i += 1;\n  }\n  ${end}\n});\n` }, defaultScriptNames(), { lib: defaultLib() });
       const o = emitOwn(r);
       if (typeof o === "string") throw new Error(o);
       return o.runs[0].graph.triggers.filter((t) => t.at && t.at.line >= 3 && t.at.line <= 5).map((t) => [t.conds.length, t.acts.length, !!t.copy]);
@@ -2027,7 +1787,7 @@ describe("a map of our own, tasks", () => {
    * simulator runs it, and from its payload's bytes (every run of it, one a player of a program for each).
    */
   const both = (script: string, frames: number, file = "main.ts"): { want: string[]; got: string[] } => {
-    const r = compileScript(ts, { [file]: script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { [file]: script }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
     const events = simulatePrograms(r.ir, frames, { strings: r.strings }).events.filter((e) => (e.text !== undefined && e.action.type === 9) || e.action.type === 8);
@@ -2190,7 +1950,7 @@ describe("a map of our own, unit events", () => {
    */
   const TABLE = 0x59cca8, place = (k: number) => TABLE + 336 * k;
   const run = (script: string, frames: number, then: (frame: number, w: (addr: number, value: number) => void) => void): string[] => {
-    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r);
     if (typeof o === "string") throw new Error(o);
@@ -2279,7 +2039,7 @@ describe("a map of our own, the map's own triggers", () => {
    */
   const LISTS = 0x51a280;
   const run = (script: string, frames: number, slots: number[]): string[] => {
-    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r, { slots, forces: [0, 1, 1, 0, 0, 0, 0, 0] });
     if (typeof o === "string") throw new Error(o);
@@ -2326,7 +2086,7 @@ describe("a map of our own, input", () => {
   const LOCAL = 0x512684, QUEUE = 0x654880, QUEUED = 0x654aa0, QUEUE_MOST = 0x57f0d8, FIRST_UNIT = 0x6283f8, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4, SCREEN_X = 0x62848c, SCREEN_Y = 0x6284a8, SELECTION = 0x6284b8;
   type World = { keys: Map<number, number>; buttons: number; mouse: [number, number]; screen: [number, number]; selection: number[]; pokes: [number, number][] };
   const run = (script: string, frames: number, then: (frame: number, world: World) => void, mouse = false): { lines: string[]; sent: string[] } => {
-    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, 1, { humans: [0, 1], width: 64 * 32, height: 64 * 32, cuwp: 64 });
     if (typeof o === "string") throw new Error(o);
@@ -2409,7 +2169,7 @@ describe("a map of our own, input", () => {
     const r = compileScript(ts, { "main.ts": [
       'program(async () => { while (true) { if (keyPressed(P1, "F7")) print("one"); await nextFrame(); } });',
       'program(async () => { while (true) { if (keyPressed(P1, "F8")) print("two"); if (chatted(P1, "-help")) print("help"); await nextFrame(); } });',
-    ].join("\n") }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    ].join("\n") }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, 1, { humans: [0, 1], width: 64 * 32, height: 64 * 32, cuwp: 64 });
     if (typeof o === "string") throw new Error(o);
@@ -2471,7 +2231,7 @@ describe("a map of our own, input: the mouse, clicks, sync() and a program for e
   const LOCAL = 0x512684, QUEUE = 0x654880, QUEUED = 0x654aa0, QUEUE_MOST = 0x57f0d8, FIRST_UNIT = 0x6283f8, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4, SCREEN_X = 0x62848c, SCREEN_Y = 0x6284a8, SELECTION = 0x6284b8;
   type World = { keys: Map<number, number>; buttons: number; mouse: [number, number]; screen: [number, number]; selection: number[]; camera: [number, number]; typed: string[] };
   const run = (script: string, frames: number, then: (frame: number, world: World) => void, mouse = false, runIndex = 0): { lines: string[]; sent: string[] } => {
-    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, 1, { humans: [0, 1], width: 64 * 32, height: 64 * 32, cuwp: 64 });
     if (typeof o === "string") throw new Error(o);
@@ -2649,7 +2409,7 @@ describe("a map of our own, input: the mouse, clicks, sync() and a program for e
 
 describe("a map of our own, the tasks' turn while the program sleeps", () => {
   const laid = (script: string) => {
-    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib() });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, 1, { humans: [0], width: 64 * 32, height: 64 * 32, cuwp: 64 });
     if (typeof o === "string") throw new Error(o);

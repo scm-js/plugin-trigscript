@@ -3,7 +3,7 @@
  * backend of our own could take away). Plays the map in the lifted game with nobody at it, weighed for Remastered
  * (`compiler/remasteredCost.ts`), and sorts every trigger the walk passed:
  *
- * - **silent**: it ran nothing — a jump of eudplib's (an empty trigger whose next pointer was set), or one finished;
+ * - **silent**: it ran nothing — a jump (an empty trigger whose next pointer was set), or one finished;
  * - **failed**: its conditions failed, so none of its actions ran;
  * - **ran**: its actions ran; by how many, and whether it had conditions.
  *

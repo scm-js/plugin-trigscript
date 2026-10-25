@@ -103,13 +103,12 @@ describe("reserveLocation", () => {
     expect(centred.map((s) => (s as Extract<Stmt, { kind: "centerLocation" }>).location)).toEqual([63]);
   });
 
-  it("steps past a location the map uses, and input keeps clear of it", () => {
+  it("steps past a location the map uses", () => {
     const names = defaultScriptNames();
     names.locations.entries.push({ value: 63, keys: ["Mine"] });
     const r = ok(`import { fog } from "trigscript/fog";\nprogram(async () => { while (true) { if (keyPressed(P1, "F7")) fog.light(P1, 10, 10, 2); await nextFrame(); } });`, names);
     const centred = walk(r.ir[1].body).find((s) => s.kind === "centerLocation") as Extract<Stmt, { kind: "centerLocation" }>;
     expect(centred.location).toBe(62);
-    expect(r.input?.qcLocation).toBe(60); // 0-based: 62 is Mine, 61 is fog's
   });
 
   it("says what it needs", () => {

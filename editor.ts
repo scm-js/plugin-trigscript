@@ -3,8 +3,8 @@
  * declarations generated from the map (`compiler/declarations.ts`) and compiled — run —
  * in the worker (`compile.ts`). Apply writes the script's `trigger()` records into the
  * trigger list as its block (`service.ts`); saving or testing the map does the same by
- * itself, and that is also when the programs are built — into the file, by the eudplib
- * plugin. Play does both and hands the result to Test Map.
+ * itself, and that is also when the programs are built — into the file, by TrigScript's own
+ * build. Play does both and hands the result to Test Map.
  *
  * It is laid out as VS Code is (`shell.ts`): the files in an Explorer with the programs
  * and their variables under them, tabs over the editor with the run controls at their
@@ -59,7 +59,6 @@ import { COMPACT_LAYOUT, DEFAULT_LAYOUT, SHELL_STYLE, createShell, type IconName
 import { DEBUG_STYLE, Debugger, type DebugGameView } from "./debugger";
 import type { DebugRecording } from "./compiler/gameDebug";
 import type { ScmSimDebugView } from "./vendor/scmSim";
-import type { EudplibService } from "./vendor/eudplib";
 import type { Translate } from "./i18n";
 import { describeMedia, isImageFile, isMediaFile, isNotesFile, isSoundFile } from "./compiler/media";
 import { importMedia, showImage, showVideo } from "./videoImport";
@@ -324,8 +323,6 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   let simulation: { sim: Simulation; programs: ProgramSimulation | null; result: CompileResult } | null = null;
   /** The programs and variables of the last compile that went through: a typo does not empty the Explorer. */
   let outline: Pick<CompileResult, "programs" | "variables"> | null = null;
-  /** The eudplib plugin's service, followed while the workspace is open. */
-  let library: EudplibService | null = svc.library();
   /** Play is under way: the script applied, the map built as Save would, handed to Test Map. */
   let testing = false;
   let cancelled = false;
@@ -714,17 +711,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
 
   /**
-   * A script TrigScript's own build does not take is built through eudplib instead (while that is there): a warning on
-   * the line that says why, so that a map does not change builds without anyone seeing.
+   * A script the build does not take: a warning on the line that says why, while the script is typed, so that the
+   * save that fails to build the programs comes as no surprise.
    */
   const ownWarnings = (): ScriptWarning[] => {
     const refusal = result?.ownRefusal;
     if (!refusal || !result?.programs.length) return [];
     const at = /, line (\d+)(?: of (\S+))?$/.exec(refusal);
     const reason = at ? refusal.slice(0, at.index) : refusal;
-    const message = library?.contribute
-      ? t("Built through eudplib, not by TrigScript itself: {reason}. The map is built in a few seconds instead of under one, and plays the same.", { reason })
-      : t("Not built: TrigScript itself does not take this yet ({reason}), and the eudplib plugin, which would, is not running.", { reason });
+    const message = t("The programs will not be built: TrigScript does not take this yet ({reason}). The map is saved without them.", { reason });
     return [{ file: at?.[2] ?? ENTRY_FILE, line: at ? Number(at[1]) : 1, message, source: "build" }];
   };
   const allWarnings = (): ScriptWarning[] => [...warningsOf(tests, t), ...ownWarnings()];
@@ -1044,7 +1039,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const got = await prepareInGame({}, "trace");
       if (!got || cancelled) return;
       const { engine, a, names, variables, triggers, module, bytes, built } = got;
-      if (!triggers) { setStatus("error", t("Not looked up: the build did not say where its triggers are. Update the eudplib plugin, or save once more.")); return; }
+      if (!triggers) { setStatus("error", t("Not looked up: the build did not say where its triggers are. Save once more.")); return; }
       setStatus("busy", t("Playing the map in the game, writing down what each line reads and writes…"));
       allowlist ??= fetch(allowlistUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`allowlist.json: ${r.status}`); return r.json() as Promise<Allowlist>; });
       const [report, list] = await Promise.all([
@@ -1067,7 +1062,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
           ? t("{n, plural, one {# line touched it} other {# lines touched it}} in the game: {where}.", { n: found.lines.length, where })
           : t("No line touched that very unit, but {n, plural, one {# line touches} other {# lines touch}} the same field of other units, and a unit sits elsewhere in the table from one game to the next: {where}.", { n: found.lines.length, where })
         : found.unlined.exact + found.unlined.field
-          ? t("No line of the script touched it: eudplib's own work did ({n, plural, one {# time} other {# times}}).", { n: found.unlined.exact + found.unlined.field })
+          ? t("No line of the script touched it: the build's own triggers did ({n, plural, one {# time} other {# times}}).", { n: found.unlined.exact + found.unlined.field })
           : ran
             ? t("Nothing touched it in {frames} frames of the map played with nobody at it, nor in {tests, plural, one {# test} other {# tests}}: the line that did is one this run did not reach. A test that gets there will find it.", { frames: EUD_TRACE_FRAMES.toLocaleString(), tests: ran })
             : t("Nothing touched it in {frames} frames of the map played with nobody at it: the line that did is one this run did not reach. A test that gets there will find it.", { frames: EUD_TRACE_FRAMES.toLocaleString() });
@@ -1088,7 +1083,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /** The same for milliseconds, of SMOOTH_MS. */
   const shareOfMs = (ms: number) => `${(ms / SMOOTH_MS * 100).toFixed(ms < SMOOTH_MS / 10 ? 1 : 0)}%`;
 
-  /** The test's frames in the game as a small graph, in milliseconds where the host weighs; eudplib's own work is not in it. */
+  /** The test's frames in the game as a small graph, in milliseconds where the host weighs; the map's other triggers are not in it. */
   const costGraph = (cost: TestCost): Element => {
     const series = cost.ms?.perFrame ?? cost.perFrame, peak = cost.ms?.peak ?? cost.peak;
     const NS = "http://www.w3.org/2000/svg", n = Math.max(series.length, 2), top = cost.ms ? Math.max(peak, 0.001) : Math.max(peak, 1);
@@ -1144,11 +1139,11 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         if (cost.ms) {
           const ranMs = cost.ms.perFrame.filter((x) => x > 0), averageMs = ranMs.length ? ranMs.reduce((a, b) => a + b, 0) / ranMs.length : 0;
           const otherMs = cost.ms.other.slice(3), runtimeMs = otherMs.length ? otherMs.reduce((a, b) => a + b, 0) / otherMs.length : 0;
-          list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game and weighed by what Remastered was measured spending on each trigger, condition and action on a fast computer (Ryzen 9 7900X): the script's own triggers and the variables they go through, {average} conditions and actions a frame on average and {peak} at the most. eudplib's work at the top of each frame is apart: {ms} ms a frame. Remastered slows past {most} ms of triggers a frame there, and a slower computer sooner.", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), ms: shortMs(runtimeMs), most: Math.round(MOST_MS) }) },
+          list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game and weighed by what Remastered was measured spending on each trigger, condition and action on a fast computer (Ryzen 9 7900X): the script's own triggers and the variables they go through, {average} conditions and actions a frame on average and {peak} at the most. The map's other triggers are apart: {ms} ms a frame. Remastered slows past {most} ms of triggers a frame there, and a slower computer sooner.", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), ms: shortMs(runtimeMs), most: Math.round(MOST_MS) }) },
             el("span", { className: "frame" }, t("cost")),
             el("span", { className: "msg" }, t("{average} ms a frame on average, {peak} ms at the most (frame {frame}): {share} of the {smooth} ms of triggers a frame Remastered ran with no flicker seen", { average: shortMs(averageMs), peak: shortMs(cost.ms.peak), frame: cost.ms.peakFrame, share: shareOfMs(cost.ms.peak), smooth: SMOOTH_MS }))));
         } else {
-          list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game: the script's own triggers and the variables they go through. eudplib's work at the top of each frame is apart: {n} a frame.", { n: runtime.toLocaleString() }) },
+          list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game: the script's own triggers and the variables they go through. The map's other triggers are apart: {n} a frame.", { n: runtime.toLocaleString() }) },
             el("span", { className: "frame" }, t("cost")),
             el("span", { className: "msg" }, t("{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), frame: cost.peakFrame, share: shareOf(cost.peak) }))));
         }
@@ -1332,28 +1327,18 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       title: t("{what}. Click for its log", { what: editedSince ? t("The script changed since this build: the programs in the saved map are the older ones until the next Save") : buildState.title ?? t("The last build of the programs") }),
       onClick: () => shell.showPanel("output"),
     } : null);
-    // Who builds the programs into the saved map: TrigScript itself, or — where its own build does not take the
-    // script yet, or Magenta shares the map — the eudplib plugin, which then has to be running.
-    const needsLibrary = programs > 0 && !svc.buildsOwn();
-    const whyNotOwn = needsLibrary ? svc.whyNotOwn() : null;
-    const libraryOk = !!library?.contribute && library.state() !== "failed";
-    libraryItem.set(programs === 0 ? null : !needsLibrary ? {
+    // Who builds the programs into the saved map: TrigScript itself — unless Magenta's triggers are in the map, which
+    // its build cannot share yet.
+    const whyNotBuilt = programs > 0 ? svc.whyNotBuilt() : null;
+    libraryItem.set(programs === 0 ? null : !whyNotBuilt ? {
       icon: "package",
       text: t("built by TrigScript"),
-      title: t("The programs are laid out into the map by TrigScript itself when it is saved or tested: no eudplib, nothing downloaded, and the map is built in under a second"),
+      title: t("The programs are laid out into the map by TrigScript itself when it is saved or tested: nothing to install, and the map is built in under a second"),
     } : {
-      kind: libraryOk ? undefined : "warn",
-      icon: libraryOk ? undefined : "warning",
-      text: !library
-        ? t("eudplib plugin not running")
-        : !library.contribute
-          ? t("eudplib plugin older than 0.4")
-          : `eudplib ${library.versions.eudplib} · ${library.state() === "ready" ? t("runtime ready") : library.state() === "installing" ? t("runtime downloading…") : library.state() === "failed" ? t("runtime failed") : t("runtime downloads on the first save")}`,
-      title: `${!library
-        ? t("The programs will not be built: install or turn on the eudplib plugin under Plugins ▸ Manage Plugins…")
-        : !library.contribute
-          ? t("Update the eudplib plugin to build the programs")
-          : t("The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time")}${whyNotOwn ? `\n${whyNotOwn}` : ""}`,
+      kind: "warn",
+      icon: "warning",
+      text: t("not built: Magenta's triggers"),
+      title: whyNotBuilt,
     });
     programsItem.set(programs ? { text: t("{n, plural, one {# program} other {# programs}} · Remastered", { n: programs }), title: t("Programs are built into the saved map, which then needs StarCraft: Remastered. Click for the programs and their variables"), onClick: () => { shell.toggleSidebar(true); programsSection.expand(); } } : null);
 
@@ -1504,7 +1489,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (building || testing || !ready) return;
     testing = true;
     render();
-    // The library's events say how the build of the programs went; the export itself falls back to the plain map without a word.
+    // The build's events say how the build of the programs went; the export itself falls back to the plain map without a word.
     let failure: string | null = null;
     const heard = svc.onBuild((e) => { if (e.kind === "failed") failure = e.from && e.from !== "trigscript" ? `${e.from}: ${e.message}` : e.message; });
     try {
@@ -1513,7 +1498,6 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const file = await api.document.export({ format: "scx" });
       if (!file) { setStatus("error", t("No map is open.")); return; }
       if (failure) { setStatus("error", t("Not tested: {message}", { message: failure })); return; }
-      if (result?.programs.length && !svc.buildsOwn() && !library?.contribute) { setStatus("error", t("Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins ▸ Manage Plugins….")); return; }
       const bytes = new Uint8Array(await file.arrayBuffer());
       const outcome = await api.document.test(bytes, file.name);
       const kb = Math.round(bytes.length / 1024);
@@ -1534,7 +1518,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
 
   /** A build of the programs, whoever started it (Save, Test Map, Test): its state in the status bar, its log in Output, a failure on its line. */
-  const onLibraryBuild = (e: OwnBuildEvent) => {
+  const onOwnBuild = (e: OwnBuildEvent) => {
     if (cancelled || (e.kind !== "log" && e.kind !== "warning" && !e.contributors.includes("trigscript"))) return;
     if (e.kind === "warning") {
       // TrigScript's own build has a word for the map maker: a trigger of the map's own left out, or one that never runs.
@@ -1556,7 +1540,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       if (!isMachineLine(e.line)) log(e.line, false);
     } else if (e.kind === "done") {
       if (!streamed && e.log) log(withoutMachineLines(e.log), false);
-      // (TrigScript's own build takes tens of milliseconds, eudplib's seconds: said in the unit that reads.)
+      // (A build takes tens of milliseconds, a large one seconds: said in the unit that reads.)
       const kb = Math.round(e.chkBytes / 1024), took = e.ms < 1000 ? t("{ms} ms", { ms: e.ms }) : t("{seconds} s", { seconds: (e.ms / 1000).toFixed(1) });
       buildState = { kind: "ok", text: t("Built {kb} KB · {took}", { kb, took }), of: buildState?.of ?? files };
       log(t("Built: {kb} KB of scenario in {took}", { kb, took }));
@@ -1976,8 +1960,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     // Checks run on every keystroke (debounced), so the compile worker stays up while the editor is open.
     const releaseWorker = retainCompileWorker();
     const subs = [
-      svc.watchLibrary((s) => { library = s; if (!cancelled) render(); }),
-      svc.onBuild(onLibraryBuild),
+      svc.onBuild(onOwnBuild),
       api.events.on("settings", refreshNames),
       api.events.on("locations", refreshNames),
       api.events.on("triggers", refreshNames),

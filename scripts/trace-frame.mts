@@ -5,7 +5,7 @@
  *
  *   npx tsx scripts/trace-frame.mts <built.scx> --frame=N [--origin=main.ts:12] [--most=400] [--wide]
  *
- * --origin keeps the triggers whose origin starts with it and the ones run between two of them (eudplib's variables,
+ * --origin keeps the triggers whose origin starts with it and the ones run between two of them (the build's own,
  * which carry no origin of their own). --wide prints each origin whole. Needs a scm-sim checkout (SCM_SIM_DIR) with its lifted game generated.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

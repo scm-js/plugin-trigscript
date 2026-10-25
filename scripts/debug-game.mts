@@ -18,7 +18,7 @@ import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { readLocations } from "../compiler/gameSim";
 import { defaultScriptNames } from "../compiler/names";
-import { STEP_EUDPLIB, STEP_TEST, STEP_UNSEEN, type DebugHost, type DebugRecording } from "../compiler/gameDebug";
+import { STEP_BUILD, STEP_TEST, STEP_UNSEEN, type DebugHost, type DebugRecording } from "../compiler/gameDebug";
 import { programVariables, type VariableMap } from "../compiler/gameVariables";
 import { defaultLib } from "../bundle/lib.mjs";
 import { scriptFiles } from "./script-files.mts";
@@ -73,10 +73,10 @@ try {
     const session = host.debugGameTest(handle, { ...payload, test: t.id });
     const r: DebugRecording = session.recording;
     const steps = r.stepLine.length, writes = r.writes.length / 3;
-    const kinds = { line: 0, eudplib: 0, test: 0, unseen: 0 };
-    for (const l of r.stepLine) { if (l === STEP_EUDPLIB) kinds.eudplib++; else if (l === STEP_TEST) kinds.test++; else if (l === STEP_UNSEEN) kinds.unseen++; else kinds.line++; }
+    const kinds = { line: 0, build: 0, test: 0, unseen: 0 };
+    for (const l of r.stepLine) { if (l === STEP_BUILD) kinds.build++; else if (l === STEP_TEST) kinds.test++; else if (l === STEP_UNSEEN) kinds.unseen++; else kinds.line++; }
     console.log(`${r.result.status === "passed" ? "✓" : r.result.status === "failed" ? "✗" : "–"} ${t.name}: ${r.frames} frames (${r.first}–${r.first + r.frames - 1}), recorded in ${r.ms} ms`);
-    console.log(`    ${steps.toLocaleString("en")} steps (${kinds.line} of lines, ${kinds.eudplib} eudplib's, ${kinds.test} the test's, ${kinds.unseen} unseen), ${writes.toLocaleString("en")} writes, ${r.lines.length} lines, ${r.kept.length} kept games${r.cut ? `; CUT at frame ${r.cut.frame}: ${r.cut.why}` : ""}`);
+    console.log(`    ${steps.toLocaleString("en")} steps (${kinds.line} of lines, ${kinds.build} the build's own, ${kinds.test} the test's, ${kinds.unseen} unseen), ${writes.toLocaleString("en")} writes, ${r.lines.length} lines, ${r.kept.length} kept games${r.cut ? `; CUT at frame ${r.cut.frame}: ${r.cut.why}` : ""}`);
     console.log(`    record: ${Math.round((r.memory.bytes.byteLength + r.writes.byteLength + 4 * (r.stepLine.length * 3 + r.frameSteps.length + r.testLine.length * 2)) / 1024)} KB`);
     const busiest = [...r.frameSteps.slice(1)].map((e, k) => ({ k, n: e - r.frameSteps[k] })).sort((a, b) => b.n - a.n)[0];
     if (busiest) console.log(`    busiest frame ${r.first + busiest.k}: ${busiest.n} steps; test lines asked for frames: ${[...new Set(r.testLine)].filter(Boolean).join(", ") || "none"}`);

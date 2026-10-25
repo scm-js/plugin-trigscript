@@ -120,14 +120,14 @@ function covers(e: Allowlist["entries"][number], byte: number): boolean {
   return off % e.stride < e.width && Math.floor(off / e.stride) < (e.count ?? 1);
 }
 
-/** One dword a run read or wrote, under the line that did it (null: eudplib's own work, or the map's other triggers). */
+/** One dword a run read or wrote, under the line that did it (null: the build's own triggers, or the map's other triggers). */
 export interface EudTraceRow { file: string | null; line: number | null; address: number; write: boolean; mask: number; times: number }
 
 /**
  * Every EUD read and write of a run in the lifted game, by line: what the host's EUD tap says (scm-sim's
  * `installEud`), each put under the line its record ran for. The cost tap says the line, as it does for the debugger
- * (A5): it is told of each record before the record runs, with eudplib's variables and functions put under the line
- * that ran just before them, so a read inside eudplib's `f_dwread_epd` is the line that called it.
+ * (A5): it is told of each record before the record runs, with the build's own triggers put under the line that ran
+ * just before them, so a read a variable's route makes is the line that read the variable.
  */
 export class EudTracer {
   private group = -1;
@@ -197,7 +197,7 @@ export interface EudErrorAnswer {
   evidence: string[];
   /** The lines, those that touched the very address first, then by how often. */
   lines: EudErrorLine[];
-  /** Accesses to it under no line: eudplib's start and its own work at the top of a frame, or the map's other triggers. */
+  /** Accesses to it under no line: the start-up and the build's own work at the top of a frame, or the map's other triggers. */
   unlined: { exact: number; field: number };
 }
 

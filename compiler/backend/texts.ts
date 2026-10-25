@@ -1543,7 +1543,7 @@ const TEXT_BYTES = 1023;
 const DISPLAY_TEXT = 9;
 // (`call` and `pop` are numbers too: a list of numbers that starts with one is walked as statements, which does to
 // each what walking it as a number would.)
-const STMT_KINDS = new Set(["action", "assign", "assignBool", "assignText", "assignUnit", "block", "break", "buildText", "call", "cancel", "centerLocation", "continue", "declare", "declareArray", "do", "for", "graph", "if", "parallel", "pop", "print", "push", "releaseText", "remark", "return", "select", "setLength", "sleep", "start", "store", "storeText", "switch", "syncSend", "tableWrite", "textLoop", "throw", "try", "uncaught", "unitDo", "unitLoop", "unitWrite", "unrolled", "watch", "while"]);
+const STMT_KINDS = new Set(["action", "assign", "assignBool", "assignText", "assignUnit", "block", "break", "buildText", "call", "cancel", "centerLocation", "continue", "declare", "declareArray", "do", "for", "if", "parallel", "pop", "print", "push", "releaseText", "remark", "return", "select", "setLength", "sleep", "start", "store", "storeText", "switch", "syncSend", "tableWrite", "textLoop", "throw", "try", "uncaught", "unitDo", "unitLoop", "unitWrite", "unrolled", "watch", "while"]);
 function isStmt(o: unknown): boolean {
   return !!o && typeof o === "object" && STMT_KINDS.has((o as { kind?: string }).kind ?? "");
 }

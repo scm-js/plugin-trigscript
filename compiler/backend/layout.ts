@@ -208,8 +208,8 @@ export interface OwnTriggerInput { record: TriggerRecord; conds: Cond[]; acts: A
 const ROUTE_DEST = "@route.dest:", ROUTE_NEXT = "@route.next:", ROUTE_CELL = "@route:";
 
 /**
- * A graph's copies made of triggers: there is no Python side to route a variable's cell, so the layout routes it as
- * eudplib does. A variable that is copied keeps its value in the number of the one action of a trigger of its own —
+ * A graph's copies made of triggers: the layout routes a variable's cell as eudplib's build routed every read. A
+ * variable that is copied keeps its value in the number of the one action of a trigger of its own —
  * Set Deaths, add — and a copy into a place is a trigger that sets the place to its constant, points that action at
  * the place and its trigger back here, and goes to it: the value added in, about 50 ns a place. A place that holds a
  * multiple of the variable other than 1 is filled a bit at a time instead: set to its constant, then one trigger a bit
@@ -281,7 +281,7 @@ function expandCopies(graph: Graph): { graph: Graph; routed: Set<string> } {
   if (shared.size) {
     // (After the graph, which goes nowhere by falling: its last trigger ends it.)
     const last = out[out.length - 1];
-    if (last && last.next === undefined && !last.copy && !last.island && !last.call) last.next = END;
+    if (last && last.next === undefined && !last.copy) last.next = END;
     for (const s of shared.values()) out.push(...expand(s.copy, s.start, s.back), { label: s.back, conds: [], acts: [], next: END });
   }
   return { graph: { ...graph, triggers: out }, routed };
@@ -370,7 +370,7 @@ export function layout(input: LayoutInput): OwnMap {
     // Every entry and gate back to ending at its list's end, the count of frames one more, then the first run.
     { label: run, conds: [], acts: [...players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), { dword: { var: NOW }, modifier: "add", value: 1 }], next: first(0) },
   );
-  for (const t of runs.flatMap((r) => r.graph.triggers)) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
+  for (const t of runs.flatMap((r) => r.graph.triggers)) if (t.copy) throw new Error(`${t.label}: a copy was not made into triggers`);
   // The triggers stacked, a row as one.
   const space = new Space();
   const at = new Map<string, number>();

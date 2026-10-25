@@ -42,7 +42,7 @@
  *   backends read the same values and are as close as a fixed number can be.
  */
 import { I32_MAX, UNIT_FLAGS, isTextExpr, mapText, mapTextOperands, programDeclarations, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type TextPart, type UnitExpr, type VarDecl } from "./ir";
-import type { ProgramDiagnostic } from "./eud";
+import type { ProgramDiagnostic } from "./check";
 import { divisionByThresholds } from "./thresholds";
 
 /** `flex`: a constant from 0 to 2 147 483 647, which is the same whichever way it is read. `fixed`: a 16.16 number. */

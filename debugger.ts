@@ -13,7 +13,7 @@ import type { PluginApi } from "@scm-js/plugin-api";
 import type { Translate } from "./i18n";
 import type { IconName, Shell } from "./shell";
 import type { LineHint } from "./compiler/compiler";
-import { STEP_EUDPLIB, STEP_TEST, STEP_UNSEEN, type DebugRecording } from "./compiler/gameDebug";
+import { STEP_BUILD, STEP_TEST, STEP_UNSEEN, type DebugRecording } from "./compiler/gameDebug";
 import { DebugCursor, show, type DebugPlace, type DebugStop } from "./compiler/debugModel";
 import type { VariableMap } from "./compiler/gameVariables";
 import { shortCount } from "./compiler/gameCost";
@@ -128,7 +128,7 @@ export class Debugger {
   readonly breakpoints = new Set<string>();
   /** Variables watched: a continue stops where one changes ("wave", or "waves.wave"). */
   readonly watch: string[] = [];
-  /** eudplib's own steps (and the test's, and the unseen) are stopped at too. */
+  /** The build's own steps (and the test's, and the unseen) are stopped at too. */
   everyStep = false;
   private session: Session | null = null;
   private readonly d: DebuggerDeps;
@@ -426,7 +426,7 @@ export class Debugger {
       return rec.result.status === "failed" ? { text: t("{test} failed: {message}", { test: rec.test.name, message: rec.result.message ?? "" }), failed: true } : { text: t("{test} passed.", { test: rec.test.name }), failed: false };
     })();
     const line = c.line();
-    const where = none ? t("no frames") : `${t("frame {frame}", { frame: c.frame() })}  ${(c.frame() / 24).toFixed(2)} s  ${line ? `${line.file}:${line.line}` : c.atEnd() ? t("end of frame") : t("eudplib")}`;
+    const where = none ? t("no frames") : `${t("frame {frame}", { frame: c.frame() })}  ${(c.frame() / 24).toFixed(2)} s  ${line ? `${line.file}:${line.line}` : c.atEnd() ? t("end of frame") : t("the build's own triggers")}`;
     const every = el("input", { type: "checkbox", checked: this.everyStep }) as HTMLInputElement;
     every.addEventListener("change", () => { this.everyStep = every.checked; this.render(); });
     this.bar.replaceChildren(
@@ -441,7 +441,7 @@ export class Debugger {
       this.button("debug-stop", t("Stop debugging (Shift+F5)"), () => this.end()),
       el("span", { className: "tsd-where" }, where),
       el("span", { className: why.failed ? "tsd-why tsd-failed" : "tsd-why", title: why.text }, why.text),
-      el("label", { title: t("Stop at every step, eudplib's own work and what the game wrote by itself included, not only at the script's lines") }, every, t("Every step")),
+      el("label", { title: t("Stop at every step, the build's own triggers and what the game wrote by itself included, not only at the script's lines") }, every, t("Every step")),
     );
     this.renderTime();
     this.renderCols();
@@ -521,8 +521,8 @@ export class Debugger {
     const most = 400;
     for (let i = first; i < Math.min(end, first + most); i++) {
       const l = rec.stepLine[i], place = c.placeOf(i);
-      if (!this.everyStep && l === STEP_EUDPLIB && rec.stepWrites[i + 1] === rec.stepWrites[i]) continue;
-      const label = place ? `${place.file === "main.ts" ? "" : `${place.file} `}${t("line {line}", { line: place.line })}` : l === STEP_TEST ? t("the test") : l === STEP_UNSEEN ? t("the game itself") : t("eudplib");
+      if (!this.everyStep && l === STEP_BUILD && rec.stepWrites[i + 1] === rec.stepWrites[i]) continue;
+      const label = place ? `${place.file === "main.ts" ? "" : `${place.file} `}${t("line {line}", { line: place.line })}` : l === STEP_TEST ? t("the test") : l === STEP_UNSEEN ? t("the game itself") : t("the build's own triggers");
       const wrote = rec.stepWrites[i + 1] - rec.stepWrites[i];
       const row = el("li", { className: `tsd-click${i === c.where.s ? " tsd-here" : ""}${place ? "" : " tsd-dim"}`, onClick: () => { c.moveTo({ k, s: i }); s.stop = null; this.moved(); } },
         el("span", { className: "k" }, label),

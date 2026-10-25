@@ -19,7 +19,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "bundle": "node bundle/build.mjs",
-    "embed": "node scripts/embed-python.mts"
+    "embed": "node scripts/embed-stdlib.mts"
   },
   "devDependencies": {
     "@scm-js/plugin-api": "^1.61.0",

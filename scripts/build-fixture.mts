@@ -1,11 +1,9 @@
 /**
  * Build a script into a map under Node, the way saving does in the editor: compile, write the `trigger()` records
  * into the map, and lay the programs out into the scenario as TrigScript's own build does (`compiler/backend/build.ts`,
- * step 14) — or, with EUDPLIB=1, hand the IR, the map and `python/trigscript.py` to a plugin-eudplib checkout's
- * `scripts/build-map.mts` (the second build every step of the way off eudplib is held against). For probe maps that
- * get played.
+ * step 14). For probe maps that get played.
  *
- *   [TRIGGER_MAP=1] [VARIABLE_MAP=1] [PEOPLE=0,1] [PREP_ONLY=1] [EUDPLIB=1] npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike.scx [map.scx] [../plugin-eudplib]
+ *   [TRIGGER_MAP=1] [VARIABLE_MAP=1] [PEOPLE=0,1] [PREP_ONLY=1] npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike.scx [map.scx]
  *
  * The output lands in the ignored fixtures/ folder: it is built on a Blizzard map, which is never committed.
  *
@@ -16,36 +14,25 @@
  * the base map's own triggers before the script's; STACK_DEPTH and HEAP_CELLS are the script's settings; OWN_FREE a
  * dword written into every free cell of the payload.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { buildOwnMap, isRefused } from "../compiler/backend/build";
-import { serializeIr } from "../compiler/eud";
-import { buildPlugins } from "../compiler/input";
-import { readTriggerMap, readVariableMap } from "../compiler/gameVariables";
 import { resolveStrings } from "../script";
 import { finishSounds, vorbisEncoder } from "../compiler/vorbis";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 import { scriptFiles } from "./script-files.mts";
 
-const [scriptPath, outPath, mapArg, eudplibArg] = process.argv.slice(2);
-if (!scriptPath || !outPath) { console.error("usage: build-fixture <script.ts> <out.scx> [map.scx] [plugin-eudplib dir]"); process.exit(2); }
+const [scriptPath, outPath, mapArg] = process.argv.slice(2);
+if (!scriptPath || !outPath) { console.error("usage: build-fixture <script.ts> <out.scx> [map.scx]"); process.exit(2); }
 const root = resolve(import.meta.dirname, "..");
 const map = resolve(mapArg ?? join(root, "fixtures", "maps", "(2)Binary Burghs.scx"));
-const eudplib = resolve(eudplibArg ?? process.env.EUDPLIB_DIR ?? join(root, "..", "plugin-eudplib"));
-// EUDPLIB=1: built through eudplib (python/trigscript.py), the second build a step is held against; else TrigScript's own.
-const throughEudplib = process.env.EUDPLIB === "1";
 if (!existsSync(map)) { console.error(`no map at ${map}`); process.exit(2); }
-if (throughEudplib && !existsSync(join(eudplib, "scripts", "build-map.mts"))) { console.error(`no plugin-eudplib checkout at ${eudplib}`); process.exit(2); }
 
 // RANGES=0: built without value ranges (compiler/ranges.ts), to weigh what they give.
-// EMITTER=0: no loop lowered by the emitter (compiler/backend/emit.ts), all by the Python side; EMITTER_REPORT=1 says which it took.
-// (TrigScript's own build lowers every program whole itself: the emitter's graphs are for the Python side's lowering.)
-const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib(), ranges: process.env.RANGES !== "0", emitter: throughEudplib && process.env.EMITTER !== "0", ...(process.env.EMITTER_REPORT ? { emitterReport: (line: string) => console.log(line) } : {}) });
+const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib(), ranges: process.env.RANGES !== "0" });
 if (r.diagnostics.length) { for (const d of r.diagnostics) console.error(`${d.file}:${d.line}:${d.column} ${d.message}`); process.exit(1); }
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));
@@ -106,7 +93,6 @@ if (home && scn.locations?.[0] && !scn.locations[0].nameIndex && scn.locations[0
   markDirty(scn, "MRGN");
 }
 markDirty(scn, "TRIG", "UNIT");
-const ir = serializeIr(r.ir, r.strings, r.input);
 const extras = loaded.archive ? await readExtras(loaded.archive, loaded.files) : new Map();
 // The clips the script plays (compiler/sound.ts), as the editor's Apply writes them: the long ones Ogg Vorbis, encoded
 // here as a build in the editor encodes them (compiler/vorbis.ts).
@@ -116,57 +102,11 @@ const prepared: Uint8Array = serializeScenario(scn);
 const withStrings = await saveMap(prepared, { extras, compress: "pkware", listfile: true });
 // PREP_ONLY=1: the prepared map as it is, not built: what the editor opens in a run end to end, and builds itself.
 if (process.env.PREP_ONLY) { writeFileSync(resolve(outPath), withStrings); process.exit(0); }
-if (!throughEudplib) {
-  // TrigScript's own build, as the editor's step runs it: the records are in the map's TRIG already.
-  const settings = { ...(process.env.STACK_DEPTH ? { stackDepth: Number(process.env.STACK_DEPTH) } : {}), ...(process.env.HEAP_CELLS ? { heapCells: Number(process.env.HEAP_CELLS) } : {}) };
-  const built = buildOwnMap({ chk: prepared, compiled: { ...r, triggers: [] }, settings, maps: Boolean(process.env.TRIGGER_MAP || process.env.VARIABLE_MAP), ...(process.env.OWN_FREE ? { free: Number(process.env.OWN_FREE) } : {}) });
-  if (isRefused(built)) { console.error(`TrigScript's own build does not take this script: ${built.refused}`); process.exit(1); }
-  writeFileSync(resolve(outPath), await saveMap(built.chk, { extras, compress: "pkware", listfile: true }));
-  if (process.env.TRIGGER_MAP) writeFileSync(resolve(outPath).replace(/\.scx$/, ".triggers.json"), JSON.stringify(built.maps!.triggers));
-  if (process.env.VARIABLE_MAP) writeFileSync(resolve(outPath).replace(/\.scx$/, ".variables.json"), JSON.stringify(built.maps!.variables));
-  for (const line of built.lines) console.log(line);
-  process.exit(0);
-}
-const dir = mkdtempSync(join(tmpdir(), "trigscript-fixture-"));
-const irPath = join(dir, "trigscript.json");
-const pluginsPath = join(dir, "plugins.json");
-writeFileSync(irPath, ir);
-writeFileSync(resolve(outPath).replace(/\.scx$/, ".json"), ir);
-const mapPath = join(dir, "in.scx");
-writeFileSync(mapPath, withStrings);
-// EXTRA_PLUGIN=name=path.py builds a hand-written euddraft plugin into the same map, for a spike that
-// tries something in the game before the compiler learns it (probes/strings-spike.py).
-const extra = process.env.EXTRA_PLUGIN;
-const extraName = extra?.slice(0, extra.indexOf("="));
-const sections = buildPlugins(r.input, "/work/files/trigscript.json");
-// TRIGGER_MAP=1: the Python says where each trigger it made sits in the payload (a TRIGSCRIPT-MAP line in the
-// log), and that line is written beside the map as <out>.triggers.json, for scm-sim's run in the lifted game.
-if (process.env.TRIGGER_MAP) (sections.trigscript as Record<string, string>).triggerMap = "1";
-// STATIC_ROUTING=0: every variable read routed as eudplib routes it (python/trigscript.py, static routing), to weigh what it gives.
-if (process.env.STATIC_ROUTING === "0") (sections.trigscript as Record<string, string>).staticRouting = "0";
-// ROUTING_REPORT=1: why each variable read inside a loop keeps its routing (python/trigscript.py, static routing).
-if (process.env.ROUTING_REPORT) (sections.trigscript as Record<string, string>).routingReport = "1";
-// VARIABLE_MAP=1: the same for where each program's variables are (TRIGSCRIPT-VARS), as <out>.variables.json, for a
-// test in the lifted game to read them (`sim.program()`).
-if (process.env.VARIABLE_MAP) (sections.trigscript as Record<string, string>).variableMap = "1";
-const { eudTurbo, ...before } = sections;
-writeFileSync(pluginsPath, JSON.stringify(extraName ? { ...before, [extraName]: {}, eudTurbo } : sections));
-const extraArgs = extra && extraName ? [`${extraName}=${resolve(extra.slice(extraName.length + 1))}`] : [];
-// EXTRA_FILE=name=path: a text file the spike reads as /work/files/<name> — data too big for a plugin's source (512 KB
-// at most; files may hold 4 MB in all), such as probes/bad-apple's table of brushes.
-const extraFile = process.env.EXTRA_FILE;
-if (extraFile) { const at = extraFile.indexOf("="); extraArgs.push(`file=${extraFile.slice(0, at)}=${resolve(extraFile.slice(at + 1))}`); }
-const logPath = join(dir, "eudplib.log");
-const res = spawnSync("npx", ["tsx", join(eudplib, "scripts", "build-map.mts"), mapPath, resolve(outPath), pluginsPath, `trigscript=${join(root, "python", "trigscript.py")}`, `file=trigscript.json=${irPath}`, ...extraArgs], { cwd: eudplib, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, EUDPLIB_LOG: "1", EUDPLIB_LOG_FILE: logPath } });
-// (The log whole, from the file: the copy on stdout can be cut short when it runs to megabytes.)
-const fullLog = existsSync(logPath) ? readFileSync(logPath, "utf8") : res.stdout;
-rmSync(dir, { recursive: true, force: true });
-const logLines = fullLog.split("\n");
-const triggerMap = readTriggerMap(logLines);
-if (triggerMap) writeFileSync(resolve(outPath).replace(/\.scx$/, ".triggers.json"), JSON.stringify(triggerMap));
-else if (logLines.some((l) => l.startsWith("TRIGSCRIPT-MAP "))) { console.error("the map of triggers came out cut short"); process.exit(1); }
-const variables = readVariableMap(logLines);
-if (variables) writeFileSync(resolve(outPath).replace(/\.scx$/, ".variables.json"), JSON.stringify(variables));
-else if (process.env.VARIABLE_MAP && res.status === 0) { console.error("the build said nothing of where the variables are"); process.exit(1); }
-process.stdout.write(res.stdout.split("\n").filter((l) => !/^TRIGSCRIPT-[A-Z]+ /.test(l)).join("\n"));
-if (res.status !== 0) { console.error(res.stderr); process.exit(1); }
+// TrigScript's own build, as the editor's step runs it: the records are in the map's TRIG already.
+const settings = { ...(process.env.STACK_DEPTH ? { stackDepth: Number(process.env.STACK_DEPTH) } : {}), ...(process.env.HEAP_CELLS ? { heapCells: Number(process.env.HEAP_CELLS) } : {}) };
+const built = buildOwnMap({ chk: prepared, compiled: { ...r, triggers: [] }, settings, maps: Boolean(process.env.TRIGGER_MAP || process.env.VARIABLE_MAP), ...(process.env.OWN_FREE ? { free: Number(process.env.OWN_FREE) } : {}) });
+if (isRefused(built)) { console.error(`TrigScript's own build does not take this script: ${built.refused}`); process.exit(1); }
+writeFileSync(resolve(outPath), await saveMap(built.chk, { extras, compress: "pkware", listfile: true }));
+if (process.env.TRIGGER_MAP) writeFileSync(resolve(outPath).replace(/\.scx$/, ".triggers.json"), JSON.stringify(built.maps!.triggers));
+if (process.env.VARIABLE_MAP) writeFileSync(resolve(outPath).replace(/\.scx$/, ".variables.json"), JSON.stringify(built.maps!.variables));
+for (const line of built.lines) console.log(line);

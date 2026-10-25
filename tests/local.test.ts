@@ -6,7 +6,6 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { compileScript, type CompileResult } from "../compiler/compiler";
-import { inputPlugins } from "../compiler/input";
 import { defaultScriptNames } from "../compiler/names";
 import { ProgramSimulation } from "../compiler/simulateIr";
 import { ActionType } from "../vendor/triggers";
@@ -112,12 +111,10 @@ describe("sync()", () => {
     expect(printed(s)).toEqual(["2:synced 600"]);
     expect(s.events.some((e) => e.action.type === ActionType.SetResources)).toBe(true);
   });
-  it("is MSQC's val, a slot of its own for each sync() in the build", () => {
+  it("is a slot of its own for each sync() in the build", () => {
     const r = compile(`program(async () => { const a = await sync(P1, local.camera.x); print(\`\${a}\`); });
       program(async () => { const b = await sync(P2, local.mouse.y); const c = await sync(P1, local.mouse.x); print(\`\${b} \${c}\`); });`);
     expect(r.input?.syncs).toBe(3);
-    const msqc = inputPlugins(r.input!).after.MSQC;
-    expect(msqc["tsin_sync2.AtLeast(1); val, tsin_sync2"]).toBe("tsin_sync2_in");
     const slots = JSON.stringify(r.ir).match(/"kind":"syncSend","slot":\d/g);
     expect(slots).toEqual(['"kind":"syncSend","slot":0', '"kind":"syncSend","slot":1', '"kind":"syncSend","slot":2']);
   });

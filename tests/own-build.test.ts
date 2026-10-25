@@ -20,7 +20,7 @@ import { defaultLib } from "../bundle/lib.mjs";
 let lib: ReturnType<typeof defaultLib> | undefined;
 const compile = (source: string, file = "main.ts") => {
   lib ??= defaultLib();
-  const r = compileScript(ts, { [file]: source }, defaultScriptNames(), { lib, emitter: false, own: { players: { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, humans: [0], width: 64 * 32, height: 64 * 32 } });
+  const r = compileScript(ts, { [file]: source }, defaultScriptNames(), { lib, own: { players: { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, humans: [0], width: 64 * 32, height: 64 * 32 } });
   expect(r.diagnostics).toEqual([]);
   return r;
 };
@@ -136,14 +136,14 @@ describe("the build in the editor", () => {
     const out = buildOwnMap({ chk: scenario(), compiled: r });
     expect(isRefused(out) && out.refused).toBe(r.ownRefusal);
     // The entry file's name is left out; another file's is said.
-    const other = compileScript(ts, { "main.ts": `import "./waves";`, "waves.ts": `program(() => {\n  while (true) { wait(500); sleep(frames(1)); }\n});` }, defaultScriptNames(), { lib: lib!, emitter: false, own: { players: { slots: [0], forces: [0, 0, 0, 0, 0, 0, 0, 0] }, humans: [0], width: 2048, height: 2048 } });
+    const other = compileScript(ts, { "main.ts": `import "./waves";`, "waves.ts": `program(() => {\n  while (true) { wait(500); sleep(frames(1)); }\n});` }, defaultScriptNames(), { lib: lib!, own: { players: { slots: [0], forces: [0, 0, 0, 0, 0, 0, 0, 0] }, humans: [0], width: 2048, height: 2048 } });
     expect(other.diagnostics).toEqual([]);
     expect(other.ownRefusal).toMatch(/^the action Wait \(.*\), line 2 of waves\.ts$/);
     // No programs, or no asking: nothing said.
     expect(compile(`trigger(P1, [always()], [wait(500)]);`).ownRefusal).toBeUndefined();
-    expect(compileScript(ts, { "main.ts": PROGRAM }, defaultScriptNames(), { lib: lib!, emitter: false }).ownRefusal).toBeUndefined();
+    expect(compileScript(ts, { "main.ts": PROGRAM }, defaultScriptNames(), { lib: lib! }).ownRefusal).toBeUndefined();
     // Asked for a map none of whose players is among the owners (a force with nobody in it).
-    const nobody = compileScript(ts, { "main.ts": `program(() => { displayText("x"); }, { owner: players.Force4 });` }, defaultScriptNames(), { lib: lib!, emitter: false, own: { players: { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, humans: [0], width: 2048, height: 2048 } });
+    const nobody = compileScript(ts, { "main.ts": `program(() => { displayText("x"); }, { owner: players.Force4 });` }, defaultScriptNames(), { lib: lib!, own: { players: { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }, humans: [0], width: 2048, height: 2048 } });
     expect(nobody.diagnostics).toEqual([]);
     expect(nobody.ownRefusal).toBe("no human or computer player of this map is among the program's owners");
   });
