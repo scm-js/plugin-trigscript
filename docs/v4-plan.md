@@ -5852,6 +5852,77 @@ JavaScript, `tests/ownWalk.ts`, which carries no units, so the carriers cannot b
 the only check of input, run by hand). The perf slice after this step (unit walks, lazy error messages) stands as
 assessed on 2026-10-23.
 
+### Magenta on our backend (2026-10-25): the design, and part A, the service
+
+Decided 2026-10-25 (the user): *TrigScript is the library.* Magenta no longer builds anything itself; it writes its
+rows as TrigScript source and contributes them to TrigScript's build, the way it contributed euddraft sections to
+eudplib's. Branch `magenta-library` off trigscript-4 (6a4e53d).
+
+**The service.** `trigscript.build` (`contract.d.ts` at the repository root, version 1; `plugin.ts` provides it, the
+service is `ScriptService.buildService`): `contribute({ id, label, applies, collect })` — `collect` gives
+`{ files, entries }`, TrigScript source by path under a folder named after the plugin (`magenta/main.ts`, so that no
+file of a contribution can shadow the map's) and which of them run as entries; `onBuild` (the same events the editor
+hears); `check(files, entries)` — the source compiled against the open map without building: TypeScript's and the
+compiler's problems, a `trigger()` where only programs go, and what the own build refuses, each at its file and line,
+for the contributor's own preflight. The build step applies when the map's script has programs *or* a contribution
+applies. `buildOwn` collects what applies, compiles the map's script and the contributions' files together with
+`CompileOptions.entries` (new: files that run as entries after the script's, in order, so their programs come after
+the script's — `runModules`'s `then`, before the test files), and lays every program out in one build. A contribution
+holds programs only — a `trigger()` in one fails the build, since nothing writes it into the trigger list — and may
+import its own files and the standard library. A failure in a contribution is said in its name ("Magenta: …") and
+the `failed` event's `from` is its id. The map's own script still guards the build with its tests when the settings
+say so (its compile runs first, cached as before; the combined compile is a second, a few hundred milliseconds).
+The Magenta refusal (step 17) stays for a Magenta that has *not* contributed — the one that builds through eudplib,
+whose build would rewrite the strings section — and says "update Magenta"; a Magenta that contributes as "magenta"
+lifts it. Tests: `service.test.ts` "what other plugins contribute to the build" (five), `script-structured.test.ts`
+"entries another plugin contributes" (two). README: "Building with TrigScript" under *For other plugins*.
+
+**What Magenta renders (part B, in plugin-magenta).** Its spec (`composePlugins`' `MagentaSpec`: hooks, scans, chat,
+msqc, the map-wide options) becomes one TrigScript file, `magenta/main.ts`, from a pure `renderScript(spec, …)`: a
+program for P1 that loops every frame — for each hook in list order, `if (deaths(flag) == 1) { … }` and the flag
+cleared after the last hook of that flag; the chat and input cells set from `chatted()`, `keyPressed()`, `clicked()`,
+`mouse()` and cleared at the next turn; the scans' cells written at the end of each turn. The verbs map onto the
+language as it is: text → `print` with `${deaths(cell)}`, `name(P)`, `color(P)` and the `<HH>` control bytes as the
+string's own; maths → `setDeaths(…, deaths(a) * deaths(b))`, `/`, `%`, `random(n)`; foreach → `for (const u of
+allUnits({ owner, type, at }))` with `u.hp = …`, `u.kill()`, `u.remove()`, `u.invincible`, `u.give(P)`,
+`u.locate(L)`, `u.order(…, L)`, the timers, `u.cooldown`, `u.resources`, `u.damage()` / `u.heal()`; count →
+`allUnits(f).reduce`; read → `allUnits(f).find(() => true)?.field ?? 0`; pick → a loop keeping the best, or
+`randomUnit(f)`, or `underMouse(P, { within })` for the nearest to a mouse; scan → `allUnits(f).some(u => u.hp <
+v)` into the cell; setloc → `centerLocation(L, x + w / 2, y + h / 2, w, h)` with the size Magenta knows from the map
+when the row keeps it; chat → `chatted(P, "-heal")` and `"-set {n}"`; keys and clicks → the language's own carriers
+(no MSQC: no location, player or unit type taken; Magenta's preflight checks of those go); the camera → the cutscene
+library's `Camera` following the location; a looped sound → the sound library. Players are `P1`…`P12` or a cast,
+unit types and locations casts of their numbers, so the rendering needs no names.
+
+**What the language lacks for a full rendering (part C, small additions here).** A location's bounds as values
+(`left`, `top`, `right`, `bottom` — for *Move by dx, dy*, *keeping its size* when the location was moved in play,
+and a mouse-over against a location that moves); unit writes for the remaining build time, the rank, the
+hallucination and speed-upgrade flags and a defensive matrix, and a cooldown that sets the air and spell cooldowns
+with the ground one; unit reads for `hasTarget`, `inTransport` and the current speed; a typed line's text after the
+command (`{rest:text}`, for Magenta's `^…$` patterns). *noAirCollision* and *unlimiter* are code patches of
+euddraft's plugins with no counterpart here: Magenta's Build dialog drops them, saying so.
+
+**What changes for a Magenta map.** Rows run one frame later than through eudplib's hooks: the program runs after the
+map's triggers (as the hooks did), but a scan or an input set at the end of a frame is what the *next* frame's triggers
+see, and a scan reads the units before the game's tick between the frames. With a build row in the map the triggers
+run every frame, whether or not *Run triggers every frame* is ticked (a program's map does). A map that holds both a
+TrigScript script and Magenta's rows is built in one pass, in one layout, which is what the step 17 refusal was for.
+
+**Parts.** A, this (built 2026-10-25). B, Magenta (built 2026-10-25, branch `trigscript-library` of plugin-magenta):
+`src/model/trigscript.ts` renders the rows (`renderScript`, pure: the list of what it cannot take yet and what it took
+in part), `src/ui/contribute.ts` contributes them (`applies` when the map has a row, a chat command, an input or an
+option; `collect` refuses with the first unrenderable row's reason, which the save's notice shows), the Build dialog
+is a preflight — the rows against the map, the unrenderable ones at their triggers, and the rendered file compiled by
+TrigScript's `check` there and then — with the options kept and said to be not built yet; `requires:
+plugin-trigscript`; the Python, the embedding, the eudplib contract, `composePlugins` and the build-freshness record
+deleted; `tests/trigscript.test.ts` holds each kind's rendering and, with this repository beside it, compiles the
+rendered file with the compiler and asks the own build (one program, taken). Magenta's `requires` resolves to
+TrigScript's latest release, which has no service until 4.0 is tagged: the Magenta PR waits for that. C, the language
+additions above, as B needs them (the camera, the bgm, *move by*, the mouse over a moving location, the verbs and
+reads listed). D, Magenta's probe maps 6, 7, 10 and 11 (`scripts/make-probe-maps.mts`, which still builds through
+eudplib from hand-written specs) redone on this build and played in Remastered, with answer sheets. Then plugin-eudplib
+is required by nothing we ship.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

@@ -2180,6 +2180,36 @@ as they are) or an object of every file by path.
 
 The scmjs.dev plugin's *Write Triggers…* is built on these.
 
+### Building with TrigScript
+
+A plugin whose rows need code in the map writes that code as TrigScript — `program(() => {
+… })` bodies in the language this guide describes — and hands it to TrigScript's build instead
+of building anything itself. The service is `trigscript.build` (`contract.d.ts` in this
+repository is its shape; take it with `import type`):
+
+```typescript
+import type { TrigScriptBuildService } from "./vendor/trigscript";
+api.services.watch<TrigScriptBuildService>("trigscript.build", (build) => {
+  mine?.dispose();
+  mine = build?.contribute({
+    id: "magenta", label: "Magenta",
+    applies: () => rowsNeedingCode() > 0,
+    collect: async () => ({ files: { "magenta/main.ts": renderRows() }, entries: ["magenta/main.ts"] }),
+  }) ?? null;
+});
+```
+
+On Save, Test Map and an export, TrigScript compiles what every contribution brings together
+with the map's own script — the contributed files run as entries after it, so their programs
+come after the script's — and lays every program out into the saved map in one build. The
+files go under a folder named after the plugin, so they cannot shadow the map's own, and they
+never enter the archive: the map the user edits is untouched. A contribution holds programs
+only; a `trigger()` in it fails the build, since nothing would write it into the trigger list.
+`check(files, entries)` compiles the same source against the open map without building, for
+the plugin's own preflight: the problems at their file and line, and how many programs.
+`onBuild` says how each build went, with `from` naming the contribution a failure was in.
+Magenta's build rows reach the map this way.
+
 ## Development
 
 ```sh
