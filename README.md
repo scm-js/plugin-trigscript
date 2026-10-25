@@ -1456,7 +1456,8 @@ if (target) target.order("move", locations.Exit);
 
 A unit has `hp`, `shields` and `energy` in whole points, `maxHp` / `maxShields` of its
 type, `owner`, `type`, `x`, `y`, `kills`, `orderId`, `cooldown`, `resources` (a mineral
-field's), `buildTime` (frames left of its making), `rank`, `matrix` (frames left of a
+field's), `buildTime` (frames left of its making; a building finished early keeps the hit
+points it had reached, and a Terran one under a third burns, so heal it after), `rank`, `matrix` (frames left of a
 defensive matrix), `speed` (how fast it is moving now, in 256ths of a pixel a frame), the
 timers `stim` `ensnare` `plague` `lockdown` `maelstrom` `irradiate` `stasis` in the game's
 own ticks, and the booleans `invincible`, `hallucinated`, `speedUpgrade`, `cloaked`,

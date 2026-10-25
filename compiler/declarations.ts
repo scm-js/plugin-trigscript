@@ -147,7 +147,11 @@ ${kw}interface Unit {
   readonly orderId: Order;
   /** Frames until the unit can attack or cast again, 0 … 255; writing it holds the unit's fire that long (the ground weapon's, the air weapon's and the spells' alike). */
   cooldown: number;
-  /** Frames left of a unit's or building's making, 0 … 65535; 0 once complete. Writing it lengthens or shortens the making. */
+  /**
+   * Frames left of a unit's or building's making, 0 … 65535; 0 once complete. Writing it lengthens or shortens the making.
+   * A building finished early keeps the hit points it had reached, and a Terran one under a third of its full hit points
+   * burns down (Remastered, played): heal it after.
+   */
   buildTime: number;
   /** The unit's rank, added to the type's (the one shown on its panel: Private, Corporal …), 0 … 255. */
   rank: number;
