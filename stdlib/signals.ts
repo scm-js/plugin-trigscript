@@ -6,7 +6,7 @@
  *   const waveCleared = new Signal<number>();
  *
  *   program(async () => {
- *     waveCleared.on((wave) => setResources(P1, "add", 100 * wave, "ore"));
+ *     waveCleared.on((wave) => { setResources(P1, "add", 100 * wave, "ore"); });   // braces: a handler gives back no action
  *     waveCleared.once((wave) => print(`First wave down!`));
  *     const id = waveCleared.on((wave) => print(`Wave ${wave} cleared`));
  *     …

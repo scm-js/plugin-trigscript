@@ -111,4 +111,8 @@ describe("what a function kept as a value may do, and not", () => {
     expect(messages("let f: () => Promise<void> = async () => { await sleep(frames(1)); }; await f();").join("\n")).toMatch(/async/);
     expect(messages("let f = (xs: number[]) => xs.length; let n = 0; n = f([1]);").join("\n")).toMatch(/its parameters are numbers, booleans, texts, units or other functions/);
   });
+  it("give back an action: said at the function, by the name of what it was handed to, also when a library keeps it", () => {
+    const r = compileScript(ts, { "main.ts": `import { Signal } from "trigscript/signals";\nprogram(() => {\n  const cleared = new Signal<number>();\n  cleared.on((wave) => setResources(P1, "add", wave, "ore"));\n  cleared.emit(1);\n});` }, NAMES, { lib: LIB });
+    expect(r.diagnostics.map((d) => [d.file, d.line, d.message.slice(0, 54)])).toEqual([["main.ts", 4, "the function handed to cleared.on is kept as a value, "]]);
+  });
 });
