@@ -288,6 +288,10 @@ export interface ScriptNames {
 	weapons: NameTable;
 	upgrades: NameTable;
 	techs: NameTable;
+	/** orders.dat ids: what a unit is doing (`u.orderId`) and what `on.order()` listens for. */
+	orders: NameTable;
+	/** The map's sounds, the Sound Editor's list: each the string of its path, what Play WAV takes. */
+	sounds: NameTable;
 }
 /** What a map contributes to the tables; every part is optional (the fixed lists stand without a map). */
 export interface NameSources {
@@ -302,6 +306,11 @@ export interface NameSources {
 	switchNames?: (string | null)[];
 	/** A unit type's custom name, null or blank for the default. */
 	unitCustomName?: (id: number) => string | null;
+	/** The map's sounds: the string each one's path is (1-based, as a trigger names it) and the path. */
+	sounds?: {
+		stringIndex: number;
+		path: string;
+	}[];
 }
 /** The tables for a map's names — or, with nothing given, the fixed lists alone (what tests use). */
 export declare function scriptNames(src?: NameSources): ScriptNames;
@@ -334,11 +343,12 @@ export interface ChatPattern {
 }
 /** One thing a program reads from the players; `player` is a slot, or 13 for the current player. */
 export type InputSource = 
-/** 1 on the frame the key's press arrives. */
+/** 1 on the frame the key's press arrives; `held`, on every frame it is down. */
 {
 	source: "key";
 	key: string;
 	player: number;
+	held?: boolean;
 }
 /** 1 on the frame the button's press arrives. */
  | {
@@ -358,10 +368,18 @@ export type InputSource =
 	pattern: string;
 	capture: number | null;
 	player: number;
+}
+/** What `syncSend` of the slot sent from `player`'s computer, plus 1, once it has arrived; 0 until then (B5). */
+ | {
+	source: "sync";
+	slot: number;
+	player: number;
 };
-/** Everything the input plugins are set up from, written into the IR file beside the programs. */
+/** Everything the programs read of the players, for the build (`backend/input.ts`) and the simulator. */
 export interface InputPlan {
 	keys: string[];
+	/** The keys a program asks are held, each read on every frame it is down. */
+	held?: string[];
 	buttons: MouseButton[];
 	chats: ChatPattern[];
 	/** Unit names a `{…:unit}` capture knows, lower case, with the type each means; only when one is used. */
@@ -369,10 +387,10 @@ export interface InputPlan {
 		name: string,
 		id: number
 	][];
-	/** The location MSQC keeps for itself, as its 0-based slot. */
-	qcLocation: number;
-	/** The 1-based number of the first of eight locations in a row MSQC keeps the players' mice in; null when no program reads the mouse. */
-	mouseBase: number | null;
+	/** Whether a program reads the players' mice. */
+	mouse: boolean;
+	/** How many `sync()` slots the programs use (B5): each a value sent from one computer to all; absent when none. */
+	syncs?: number;
 }
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At {
@@ -394,14 +412,46 @@ export interface VarDecl {
 	 * just made is moved), and assigning or declaring again gives the old block back first.
 	 */
 	text?: "id" | "made";
+	/**
+	 * A map of our own only (`compiler/backend/texts.ts`): kept in one cell and read where it is used, as a variable the
+	 * emitter copies is — for one read in many places and written often (a write is one action, not one a place).
+	 */
+	routed?: boolean;
+	/**
+	 * A map of our own only (`compiler/backend/heap.ts`): never below zero and at most this, whatever is written — a copy
+	 * of it into a place that holds a multiple of it is then worked out over only the bits it can have.
+	 */
+	top?: number;
+	/**
+	 * A map of our own only (`compiler/backend/heap.ts`): one cell for the whole map — every program and every run of one
+	 * — that no program declares, 0 as the map starts, and read where it is used (`routed` too).
+	 */
+	global?: boolean;
+	/**
+	 * A map of our own only (`compiler/backend/heap.ts`): kept in every place it is read, however many — written seldom and
+	 * read often (where an array's block starts), so that a read never copies it in, as a variable past a trigger's worth
+	 * of places otherwise is.
+	 */
+	everywhere?: boolean;
+	/**
+	 * A map of our own only (`compiler/backend/heap.ts`): declared in a loop's body and read nowhere outside the loop — a
+	 * `for…of`'s variable — so its cell need not hold what is read into it.
+	 */
+	scoped?: boolean;
 	/** `shared(…)`: one cell for every player of a per-player program. */
 	shared: boolean;
 	/** A `u8` / `u16` annotation; unset for the full 32 bits. */
 	bits?: 8 | 16;
 	/** A `u32`: the 32 bits read as 0 … 4 294 967 295. Unset, a number is signed (a `u8` / `u16` never goes below zero either way). */
 	unsigned?: boolean;
+	/** A `fixed`: a 16.16 number, the cell the value times 65 536 (signed). Declared so, or found by `numbers.ts` to be stored a fraction. */
+	fixed?: boolean;
 	/** A backend's scratch value that dies with the statement (a function's result). */
 	temp?: boolean;
+	/** A variable of a task's body (`start`, its `task`): a cell for each of its slots, within each player's row. */
+	task?: number;
+	/** A reference the closures count (24): its declare lets go of what it held before, so it is read first — 0 the first time, as a backend's cell is. */
+	held?: boolean;
 	at: At;
 }
 /**
@@ -419,9 +469,13 @@ export interface ArrayDecl {
 	shared: boolean;
 	bits?: 8 | 16;
 	unsigned?: boolean;
+	/** Its cells are `fixed` numbers (16.16), as a variable's are; `values` are then the raw cells. */
+	fixed?: boolean;
 	values?: number[];
 	/** A list of texts the script has, which a program indexes with a variable (`titles[level]`): `values` are their places here, the lowering's their ids in the built map's table. */
 	texts?: string[];
+	/** An array declared in a task's body (`start`, its `task`): its cells once for each of its slots. */
+	task?: number;
 	/**
 	 * The array grows: something pushes to it, pops from it or sets its length. Its cells are a block of the
 	 * programs' heap (`HEAP_CELLS`), reached through a handle — where the block is, how many cells are in use, how
@@ -465,9 +519,14 @@ export type RaceId = 0 | 1 | 2;
  * race or (`race` null) of the race the player is. `player` is a slot, or 13 for the
  * current player.
  */
+/**
+ * `epd` (a map of our own only, `compiler/backend/texts.ts`): the condition's player field is this value — a Deaths of
+ * unit 0 then reads the dword at that EPD, wherever it is.
+ */
 export type ReadSource = {
 	source: "condition";
 	record: ConditionRecord;
+	epd?: NumExpr;
 } | {
 	source: "player";
 	fact: "race" | "slot" | "left";
@@ -488,10 +547,14 @@ export interface UnitFilter {
 	owner?: number;
 	at?: number;
 }
-/** A number of a unit on the map. Hit points, shields and energy are whole points; the timers and the cooldown frames. */
-export type UnitNumField = "hp" | "maxHp" | "shields" | "maxShields" | "energy" | "owner" | "type" | "x" | "y" | "kills" | "orderId" | "cooldown" | "resources" | "stim" | "ensnare" | "plague" | "lockdown" | "maelstrom" | "irradiate" | "stasis";
-/** A true / false of a unit on the map; only `invincible` takes a write. */
-export type UnitFlag = "hallucinated" | "cloaked" | "burrowed" | "invincible" | "underAttack";
+type EventSource$1 = "created" | "died" | "killed" | "ordered" | "morphed";
+/**
+ * A number of a unit on the map. Hit points, shields and energy are whole points; the timers, the cooldown and the
+ * remaining build time frames; `matrix` the defensive matrix's frames; `speed` the current speed in 256ths of a pixel a frame.
+ */
+export type UnitNumField = "hp" | "maxHp" | "shields" | "maxShields" | "energy" | "owner" | "type" | "x" | "y" | "kills" | "orderId" | "cooldown" | "resources" | "stim" | "ensnare" | "plague" | "lockdown" | "maelstrom" | "irradiate" | "stasis" | "buildTime" | "rank" | "matrix" | "speed";
+/** A true / false of a unit on the map; `invincible`, `hallucinated` and `speedUpgrade` take a write. */
+export type UnitFlag = "hallucinated" | "cloaked" | "burrowed" | "invincible" | "underAttack" | "speedUpgrade" | "hasTarget" | "inTransport";
 /** A unit on the map, or none. */
 export type UnitExpr = {
 	kind: "unitNull";
@@ -530,6 +593,12 @@ export type UnitExpr = {
  | {
 	kind: "call";
 	call: Call;
+}
+/** The unit in slot `index` of this computer's selection (`local.selected` is slot 0; B5), or none: a Local value. */
+ | {
+	kind: "selected";
+	index: number;
+	at: At;
 };
 /** What a unit is told to do. `to` and `target` are known when the script is built; an amount is the program's. */
 export type UnitVerb = {
@@ -578,9 +647,19 @@ export interface TableCell {
 }
 /** `>>` keeps the sign of what it shifts; `>>>` fills with zeros. */
 export type ArithOp = "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | ">>>";
-export type NumExpr = {
+/**
+ * A number of the IR. Any of them may carry `range: [lo, hi]` (IR 25): `ranges.ts` found its signed reading always
+ * between the two, both included. It is a promise a backend may lean on — take only the bits a value can have, drop a
+ * check that cannot fail — and never needs to.
+ */
+export type NumExpr = 
+/** `fixed`: a 16.16 number, `value` its raw cell (the value times 65 536); `numbers.ts` reads it so, a backend takes `value` as it is. */
+/** `fn`: the number is a function kept as a value (B3), the id of the function it stands for — what keeps that function in the map. */
+{
 	kind: "const";
 	value: number;
+	fixed?: boolean;
+	fn?: string;
 } | {
 	kind: "var";
 	id: string;
@@ -622,7 +701,7 @@ export type NumExpr = {
 /** `u32(x)` / `i32(x)`: the same 32 bits read the other way. Nothing is computed; it is there for `numbers.ts`, which works out what each operation reads its sides as. */
  | {
 	kind: "cast";
-	to: "u32" | "i32";
+	to: "u32" | "i32" | "fixed";
 	expr: NumExpr;
 	at: At;
 }
@@ -679,12 +758,21 @@ export type NumExpr = {
 	at: At;
 	label: string;
 }
-/** `unsigned`, on `min` and `max`: the arguments are compared as `u32`s. `abs` is of a signed number. */
+/**
+ * `unsigned`, on `min` and `max`: the arguments are compared as `u32`s. `abs` is of a signed number.
+ * Of fixed numbers (16.16, raw cells): `fmul` is a × b / 65 536 and `fdiv` a × 65 536 / b, each rounded towards zero
+ * and wrapping at 32 bits (a divisor of 0 gives 0); `sqrt` is the square root of a fixed, rounded down (0 below
+ * zero), or with `unsigned` of a whole number read from 0 up, the root still a fixed; `atan2` of (y, x) is the angle in radians, a fixed from −π to π, read from `table`, an array of the program
+ * whose 1 025 cells are atan(i / 1 024), between its cells; `sin` / `cos` of (x, scale) read `table`, the 4 096 cells
+ * sin(2π i / 4 096), at fmul(x, scale) (a quarter turn on for `cos`), between its cells. The front end also gives
+ * `floor` / `ceil` / `round` / `trunc`, which `numbers.ts` turns into the operations above and no backend meets.
+ */
  | {
 	kind: "intrinsic";
-	name: "min" | "max" | "abs";
+	name: "min" | "max" | "abs" | "fmul" | "fdiv" | "sqrt" | "atan2" | "sin" | "cos" | "floor" | "ceil" | "round" | "trunc";
 	args: NumExpr[];
 	unsigned?: boolean;
+	table?: string;
 	at: At;
 	label: string;
 }
@@ -711,6 +799,11 @@ export type NumExpr = {
 	index: NumExpr;
 	at: At;
 	label: string;
+}
+/** The number of the task this runs in — what `start()` gave for it, `slot | task << 8 | generation << 16` — or 0 outside a task (B4: where a task's error is kept for an `await` of it). */
+ | {
+	kind: "taskHandle";
+	at: At;
 }
 /** A call inlined here: its body runs, its result is the number. */
  | {
@@ -793,15 +886,29 @@ export type TextExpr = {
  | {
 	kind: "textCall";
 	call: Call;
+}
+/** What buffer `buffer` holds, as the `buildText` statements before it left it: looked at where it is, never owned. */
+ | {
+	kind: "built";
+	buffer: string;
 };
 export type BoolExpr = {
 	kind: "const";
 	value: boolean;
 }
 /** A trigger condition the script wrote, its fields known when the script is built. */
+/**
+ * `amount`: a map of our own's backend only (`Rewriter.asked`), a read compared with a value — the condition's
+ * amount that value plus `add`, a place of it.
+ */
  | {
 	kind: "cond";
 	record: ConditionRecord;
+	amount?: {
+		expr: NumExpr;
+		add: number;
+	};
+	epd?: NumExpr;
 }
 /** A boolean variable. */
  | {
@@ -853,6 +960,12 @@ export type BoolExpr = {
 /** `random()`: a coin toss, fresh at every evaluation. */
  | {
 	kind: "random";
+	at: At;
+}
+/** `t.running`: the task the number stands for (what `start()` gave) has not ended, nor been cancelled. 0 is no task. */
+ | {
+	kind: "running";
+	task: NumExpr;
 	at: At;
 }
 /** `if (target)`: the variable holds a unit and that unit is still on the map. */
@@ -921,11 +1034,12 @@ export type TextPart = {
 	kind: "text";
 	text: string;
 }
-/** `unsigned`: printed as a `u32`; unset, a number below zero has its minus sign. */
+/** `unsigned`: printed as a `u32`; unset, a number below zero has its minus sign. `fixed`: a 16.16 number, printed as a decimal of up to four places (3.5, -0.25). */
  | {
 	kind: "number";
 	expr: NumExpr;
 	unsigned?: boolean;
+	fixed?: boolean;
 } | {
 	kind: "name";
 	player: number;
@@ -937,6 +1051,25 @@ export type TextPart = {
  | {
 	kind: "value";
 	text: TextExpr;
+}
+/** One byte, the number's low eight bits: a colour code chosen when the map is played. 0 writes nothing. */
+ | {
+	kind: "char";
+	expr: NumExpr;
+}
+/**
+ * The text of the case `by` equals: only a map of our own makes it (`compiler/backend/texts.ts`), for a text known
+ * when built chosen while the game runs; `by` is a variable or a constant, always one case's `when` or between it
+ * and its `upTo`.
+ */
+ | {
+	kind: "pick";
+	by: NumExpr;
+	cases: {
+		when: NumExpr;
+		upTo?: NumExpr;
+		text: string;
+	}[];
 };
 /** A field of an action filled in by the program: `bits` 8 is a unit count (done once per unit), 16 a unit type, 32 an amount. */
 export interface ActionVariable {
@@ -1109,11 +1242,25 @@ export type Stmt =
 /**
  * `for (const u of unitsAt(…))`: the body once for every unit the filter matches, in the order of
  * the game's unit table, all within the frame — no `sleep` inside. `decl` is the unit of the turn.
+ * `source` (`on.created` / `on.died`): instead of the table, the units of this frame's events pass — the ones that
+ * came onto the map since the pass of the frame before (`created`; one that has gone since is passed over), or that
+ * died or were removed since then (`died`; the unit of the turn is the dead one, its fields read as it died, and
+ * nothing done to it does anything); `killed` (those of `died` that died in a fight: their hit points 0, a player's
+ * attack the last that hurt them); `ordered` (living units whose order is not the one the pass before found); `morphed`
+ * (living units whose type is not the one the pass before found). `was`, when there: set at each turn to the killer,
+ * the order the unit had, or the type it was. `event`: `ordered` only the units whose new order is `order`; `killed`
+ * only the units `by` killed.
  */
  | {
 	kind: "unitLoop";
 	decl: VarDecl;
 	filter: UnitFilter;
+	source?: EventSource$1;
+	was?: VarDecl;
+	event?: {
+		order?: number;
+		by?: number;
+	};
 	body: Stmt[];
 	at: At;
 	label: string;
@@ -1159,13 +1306,16 @@ export type Stmt =
 	body: Stmt[];
 	at: At;
 	label: string;
-} | {
+}
+/** `before`: statements run before the test each turn, a `continue` included — made by the emitter's rewriter for a map of our own (a test that needs a value computed first); the front end writes none. */
+ | {
 	kind: "do";
 	body: Stmt[];
 	cond: BoolExpr;
 	at: At;
 	label: string;
 	condLabel: string;
+	before?: Stmt[];
 }
 /** `for` over a variable: `init` ran already (it is emitted before), this is the loop with its update. */
  | {
@@ -1216,6 +1366,55 @@ export type Stmt =
 	at: At;
 	label: string;
 }
+/**
+ * `await Promise.all([…])` (`all`) / `await Promise.race([…])` (`race`): each branch is a coroutine of its own, started
+ * here, in order, within this frame. From then on, every frame the program is here, each branch that has not ended
+ * goes on from where it slept, in order, and the program goes on past this statement on the frame the last branch
+ * ends (`all`) or the first does (`race`, whose other branches then stop where they are). A branch's `sleep` is its
+ * own; `break`, `continue` and `return` never leave a branch.
+ */
+ | {
+	kind: "parallel";
+	mode: "all" | "race";
+	branches: Stmt[][];
+	at: At;
+	label: string;
+}
+/**
+ * `start(wave(n))`: a task — `call`, an async function's body inlined, its parameters copies of this start's arguments —
+ * that runs beside what started it. Each `start` statement is a body of its own, `task` its number (they are numbered
+ * from 1 in the order they are met, a task inside another's body after it), with `max` slots: that many of its tasks can
+ * run at once, and a start with every slot taken starts nothing (the game says so once). A task starts in the frame it
+ * is started in, once the program has given the frame back (it slept, waited or ended); from then on it goes on every
+ * frame, after the program, the tasks in order of their number and slot. It runs on after the program ends. `handle`:
+ * the variable that takes a number for the task — `slot | task << 8 | generation << 16`, the generation one more at
+ * every start in the slot — or 0 when nothing started.
+ */
+/**
+ * `listen` (on.created, on.died, on.chat, on.key): the task is a listener, whose body waits a frame at the top of a loop
+ * that hands on what happened, so a turn when nothing did does nothing. Once it has begun, it is given a turn only in
+ * a frame the events pass found units of `source`, or one of `inputs` arrived. A lowering may also give it every turn.
+ */
+ | {
+	kind: "start";
+	task: number;
+	max: number;
+	call: Call;
+	handle?: string;
+	listen?: {
+		source?: EventSource$1;
+		inputs?: InputSource[];
+	};
+	at: At;
+	label: string;
+}
+/** `t.cancel()`: the task stops where it is. Nothing happens when it has ended, or the number is no task's. */
+ | {
+	kind: "cancel";
+	task: NumExpr;
+	at: At;
+	label: string;
+}
 /** A trigger action; each of `variables` names a field that takes an expression's value instead of the record's. */
 /**
  * `text`: the action's text is the program's. One of the table goes into the action as its id. One that was made is
@@ -1232,11 +1431,40 @@ export type Stmt =
 	label: string;
 }
 /** Centre a location on a point of the map, in pixels, its size kept. */
+/** `size`: the location takes it too, centred on the point (nothing of the old size is read). */
+/**
+ * `sync(player, value)`'s first half (B5): on every computer, `player`'s arrival cell of slot `slot` (the `sync` input
+ * source) is cleared to 0; on `player`'s own computer `value` + 1 is put where the input plugin sends it from, to arrive
+ * on every computer as that cell a few frames later. `value` may be a `Local` one: it is the one thing that may be.
+ */
  | {
+	kind: "syncSend";
+	slot: number;
+	player: number;
+	value: NumExpr;
+	at: At;
+	label: string;
+}
+/**
+ * `select(player, units)` (B5): on `player`'s own computer, its selection becomes these units (up to 12, none left out
+ * but those that are gone) — the panel told to show them again — and a Select command goes to every computer, so the
+ * player's orders go to them everywhere. Done on every other computer, it does nothing.
+ */
+ | {
+	kind: "select";
+	player: number;
+	units: UnitExpr[];
+	at: At;
+	label: string;
+} | {
 	kind: "centerLocation";
 	location: number;
 	x: NumExpr;
 	y: NumExpr;
+	size?: {
+		width: NumExpr;
+		height: NumExpr;
+	};
 	at: At;
 	label: string;
 }
@@ -1251,6 +1479,18 @@ export type Stmt =
 	position: "chat" | "center";
 	at: At;
 	label: string;
+}
+/**
+ * The parts written at the end of buffer `buffer` (`reset`: the buffer emptied first): a text put together a piece at a
+ * time, read back with `built`. A buffer is one place for the whole game, used up within the frame it is built in.
+ */
+ | {
+	kind: "buildText";
+	buffer: string;
+	parts: TextPart[];
+	reset?: boolean;
+	at: At;
+	label: string;
 } | {
 	kind: "call";
 	call: Call;
@@ -1263,15 +1503,92 @@ export type Stmt =
 	body: Stmt[];
 	at: At;
 }
+/**
+ * `try { … } catch { … }`: `body` runs; when an error is thrown in it — a `throw`, a call that comes back with an error in
+ * flight, a stack that ran out — the body stops there and `catch` runs, with the error still in flight
+ * (`Program.errors`): its first statements are the front end's, which take the error and set `thrown` back to 0.
+ * `finally` is the front end's too: a copy of it before every way out, and a `try` around the whole that runs it and
+ * throws again. A `break`, `continue` or `return` inside `body` leaves it as it would leave a block.
+ */
+ | {
+	kind: "try";
+	body: Stmt[];
+	catch: Stmt[];
+	at: At;
+	label: string;
+}
+/**
+ * The error in flight (`Program.errors`, which the statements before this one set) goes to the nearest `try` around this
+ * statement: the `catch` of one in this body, or, inside a called function, out of the function — which returns at
+ * once, the error still in flight, to a call that goes on in the same way. `rethrow`: the error is one that was caught
+ * and is thrown again, so where it was first thrown is still where it came from.
+ */
+ | {
+	kind: "throw";
+	rethrow?: boolean;
+	at: At;
+	label: string;
+}
+/**
+ * The error in flight reached the end of a program, a task or a handler with nothing to catch it: said in red, as a fault
+ * of the game's is — its class's name (`Program.errors.names` at `thrown`), its message and the line it was thrown at — and
+ * given up (`thrown` 0). What it was thrown in then ends, as JavaScript's does: a program or a task stops, a handler of
+ * an event gives up only this turn.
+ */
+ | {
+	kind: "uncaught";
+	at: At;
+	label: string;
+}
 /** A word for the editor about a line: a loop unrolled when the script was built. */
  | {
 	kind: "remark";
 	text: string;
 	short?: string;
 	at: At;
+}
+/**
+ * A map of our own only (`compiler/backend/texts.ts`): `decl`, a number, declared as the EPD of block `block` — a
+ * string of the map's `bytes` long, laid out for it (one block for every statement that names it), empty at first or
+ * holding `text`. `data`: bytes of the payload's instead, never shown as a string (the pool of blocks the cells of
+ * arrays of texts that grow take: the game's own table of strings names only its first 64 KB in 1.16.1).
+ */
+ | {
+	kind: "textBlock";
+	decl: VarDecl;
+	block: string;
+	bytes: number;
+	text?: string;
+	data?: boolean;
+	at: At;
+}
+/** A map of our own only: Display Text of block `block` as it is now, to `to` as a print's is. */
+ | {
+	kind: "showText";
+	block: string;
+	bytes: number;
+	to: number;
+	at: At;
+}
+/**
+ * A map of our own only (`compiler/backend/units.ts`): the events pass's watch of the game's unit places — a trigger
+ * for each, whose conditions read `fields` of the unit record where it is (`dword` into it, `mask`) against what the
+ * trigger saw there last, its own numbers. A place as it was goes on to the next; one that changed runs `handler`,
+ * with `@ev.e` the record's EPD and the current player at the trigger's first condition's number (`emit.ts`).
+ */
+ | {
+	kind: "watch";
+	fields: {
+		dword: number;
+		mask?: number;
+		compare: "atLeast" | "exactly";
+	}[];
+	handler: Stmt[];
+	gate?: boolean;
+	at: At;
+	label: string;
 };
 export interface Program {
-	version: number;
 	name?: string;
 	owner: number;
 	owners: number[];
@@ -1280,8 +1597,43 @@ export interface Program {
 	arrays: ArrayDecl[];
 	/** The functions that are called rather than inlined; absent when there is none. */
 	functions?: FuncDecl[];
+	/** Present when the program throws or catches anything (B4): where an error in flight is kept. */
+	errors?: ProgramErrors;
+	/**
+	 * A map of our own only (`compiler/backend/units.ts`): the frame's events pass — what came onto the map, died, took up
+	 * an order or turned into another type since the pass before — run before the programs' turns, once for the map.
+	 */
+	pass?: Stmt[];
+	/**
+	 * A map of our own only (`compiler/backend/input.ts`): the frame's send pass — what this computer's player did,
+	 * sent to every computer as game commands — run after the programs' turns, once for the map.
+	 */
+	after?: Stmt[];
 	body: Stmt[];
 	at: At;
+}
+/**
+ * The error in flight, between a `throw` and the `catch` that takes it: `thrown` is its class's code — 0 when no error is
+ * in flight, `ERROR_CODES` for the built-in classes, 16 and up for a program's own — and `message` its message, a made
+ * text. Both are `shared` variables of the program, declared at the start of its body: an error is never in flight
+ * across a frame, so one of each serves every player and every task. A class's own fields go through variables of their
+ * own, which the front end copies; a backend knows only these two. `names` is the array of texts of the classes' names
+ * by their code, which an uncaught error is said with.
+ */
+export interface ProgramErrors {
+	thrown: string;
+	message: string;
+	names: string;
+}
+/** What the map's archive gets for a clip: a WAV's bytes now, or the samples of an Ogg Vorbis encoded when the map is built. */
+export interface ClipFile {
+	path: string;
+	bytes?: Uint8Array;
+	vorbis?: {
+		rate: number;
+		channels: readonly Float32Array[];
+		quality: number;
+	};
 }
 /** A string a record refers to: text to intern, or an existing string-table index (raw forms). */
 export type ScriptString = {
@@ -1313,17 +1665,26 @@ export interface SimUnit {
 	maelstrom: number;
 	irradiate: number;
 	stasis: number;
+	buildTime: number;
+	rank: number;
+	matrix: number;
+	speed: number;
 	hallucinated: boolean;
 	cloaked: boolean;
 	burrowed: boolean;
 	invincible: boolean;
 	underAttack: boolean;
+	speedUpgrade: boolean;
+	hasTarget: boolean;
+	inTransport: boolean;
 	/** Still on the map. */
 	alive: boolean;
 	/** Its place in the unit table, from 0; another unit's once this one is gone. */
 	slot: number;
 	/** The place's uniqueness byte while this unit is in it. */
 	uid: number;
+	/** Once it has died in a fight: the player whose attack killed it (on.killed()). */
+	killedBy?: number;
 }
 export type SimUnitInit = Partial<Omit<SimUnit, "alive" | "slot" | "uid">> & {
 	type: number;
@@ -1395,32 +1756,55 @@ export declare class World {
 	/** A unit died by `kill`: the death is the caller's to count, in the table its script's counters are in. */
 	onDeath: (unit: SimUnit) => void;
 	private readonly table;
+	/**
+	 * The free places in the order the game hands them out (scm-sim docs/specs/unit-lists.md, section 3): at the start
+	 * slot 0, then 1699, 1698 … 1; a place freed goes in right behind the first, so it is the one after the next.
+	 */
+	private readonly free;
 	private readonly uids;
 	private readonly classOf;
 	private readonly properties;
 	/** Kills by player and type of what was killed. */
 	private readonly killed;
 	constructor(options: WorldOptions, only: number);
-	/** A unit on the map, in the lowest free place of the table. Null when the table is full, as the game makes no unit then. */
+	/** A unit on the map, in the place the game hands out next. Null when the table is full, as the game makes no unit then. */
 	make(init: SimUnitInit): SimUnit | null;
+	/** A unit given to a player. */
+	setOwner(unit: SimUnit, to: number): void;
 	/** A unit of a type as the game makes one: the type's hit points and shields, at a point. */
 	create(type: number, owner: number, x: number, y: number, properties?: SimUnitProperties): SimUnit | null;
-	/** Off the map, its place free for the next unit made. `killed`: it died — counted as a death, and as a kill of `by` when someone is named. */
-	gone(unit: SimUnit, killed: boolean, by?: number): void;
+	/**
+	 * Off the map, its place free for the next unit made. `killed`: it died. `fought`: it died in the game — shot, or
+	 * killed by a spell — and so counts as a death, and as a kill of `by` when someone is named. A unit a trigger or a
+	 * program kills (Kill Unit, a unit's kill(), hit points written down to 0) dies without counting: the lifted game
+	 * says so for all three (TrigScript 4, A2, 2026-10-16), as the editor's trigger reference does for Kill Unit.
+	 */
+	gone(unit: SimUnit, killed: boolean, by?: number, fought?: boolean): void;
 	/** The unit that was in a place when its uniqueness byte was `uid`: the one there now, or one long gone. */
 	at(slot: number, uid: number): SimUnit | null;
-	/** The units on the map, in the order of the table. */
+	/**
+	 * The units on the map, oldest first: the order of the game's table walked as it hands its places out (slot 0, then
+	 * 1699 downwards), as long as no place freed has been handed out again — when the game frees a record, some frames after
+	 * its unit is gone, is not something the simulator knows.
+	 */
 	living(): SimUnit[];
 	private typed;
 	private inside;
 	/** The living units of these owners (any, when undefined), of a type or a class, inside a location — in table order. */
 	matching(owners: readonly number[] | undefined, type?: number, location?: number): SimUnit[];
+	/** The living units a program's loop comes to (TrigScript 4): oldest first, as `living` says. */
+	listed(owners: readonly number[] | undefined, type?: number, location?: number): SimUnit[];
+	/** Whether a unit, living or as it died, is of these owners (any, when undefined), of a type or a class, inside a location. */
+	fits(u: SimUnit, owners: readonly number[] | undefined, type?: number, location?: number): boolean;
 	centreOf(location: number): {
 		x: number;
 		y: number;
 	};
-	/** A location centred on a point, its size kept. */
-	centre(location: number, x: number, y: number): void;
+	/** A location centred on a point, its size kept — or the size given. */
+	centre(location: number, x: number, y: number, size?: {
+		width: number;
+		height: number;
+	}): void;
 	/** The kills these players have of a type or a class. */
 	kills(owners: readonly number[], type: number): number;
 	/** The number a unit condition compares, as `current` asks it; undefined for a condition that is not about units. */
@@ -1543,6 +1927,54 @@ export declare function parseTriggers(text: string, names: TriggerNames, briefin
  * offer them as identifiers). The editor is the source of truth: copy it again when it changes.
  */
 export declare const UNIT_NAMES: readonly string[];
+/** A line's cost over a test's run. */
+export interface LineCost {
+	file: string;
+	line: number;
+	/** Conditions and actions over the run. */
+	total: number;
+	/** The most in one frame, and the first frame it was that many. */
+	peak: number;
+	peakFrame: number;
+	/** Frames the line ran in. */
+	frames: number;
+	/** The same as time in Remastered, when the host weighs: milliseconds over the run, the most in one frame and that frame. */
+	ms?: {
+		total: number;
+		peak: number;
+		peakFrame: number;
+	};
+}
+/** A test's frames as time in Remastered (milliseconds), beside the counts, when the host weighs. */
+export interface TestCostMs {
+	/** The script's build, a frame: its lines and the build's own triggers, as `perFrame` counts them. */
+	perFrame: number[];
+	/** The map's other triggers a frame, as `other`. */
+	other: number[];
+	peak: number;
+	peakFrame: number;
+}
+/** What a test's run in the game cost. */
+export interface TestCost {
+	/** The frame `perFrame` starts at. */
+	from: number;
+	/** Conditions and actions a frame that the script's build ran: its lines and the build's own triggers. */
+	perFrame: number[];
+	/**
+	 * What the map's other triggers ran a frame: the start-up (once, by frame 2) and any trigger the map has besides the
+	 * build's. Kept apart so that the script's own peak is not that start.
+	 */
+	other: number[];
+	/** The most of `perFrame`, and the first frame it was that many. */
+	peak: number;
+	peakFrame: number;
+	/** By line, the costliest first. */
+	lines: LineCost[];
+	/** Triggers the walk passed a frame, the map's other triggers included; when the host counts them. */
+	triggers?: number[];
+	/** The frames as time, when the host weighs. */
+	ms?: TestCostMs;
+}
 export type Mode = "run" | "skip" | "only";
 export interface Where {
 	file: string;
@@ -1559,6 +1991,8 @@ export interface TestInfo {
 	file: string;
 	line: number;
 	mode: Mode;
+	/** A test's `{ players }`: run in the game as a copy for each. */
+	players?: number[];
 }
 export interface TestEvent {
 	frame: number;
@@ -1583,6 +2017,8 @@ export interface TestResult {
 	events: TestEvent[];
 	frames: number;
 	ms: number;
+	/** In the lifted game: what the test's frames cost, by frame and by line (TrigScript 4, A4). */
+	cost?: TestCost;
 }
 export interface TestReport {
 	list: TestInfo[];
@@ -1615,9 +2051,91 @@ export interface TestWorld {
 }
 export interface TestRunOptions {
 	world?: TestWorld;
+	/**
+	 * A world other than the simulator's for each test (the lifted game's, `GameSim`): made fresh for every test,
+	 * given the player the test asked to be (`{ as: P2 }`). Absent: the simulator.
+	 */
+	makeWorld?: (as?: number, test?: {
+		id: string;
+		players?: number[];
+	}) => TestWorldLike;
 	/** Run only these: tests of these files, or with these ids (a suite's id runs what is under it). Absent: all. */
 	files?: string[];
 	ids?: string[];
+}
+declare const WORLD: unique symbol;
+/** What a test can ask of its world, whichever it was handed. */
+export interface TestWorldLike {
+	readonly [WORLD]: true;
+	/** What the test's frames cost, where the world counts it (the lifted game's). */
+	cost?(): TestCost | null;
+	faultsExpected: boolean;
+	readonly frame: number;
+	seed(n: number): this;
+	frames(n?: number): this;
+	seconds(n: number): this;
+	until(done: () => unknown, most?: number): this;
+	place(player: number, type: number, at: number, n?: number): SimUnit[];
+	kill(unit: SimUnit, by?: number): this;
+	remove(unit: SimUnit): this;
+	give(unit: SimUnit, to: number): this;
+	morph(unit: SimUnit, type: number): this;
+	move(unit: SimUnit, to: number | {
+		x: number;
+		y: number;
+	}): this;
+	press(key: string, player?: number): this;
+	click(button?: "left" | "right" | "middle", player?: number): this;
+	type(line: string, player?: number): this;
+	moveMouse(x: number, y: number, player?: number): this;
+	moveCamera(x: number, y: number, player?: number): this;
+	selectUnits(units: readonly SimUnit[], player?: number): this;
+	count(player: number, type: number, at?: number): number;
+	units(filter?: {
+		owner?: number;
+		type?: number;
+		at?: number;
+	}): SimUnit[];
+	resources(player: number): {
+		ore: number;
+		gas: number;
+	};
+	deaths(player: number, type: number): number;
+	kills(player: number, type: number): number;
+	switch(n: number): boolean;
+	fog(player: number, area?: {
+		x: number;
+		y: number;
+		width: number;
+		height: number;
+	}): string[] | null;
+	location(n: number): SimBounds | undefined;
+	program(name?: string | number, player?: number): Record<string, unknown>;
+	printed(player?: number): string[];
+	log(sourceOf?: (trigger: number) => Where | null): TestEvent[];
+	readonly events: TestEvent[];
+	readonly faults: {
+		at: At;
+		message: string;
+		cycle: number;
+		frame: number;
+		program: number;
+	}[];
+}
+export interface LinkedFile {
+	/** The emitted JavaScript. */
+	js: string;
+	/** Its source map (JSON), when emitted. */
+	map?: string;
+}
+/**
+ * The map's player settings, as a map of our own needs them (TrigScript 4, step 7): the slots a human or a computer
+ * plays (0-based, P1 to P8), and each slot's force (0 to 3). Who a program runs for, who All Players and a force are,
+ * whether a player can have left.
+ */
+export interface MapPlayers {
+	slots: number[];
+	forces: number[];
 }
 /** The script's files by path (`main.ts`, `bases.ts`, `ai/waves.ts`). */
 export type ScriptFiles = Record<string, string>;
@@ -1663,6 +2181,8 @@ export interface VariableInfo {
 	bits?: number;
 	/** A `u32`; unset, a number is signed. */
 	unsigned?: boolean;
+	/** A `fixed`: a number with a fraction (16.16). */
+	fixed?: boolean;
 }
 /** Something the compiler has to say about a line that is not a fault: a loop unrolled when the script was built. */
 export interface LineHint {
@@ -1699,6 +2219,12 @@ export interface CompileResult {
 	sources: (TriggerSource | null)[];
 	/** Local string table: a record's `text` / `wav` field `k > 0` means `strings[k - 1]`. */
 	strings: ScriptString[];
+	/**
+	 * The clips the script plays (`sound.ts`), as the files the map's archive gets, by their names there: once each. An
+	 * Ogg Vorbis one has its samples instead of bytes until `finishSounds` (`vorbis.ts`) encodes it; after a compile with
+	 * `sounds: false` (a check) each is its name alone: the map is to get them from a build.
+	 */
+	sounds: ClipFile[];
 	diagnostics: ScriptDiagnostic[];
 	/** The programs' variables, in declaration order; a function's copies and results are left out. */
 	variables: VariableInfo[];
@@ -1709,20 +2235,59 @@ export interface CompileResult {
 	hints: LineHint[];
 	/** Every `locations.X` / `switches.X` / … the files mention, whatever else went wrong (a rename is what makes them not type-check). */
 	refs: MapReference[];
-	/** The programs as IR (`ir.ts`), one per `program()` in order — what eudplib builds into the map on save. A map with any needs StarCraft: Remastered. */
+	/** The programs as IR (`ir.ts`), one per `program()` in order — what the build lays out into the map on save. A map with any needs StarCraft: Remastered. */
 	ir: Program[];
 	/** What the programs read of the players — keys, clicks, the mouse, typed lines — and what carrying it takes from the map (`input.ts`); null when they read none. */
 	input: InputPlan | null;
 	/** The script's `test()`s, and what running them found; null when it has none, or did not compile that far. */
 	tests: TestReport | null;
+	/**
+	 * The script as JavaScript, file by file, when it has tests and compiled: what runs them somewhere else — in the
+	 * lifted game, beside the engine (`gameTests.ts`) — without TypeScript there.
+	 */
+	modules?: [
+		string,
+		LinkedFile
+	][];
+	/**
+	 * Why a map of our own does not take the programs (`backend/own.ts`, `emitOwn`), when the compile was asked
+	 * (`CompileOptions.own`) and it does not: the first part it never takes, with its line. Absent when it takes them,
+	 * when there are none, or when the script did not compile.
+	 */
+	ownRefusal?: string;
 	/** No errors: `triggers` and `ir` are the complete output. */
 	ok: boolean;
+}
+/** The map a compile is checked against for a map of our own (`CompileOptions.own`): who plays, and the map's size in pixels. */
+export interface OwnCheck {
+	players: MapPlayers;
+	humans: number[];
+	width: number;
+	height: number;
 }
 export interface CompileOptions {
 	/** The standard library's declarations (`lib.es2023.d.ts` and what it references, concatenated). */
 	lib: string;
 	/** Run the script's tests after a compile that went through: the world they start from, and which of them. Absent: they are listed and not run. */
 	tests?: TestRunOptions;
+	/** false: no value ranges (`ranges.ts`) — what a test compares a program with them against. */
+	ranges?: boolean;
+	/**
+	 * false: the clips the script plays are named, not made — a check as the user types, whose sounds the map does not
+	 * get (`sound.ts`'s clips work their samples out only when asked). A build's compile leaves it out.
+	 */
+	sounds?: boolean;
+	/**
+	 * Ask whether a map of our own takes the programs as they are, for this map (`ownRefusal`): what the editor shows
+	 * as a problem while the script is typed, so that a map does not change builds without anyone seeing.
+	 */
+	own?: OwnCheck;
+	/**
+	 * Files among `files` that run as entries of their own after the entry, in order — what another plugin contributes
+	 * to the build (`service.ts`, `contribute`): their `program()`s come after the script's. One that is not among the
+	 * files is an error.
+	 */
+	entries?: readonly string[];
 }
 /** Compile a script against a map's names. Never throws for script errors — read `diagnostics`. */
 export declare function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNames, options: CompileOptions): CompileResult;

@@ -586,23 +586,217 @@ function aiScriptName(code) {
   return AI_SCRIPT_NAMES[id] ?? id;
 }
 
+// compiler/orders.ts
+var ORDER_NAMES = [
+  "Die",
+  "Stop",
+  "Guard",
+  "PlayerGuard",
+  "TurretGuard",
+  "BunkerGuard",
+  "Move",
+  "ReaverStop",
+  "Attack1",
+  "Attack2",
+  "AttackUnit",
+  "AttackFixedRange",
+  "AttackTile",
+  "Hover",
+  "AttackMove",
+  "InfestedCommandCenter",
+  "UnusedNothing",
+  "UnusedPowerup",
+  "TowerGuard",
+  "TowerAttack",
+  "VultureMine",
+  "StayInRange",
+  "TurretAttack",
+  "Nothing",
+  "Unused24",
+  "DroneStartBuild",
+  "DroneBuild",
+  "CastInfestation",
+  "MoveToInfest",
+  "InfestingCommandCenter",
+  "PlaceBuilding",
+  "PlaceProtossBuilding",
+  "CreateProtossBuilding",
+  "ConstructingBuilding",
+  "Repair",
+  "MoveToRepair",
+  "PlaceAddon",
+  "BuildAddon",
+  "Train",
+  "RallyPointUnit",
+  "RallyPointTile",
+  "ZergBirth",
+  "ZergUnitMorph",
+  "ZergBuildingMorph",
+  "IncompleteBuilding",
+  "IncompleteMorphing",
+  "BuildNydusExit",
+  "EnterNydusCanal",
+  "IncompleteWarping",
+  "Follow",
+  "Carrier",
+  "ReaverCarrierMove",
+  "CarrierStop",
+  "CarrierAttack",
+  "CarrierMoveToAttack",
+  "CarrierIgnore2",
+  "CarrierFight",
+  "CarrierHoldPosition",
+  "Reaver",
+  "ReaverAttack",
+  "ReaverMoveToAttack",
+  "ReaverFight",
+  "ReaverHoldPosition",
+  "TrainFighter",
+  "InterceptorAttack",
+  "ScarabAttack",
+  "RechargeShieldsUnit",
+  "RechargeShieldsBattery",
+  "ShieldBattery",
+  "InterceptorReturn",
+  "DroneLand",
+  "BuildingLand",
+  "BuildingLiftOff",
+  "DroneLiftOff",
+  "LiftingOff",
+  "ResearchTech",
+  "Upgrade",
+  "Larva",
+  "SpawningLarva",
+  "Harvest1",
+  "Harvest2",
+  "MoveToGas",
+  "WaitForGas",
+  "HarvestGas",
+  "ReturnGas",
+  "MoveToMinerals",
+  "WaitForMinerals",
+  "MiningMinerals",
+  "Harvest3",
+  "Harvest4",
+  "ReturnMinerals",
+  "Interrupted",
+  "EnterTransport",
+  "PickupIdle",
+  "PickupTransport",
+  "PickupBunker",
+  "Pickup4",
+  "PowerupIdle",
+  "Sieging",
+  "Unsieging",
+  "WatchTarget",
+  "InitCreepGrowth",
+  "SpreadCreep",
+  "StoppingCreepGrowth",
+  "GuardianAspect",
+  "ArchonWarp",
+  "CompletingArchonSummon",
+  "HoldPosition",
+  "QueenHoldPosition",
+  "Cloak",
+  "Decloak",
+  "Unload",
+  "MoveUnload",
+  "FireYamatoGun",
+  "MoveToFireYamatoGun",
+  "CastLockdown",
+  "Burrowing",
+  "Burrowed",
+  "Unburrowing",
+  "CastDarkSwarm",
+  "CastParasite",
+  "CastSpawnBroodlings",
+  "CastEMPShockwave",
+  "NukeWait",
+  "NukeTrain",
+  "NukeLaunch",
+  "NukePaint",
+  "NukeUnit",
+  "CastNuclearStrike",
+  "NukeTrack",
+  "InitializeArbiter",
+  "CloakNearbyUnits",
+  "PlaceMine",
+  "RightClickAction",
+  "SuicideUnit",
+  "SuicideLocation",
+  "SuicideHoldPosition",
+  "CastRecall",
+  "Teleport",
+  "CastScannerSweep",
+  "Scanner",
+  "CastDefensiveMatrix",
+  "CastPsionicStorm",
+  "CastIrradiate",
+  "CastPlague",
+  "CastConsume",
+  "CastEnsnare",
+  "CastStasisField",
+  "CastHallucination",
+  "Hallucination2",
+  "ResetCollision",
+  "ResetHarvestCollision",
+  "Patrol",
+  "CTFCOPInit",
+  "CTFCOPStarted",
+  "CTFCOP2",
+  "ComputerAI",
+  "AtkMoveEP",
+  "HarassMove",
+  "AIPatrol",
+  "GuardPost",
+  "RescuePassive",
+  "Neutral",
+  "ComputerReturn",
+  "InitializePsiProvider",
+  "SelfDestructing",
+  "Critter",
+  "HiddenGun",
+  "OpenDoor",
+  "CloseDoor",
+  "HideTrap",
+  "RevealTrap",
+  "EnableDoodad",
+  "DisableDoodad",
+  "WarpIn",
+  "Medic",
+  "MedicHeal",
+  "HealMove",
+  "MedicHoldPosition",
+  "MedicHealToIdle",
+  "CastRestoration",
+  "CastDisruptionWeb",
+  "CastMindControl",
+  "DarkArchonMeld",
+  "CastFeedback",
+  "CastOpticalFlare",
+  "CastMaelstrom",
+  "JunkYardDog",
+  "Fatal"
+];
+var ORDER_OF_VERB = { move: 6, patrol: 152, attack: 14 };
+
 // compiler/api.ts
 function keyOf(table2, value) {
   for (const [k, v] of Object.entries(table2)) if (v === value) return k;
   return void 0;
 }
 var RESERVED = new Set("break case catch class const continue debugger default delete do else enum export extends false finally for function if import in instanceof new null return super switch this throw true try typeof var void while with implements interface let package private protected public static yield".split(" "));
-function camel(key) {
-  const id = key[0].toLowerCase() + key.slice(1);
+function camel(key2) {
+  const id = key2[0].toLowerCase() + key2.slice(1);
   return RESERVED.has(id) ? `${id}Is` : id;
 }
 function conditionIdent(type) {
-  const key = keyOf(ConditionType, type);
-  return key === void 0 ? void 0 : camel(key);
+  const key2 = keyOf(ConditionType, type);
+  return key2 === void 0 ? void 0 : camel(key2);
 }
 function actionIdent(type) {
-  const key = keyOf(ActionType, type);
-  return key === void 0 ? void 0 : camel(key);
+  const key2 = keyOf(ActionType, type);
+  return key2 === void 0 ? void 0 : camel(key2);
 }
 var CONDITION_IDENTS = new Map(
   CONDITION_DEFS.filter((d) => d.type !== ConditionType.Briefing).map((d) => [conditionIdent(d.type), d])
@@ -658,8 +852,10 @@ function argType(kind) {
     case "switch":
       return "Switch";
     case "text":
-    case "wav":
       return "string";
+    // A sound of the map (sounds.badapple, from the Sound Editor's list) or a path in the map's archive.
+    case "wav":
+      return "Sound | Clip | string";
     case "aiScript":
       return "AiScript | string";
     case "count":
@@ -673,6 +869,11 @@ function argType(kind) {
     case "cuwp":
     case "slot":
       return "number";
+    // orders.Move, orders.Patrol and orders.AttackMove are the action's three (`orderOfAction`); any other of orders.* is
+    // what a unit is doing, which the action cannot give. A raw number is a second signature (`declarations.ts`): in one
+    // union with it, TypeScript takes orders.Die for a number.
+    case "order":
+      return "OrderKind | OrderOfAction";
     default:
       return `${CHOICE_TYPES[kind] ?? "number"} | number`;
   }
@@ -696,11 +897,11 @@ function scriptParams(def) {
   return flag2 ? [...main, { arg: flag2, name: "always", optional: true }] : main;
 }
 var IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-function propertyKey(key) {
-  return IDENTIFIER.test(key) ? key : JSON.stringify(key);
+function propertyKey(key2) {
+  return IDENTIFIER.test(key2) ? key2 : JSON.stringify(key2);
 }
-function memberAccess(object, key) {
-  return IDENTIFIER.test(key) ? `${object}.${key}` : `${object}[${JSON.stringify(key)}]`;
+function memberAccess(object, key2) {
+  return IDENTIFIER.test(key2) ? `${object}.${key2}` : `${object}[${JSON.stringify(key2)}]`;
 }
 var TRIGGER_OPTION_NAMES = [
   [TriggerFlag.Preserve, "preserve"],
@@ -775,6 +976,11 @@ var World = class {
   onDeath = () => {
   };
   table = [];
+  /**
+   * The free places in the order the game hands them out (scm-sim docs/specs/unit-lists.md, section 3): at the start
+   * slot 0, then 1699, 1698 … 1; a place freed goes in right behind the first, so it is the one after the next.
+   */
+  free = [0, ...Array.from({ length: UNIT_SLOTS - 1 }, (_, i) => UNIT_SLOTS - 1 - i)];
   uids = [];
   classOf;
   properties;
@@ -789,11 +995,10 @@ var World = class {
     for (const u of options.units ?? []) this.make(u);
   }
   /* ── the unit table ── */
-  /** A unit on the map, in the lowest free place of the table. Null when the table is full, as the game makes no unit then. */
+  /** A unit on the map, in the place the game hands out next. Null when the table is full, as the game makes no unit then. */
   make(init) {
-    let slot = 0;
-    while (slot < UNIT_SLOTS && this.table[slot]) slot++;
-    if (slot >= UNIT_SLOTS) return null;
+    const slot = this.free.shift();
+    if (slot === void 0) return null;
     const uid = this.uids[slot] === void 0 ? 0 : this.uids[slot] + 1 & 255;
     this.uids[slot] = uid;
     const hp = init.hp ?? init.maxHp ?? 1;
@@ -813,11 +1018,18 @@ var World = class {
       maelstrom: 0,
       irradiate: 0,
       stasis: 0,
+      buildTime: 0,
+      rank: 0,
+      matrix: 0,
+      speed: 0,
       hallucinated: false,
       cloaked: false,
       burrowed: false,
       invincible: false,
       underAttack: false,
+      speedUpgrade: false,
+      hasTarget: false,
+      inTransport: false,
       ...init,
       hp,
       maxHp: init.maxHp ?? hp,
@@ -830,6 +1042,10 @@ var World = class {
     this.table[slot] = unit;
     this.units.push(unit);
     return unit;
+  }
+  /** A unit given to a player. */
+  setOwner(unit, to) {
+    if (unit.alive) unit.owner = to;
   }
   /** A unit of a type as the game makes one: the type's hit points and shields, at a point. */
   create(type, owner, x, y, properties) {
@@ -854,12 +1070,21 @@ var World = class {
       invincible: properties?.invincible ?? false
     });
   }
-  /** Off the map, its place free for the next unit made. `killed`: it died — counted as a death, and as a kill of `by` when someone is named. */
-  gone(unit, killed, by) {
+  /**
+   * Off the map, its place free for the next unit made. `killed`: it died. `fought`: it died in the game — shot, or
+   * killed by a spell — and so counts as a death, and as a kill of `by` when someone is named. A unit a trigger or a
+   * program kills (Kill Unit, a unit's kill(), hit points written down to 0) dies without counting: the lifted game
+   * says so for all three (TrigScript 4, A2, 2026-10-16), as the editor's trigger reference does for Kill Unit.
+   */
+  gone(unit, killed, by, fought = true) {
     if (!unit.alive) return;
     unit.alive = false;
-    if (this.table[unit.slot] === unit) this.table[unit.slot] = null;
-    if (!killed) return;
+    if (this.table[unit.slot] === unit) {
+      this.table[unit.slot] = null;
+      this.free.splice(Math.min(1, this.free.length), 0, unit.slot);
+    }
+    if (!killed || !fought) return;
+    if (by !== void 0 && by !== unit.owner) unit.killedBy = by;
     this.onDeath(unit);
     if (by !== void 0) this.killed.set(unit.type * 4096 + by, (this.killed.get(unit.type * 4096 + by) ?? 0) + 1);
   }
@@ -869,11 +1094,13 @@ var World = class {
     if (now && now.uid === uid) return now;
     return this.units.find((u) => u.slot === slot && u.uid === uid) ?? null;
   }
-  /** The units on the map, in the order of the table. */
+  /**
+   * The units on the map, oldest first: the order of the game's table walked as it hands its places out (slot 0, then
+   * 1699 downwards), as long as no place freed has been handed out again — when the game frees a record, some frames after
+   * its unit is gone, is not something the simulator knows.
+   */
   living() {
-    const out = [];
-    for (const u of this.table) if (u) out.push(u);
-    return out;
+    return this.units.filter((u) => u.alive && this.table[u.slot] === u);
   }
   typed(u, type) {
     return type === void 0 || (type >= 229 ? this.classOf(u.type, type) : u.type === type);
@@ -884,25 +1111,33 @@ var World = class {
   }
   /** The living units of these owners (any, when undefined), of a type or a class, inside a location — in table order. */
   matching(owners, type, location) {
-    return this.living().filter((u) => (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location));
+    return this.living().filter((u) => this.fits(u, owners, type, location));
+  }
+  /** The living units a program's loop comes to (TrigScript 4): oldest first, as `living` says. */
+  listed(owners, type, location) {
+    return this.matching(owners, type, location);
+  }
+  /** Whether a unit, living or as it died, is of these owners (any, when undefined), of a type or a class, inside a location. */
+  fits(u, owners, type, location) {
+    return (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location);
   }
   centreOf(location) {
     const b = this.locations.get(location);
     return b ? { x: Math.floor((b.left + b.right) / 2), y: Math.floor((b.top + b.bottom) / 2) } : { x: 0, y: 0 };
   }
-  /** A location centred on a point, its size kept. */
-  centre(location, x, y) {
+  /** A location centred on a point, its size kept — or the size given. */
+  centre(location, x, y, size) {
     const b = this.locations.get(location) ?? { left: 0, top: 0, right: 0, bottom: 0 };
-    const w = b.right - b.left;
-    const h = b.bottom - b.top;
+    const w = size ? size.width : b.right - b.left;
+    const h = size ? size.height : b.bottom - b.top;
     const left = x - Math.floor(w / 2);
-    const top = y - Math.floor(h / 2);
-    this.locations.set(location, { left, top, right: left + w, bottom: top + h });
+    const top2 = y - Math.floor(h / 2);
+    this.locations.set(location, { left, top: top2, right: left + w, bottom: top2 + h });
   }
   /** The kills these players have of a type or a class. */
   kills(owners, type) {
     let n = 0;
-    for (const [key, count] of this.killed) if (owners.includes(key % 4096) && (type >= 229 ? this.classOf(Math.floor(key / 4096), type) : Math.floor(key / 4096) === type)) n += count;
+    for (const [key2, count] of this.killed) if (owners.includes(key2 % 4096) && (type >= 229 ? this.classOf(Math.floor(key2 / 4096), type) : Math.floor(key2 / 4096) === type)) n += count;
     return n;
   }
   /* ── conditions ── */
@@ -957,20 +1192,20 @@ var World = class {
         return true;
       }
       case ActionType.KillUnit:
-        for (const u of this.matching(owners, a2.unitId)) this.gone(u, true);
+        for (const u of this.matching(owners, a2.unitId)) this.gone(u, true, void 0, false);
         return true;
       case ActionType.RemoveUnit:
         for (const u of this.matching(owners, a2.unitId)) this.gone(u, false);
         return true;
       case ActionType.KillUnitAt:
-        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) this.gone(u, true);
+        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) this.gone(u, true, void 0, false);
         return true;
       case ActionType.RemoveUnitAt:
         for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) this.gone(u, false);
         return true;
       case ActionType.GiveUnits: {
         const to = this.players.of(a2.target, current2)[0];
-        if (to !== void 0 && to < 12) for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) u.owner = to;
+        if (to !== void 0 && to < 12) for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) this.setOwner(u, to);
         return true;
       }
       case ActionType.MoveUnit: {
@@ -1043,19 +1278,19 @@ var Simulation = class {
     this.game.onDeath = (u) => this.deaths.set(u.type * 4096 + u.owner, (this.deaths.get(u.type * 4096 + u.owner) ?? 0) + 1 >>> 0);
   }
   /** A player's deaths of a unit; a group's are its players' together. */
-  death(player, unit) {
+  death(player3, unit) {
     let n = 0;
-    for (const p of this.game.players.of(player, this.current)) n += this.deaths.get(unit * 4096 + p) ?? 0;
+    for (const p of this.game.players.of(player3, this.current)) n += this.deaths.get(unit * 4096 + p) ?? 0;
     return n >>> 0;
   }
   /** Set for a player, or for each player of a group. */
-  setDeath(player, unit, value) {
-    for (const p of this.game.players.of(player, this.current)) this.deaths.set(unit * 4096 + p, value >>> 0);
+  setDeath(player3, unit, value) {
+    for (const p of this.game.players.of(player3, this.current)) this.deaths.set(unit * 4096 + p, value >>> 0);
   }
   /** A Set Deaths action: set to, add or subtract, for each player the action names. */
-  changeDeath(player, unit, modifier, amount) {
+  changeDeath(player3, unit, modifier, amount) {
     const n = amount >>> 0;
-    for (const p of this.game.players.of(player, this.current)) {
+    for (const p of this.game.players.of(player3, this.current)) {
       const cur = this.deaths.get(unit * 4096 + p) ?? 0;
       this.deaths.set(unit * 4096 + p, (modifier === SetModifier.SetTo ? n : modifier === SetModifier.Add ? cur + n : Math.max(0, cur - n)) >>> 0);
     }
@@ -1071,11 +1306,11 @@ var Simulation = class {
   tick() {
     this.frame++;
     const ms = this.options.msPerFrame ?? 42;
-    for (const [player, left] of this.waiting) {
+    for (const [player3, left] of this.waiting) {
       if (left === FOREVER) continue;
-      if (ms < left) this.waiting.set(player, left - ms);
+      if (ms < left) this.waiting.set(player3, left - ms);
       else {
-        this.waiting.delete(player);
+        this.waiting.delete(player3);
         this.countdown = 1;
       }
     }
@@ -1100,18 +1335,18 @@ var Simulation = class {
     this.countdown = 30;
     let runs = 0;
     const limit = this.options.maxRunsPerCycle ?? 1e5;
-    for (const player of this.game.players.slots) {
-      this.current = player;
+    for (const player3 of this.game.players.slots) {
+      this.current = player3;
       for (let i = 0; i < this.triggers.length; i++) {
-        const t = this.triggers[i], key = i * 12 + player;
-        if (this.done.has(key) || t.flags & TriggerFlag.Disabled) continue;
-        if (!this.game.players.owns(t.players, player)) continue;
-        let copy = this.copies.get(key);
+        const t = this.triggers[i], key2 = i * 12 + player3;
+        if (this.done.has(key2) || t.flags & TriggerFlag.Disabled) continue;
+        if (!this.game.players.owns(t.players, player3)) continue;
+        let copy = this.copies.get(key2);
         if (!copy?.executing) {
           if (!t.conditions.every((c2) => this.condition(c2))) continue;
           if (++runs > limit) throw new Error(`More than ${limit} trigger runs in one cycle.`);
           copy = { executing: true, at: 0, preserved: copy?.preserved || (t.flags & TriggerFlag.Preserve) !== 0, started: /* @__PURE__ */ new Set() };
-          this.copies.set(key, copy);
+          this.copies.set(key2, copy);
         }
         let held = false;
         for (; copy.at < t.actions.length; copy.at++) {
@@ -1128,7 +1363,7 @@ var Simulation = class {
           copy.executing = false;
           copy.at = 0;
           copy.started.clear();
-        } else this.done.add(key);
+        } else this.done.add(key2);
       }
     }
     this.current = this.player;
@@ -1160,16 +1395,16 @@ var Simulation = class {
         return true;
       case ActionType.Wait:
       case ActionType.Transmission: {
-        const player = this.current;
-        if (a2.type === ActionType.Transmission && (a2.location === 0 || this.options.computers?.includes(player))) return true;
-        if (this.waiting.has(player)) return false;
+        const player3 = this.current;
+        if (a2.type === ActionType.Transmission && (a2.location === 0 || this.options.computers?.includes(player3))) return true;
+        if (this.waiting.has(player3)) return false;
         if (copy.started.delete(copy.at)) return true;
         let ms = a2.time >>> 0;
         if (a2.type === ActionType.Transmission) {
           const n = a2.target >>> 0;
           ms = a2.modifier === SetModifier.SetTo ? n : a2.modifier === SetModifier.Add ? ms + n >>> 0 : a2.modifier === SetModifier.Subtract ? n > ms ? 0 : ms - n : ms;
         }
-        this.waiting.set(player, ms);
+        this.waiting.set(player3, ms);
         copy.started.add(copy.at);
         this.log(a2, trigger);
         return false;
@@ -1228,10 +1463,71 @@ function simulate(triggers, cycles, options = {}) {
   return new Simulation(triggers, options).run(cycles);
 }
 
+// compiler/fixedMath.ts
+var U32 = 0x100000000n;
+var magnitude = (v) => BigInt(v < 0 ? -v : v);
+var signedCell = (m, negative) => Number(BigInt.asIntN(32, (negative ? U32 - m % U32 : m) % U32));
+function fixedMul(a2, b) {
+  return signedCell(magnitude(a2) * magnitude(b) >> 16n, a2 < 0 !== b < 0);
+}
+function fixedDiv(a2, b) {
+  if (b === 0) return 0;
+  return signedCell((magnitude(a2) << 16n) / magnitude(b), a2 < 0 !== b < 0);
+}
+function isqrt(n) {
+  if (n < 2n) return n;
+  let x = BigInt(Math.floor(Math.sqrt(Number(n))));
+  while (x * x > n) x--;
+  while ((x + 1n) * (x + 1n) <= n) x++;
+  return x;
+}
+function fixedSqrt(v, whole2 = false) {
+  if (whole2) return v >>> 0 >= 2 ** 30 ? 2147483647 : signedCell(isqrt(BigInt(v >>> 0) << 32n), false);
+  if (v <= 0) return 0;
+  return signedCell(isqrt(BigInt(v) << 16n), false);
+}
+var FIXED_PI = Math.round(Math.PI * 65536);
+var FIXED_HALF_PI = Math.round(Math.PI / 2 * 65536);
+function between(a2, b, f, bits) {
+  const d = b - a2;
+  const part = Math.floor(Math.abs(d) * f / 2 ** bits);
+  return (d < 0 ? a2 - part : a2 + part) | 0;
+}
+function fixedAtan2(y, x, table2) {
+  const ax = magnitude(x), ay = magnitude(y);
+  if (ax === 0n && ay === 0n) return 0;
+  const read = (small, large) => {
+    const r = Number((small << 16n) / large);
+    return between(table2[r >> 6] ?? 0, table2[(r >> 6) + 1] ?? 0, r & 63, 6);
+  };
+  let t = ay <= ax ? read(ay, ax) : FIXED_HALF_PI - read(ax, ay);
+  if (x < 0) t = FIXED_PI - t;
+  if (y < 0) t = -t;
+  return t | 0;
+}
+function fixedSin(x, scale, table2, cos = false) {
+  const at = fixedMul(x, scale);
+  const i = (at >>> 16) + (cos ? 1024 : 0) & 4095;
+  return between(table2[i] ?? 0, table2[i + 1 & 4095] ?? 0, at & 65535, 16);
+}
+function fixedText(v) {
+  const m = Math.abs(v);
+  let whole2 = Math.floor(m / 65536);
+  let places = Math.floor((m % 65536 * 1e4 + 32768) / 65536);
+  if (places === 1e4) {
+    whole2++;
+    places = 0;
+  }
+  const sign = v < 0 && (whole2 || places) ? "-" : "";
+  return sign + String(whole2) + (places ? "." + String(places).padStart(4, "0").replace(/0+$/, "") : "");
+}
+
 // compiler/ir.ts
+var BUILD_BYTES = 2047;
 var HEAP_CELLS = 16384;
 var HEAP_CELLS_MIN = 1024;
 var HEAP_CELLS_MAX = 1 << 20;
+var CELL_HEAP_MOST = 1 << 16;
 function heapCells(value) {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(HEAP_CELLS_MAX, Math.max(HEAP_CELLS_MIN, Math.floor(value))) : HEAP_CELLS;
 }
@@ -1243,14 +1539,14 @@ var STACK_CELLS_MAX = 1 << 20;
 function stackDepth(value) {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(STACK_DEPTH_MAX, Math.max(STACK_DEPTH_MIN, Math.floor(value))) : STACK_DEPTH;
 }
-var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack", "speedUpgrade", "hasTarget", "inTransport"];
 var TEXT_BYTES = 1023;
 var TEXT_FIELD_BYTES = 255;
-var TEXT_KINDS = /* @__PURE__ */ new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
+var TEXT_KINDS = /* @__PURE__ */ new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall", "built"]);
 var isTextExpr = (e) => TEXT_KINDS.has(e.kind);
 var innerText = (t, f) => f.text ? f.text(t) : mapText(t, f);
 function mapTextParts(parts, f) {
-  return parts.map((p) => p.kind === "number" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p);
+  return parts.map((p) => p.kind === "number" || p.kind === "char" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p);
 }
 function mapText(t, f) {
   switch (t.kind) {
@@ -1289,8 +1585,19 @@ function mapTextOperands(e, f) {
       return void 0;
   }
 }
+var ERROR_CODES = { Error: 1, RangeError: 2, TypeError: 3 };
+var STACK_OVERFLOW_MESSAGE = "Maximum call stack size exceeded";
 function bodiesOf(program) {
   return [program.body, ...(program.functions ?? []).map((f) => f.body)];
+}
+function programDeclarations(program) {
+  const out = declarations(program.body);
+  for (const f of program.functions ?? []) {
+    out.push(...f.params);
+    if (f.result) out.push(f.result.decl);
+    out.push(...declarations(f.body));
+  }
+  return out;
 }
 function eachCall(root, visit) {
   if (Array.isArray(root)) {
@@ -1301,6 +1608,16 @@ function eachCall(root, visit) {
   const o = root;
   if ((o.kind === "call" || o.kind === "textCall") && o.call && typeof o.call === "object") visit(o.call);
   for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
+}
+function eachStart(root, visit) {
+  if (Array.isArray(root)) {
+    for (const x of root) eachStart(x, visit);
+    return;
+  }
+  if (!root || typeof root !== "object") return;
+  const o = root;
+  if (o.kind === "start" && typeof o.task === "number" && o.call && typeof o.call === "object") visit(o);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachStart(v, visit);
 }
 var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
@@ -1330,6 +1647,7 @@ var isNumExpr = (e) => {
     case "unitField":
     case "tableRead":
     case "input":
+    case "taskHandle":
       return true;
     case "ternary":
       return isNumExpr(e.whenTrue);
@@ -1387,6 +1705,7 @@ function declarations(body2) {
         break;
       case "unitLoop":
         out.push(s.decl);
+        if (s.was) out.push(s.was);
         s.body.forEach(stmt);
         break;
       case "unitWrite":
@@ -1396,6 +1715,9 @@ function declarations(body2) {
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "select":
+        s.units.forEach(unit);
         break;
       case "tableWrite":
         init(s.value);
@@ -1421,6 +1743,15 @@ function declarations(body2) {
       case "unrolled":
         s.iterations.forEach((i) => i.forEach(stmt));
         break;
+      case "parallel":
+        s.branches.forEach((b) => b.forEach(stmt));
+        break;
+      case "start":
+        call(s.call);
+        break;
+      case "cancel":
+        expr(s.task);
+        break;
       case "switch":
         expr(s.value);
         s.cases.forEach((c2) => c2.body.forEach(stmt));
@@ -1435,8 +1766,16 @@ function declarations(body2) {
       case "centerLocation":
         expr(s.x);
         expr(s.y);
+        if (s.size) {
+          expr(s.size.width);
+          expr(s.size.height);
+        }
+        break;
+      case "syncSend":
+        expr(s.value);
         break;
       case "print":
+      case "buildText":
         parts(s.parts);
         break;
       case "call":
@@ -1444,6 +1783,10 @@ function declarations(body2) {
         break;
       case "block":
         s.body.forEach(stmt);
+        break;
+      case "try":
+        s.body.forEach(stmt);
+        s.catch.forEach(stmt);
         break;
       default:
         break;
@@ -1460,7 +1803,7 @@ function declarations(body2) {
   const init = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
   const parts = (ps) => {
     for (const p of ps) {
-      if (p.kind === "number") expr(p.expr);
+      if (p.kind === "number" || p.kind === "char") expr(p.expr);
       else if (p.kind === "value") text(p.text);
     }
   };
@@ -1597,6 +1940,9 @@ function declarations(body2) {
         text(b.of);
         text(b.find);
         break;
+      case "running":
+        expr(b.task);
+        break;
       case "call":
         call(b.call);
         break;
@@ -1669,7 +2015,6 @@ var MINIMAP_COLOR_OFFSET = 5774806 - 5774710;
 var cellMax = (width) => width === "bit" ? 1 : width === 4 ? 4294967295 : 2 ** (width * 8) - 1;
 
 // compiler/input.ts
-var MSQC_BUTTON = { left: "L", right: "R", middle: "M" };
 var NAMED_KEYS = {
   Space: "SPACE",
   Enter: "ENTER",
@@ -1692,7 +2037,14 @@ var NAMED_KEYS = {
 };
 var LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 var DIGITS = "0123456789".split("");
-var DEAF_KEYS = { F6: "StarCraft: Remastered keeps F6 to itself and reports no press of it (played and seen); F7 and F8 work" };
+var kept = (key2, what) => `StarCraft: Remastered keeps ${key2} to itself${what} and reports no press of it (played and seen); F7, F8 and F9 work`;
+var DEAF_KEYS = {
+  F2: kept("F2", " (a camera key)"),
+  F3: kept("F3", " (a camera key)"),
+  F4: kept("F4", " (a camera key)"),
+  F5: kept("F5", ""),
+  F6: kept("F6", "")
+};
 var KEY_NAMES = [
   ...LETTERS,
   ...DIGITS,
@@ -1703,9 +2055,6 @@ var KEY_NAMES = [
 var KEY_BY_LOWER = new Map(KEY_NAMES.map((k) => [k.toLowerCase(), k]));
 function keyName(v) {
   return KEY_BY_LOWER.get(v.trim().toLowerCase()) ?? null;
-}
-function msqcKey(key) {
-  return NAMED_KEYS[key] ?? key.toUpperCase();
 }
 var MAX_CHAT_CAPTURES = 3;
 var MAX_CHAT_BYTES = 78;
@@ -1787,8 +2136,6 @@ function matchChat(p, line, unitByName) {
   }
   return pos === line.length ? out : null;
 }
-var QC_UNIT = 58;
-var QC_PLAYER = 11;
 function inputsOf(programs) {
   const sources = [];
   let mouse = false;
@@ -1870,6 +2217,9 @@ function inputsOf(programs) {
       case "edge":
         expr(e.cond);
         break;
+      case "running":
+        expr(e.task);
+        break;
       case "call":
         call(e.call);
         break;
@@ -1930,12 +2280,24 @@ function inputsOf(programs) {
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
         break;
+      case "select":
+        s.units.forEach(unit);
+        break;
       case "tableWrite":
         any(s.value);
         break;
       case "centerLocation":
         expr(s.x);
         expr(s.y);
+        if (s.size) {
+          expr(s.size.width);
+          expr(s.size.height);
+        }
+        break;
+      case "syncSend":
+        sources.push({ source: "sync", slot: s.slot, player: s.player });
+        at ??= s.at;
+        expr(s.value);
         break;
       case "if":
         expr(s.cond);
@@ -1958,6 +2320,15 @@ function inputsOf(programs) {
       case "unrolled":
         s.iterations.forEach((i) => i.forEach(stmt));
         break;
+      case "parallel":
+        s.branches.forEach((b) => b.forEach(stmt));
+        break;
+      case "start":
+        call(s.call);
+        break;
+      case "cancel":
+        expr(s.task);
+        break;
       case "switch":
         expr(s.value);
         s.cases.forEach((c2) => c2.body.forEach(stmt));
@@ -1970,6 +2341,7 @@ function inputsOf(programs) {
         if (s.text) text(s.text);
         break;
       case "print":
+      case "buildText":
         mapTextParts(s.parts, looks);
         break;
       case "call":
@@ -1978,6 +2350,10 @@ function inputsOf(programs) {
       case "block":
         s.body.forEach(stmt);
         break;
+      case "try":
+        s.body.forEach(stmt);
+        s.catch.forEach(stmt);
+        break;
       default:
         break;
     }
@@ -1985,50 +2361,46 @@ function inputsOf(programs) {
   for (const p of programs) for (const body2 of bodiesOf(p)) body2.forEach(stmt);
   return { sources, mouse, at };
 }
-var INPUT_NAMES = {
-  key: (i) => `tsin_key${i}`,
-  button: (i) => `tsin_button${i}`,
-  chatLocal: "tsin_chat",
-  chatIn: "tsin_chat_in",
-  captureLocal: (i) => `tsin_capture${i}`,
-  captureIn: (i) => `tsin_capture${i}_in`,
-  heard: "tsin_heard",
-  pointer: "tsin_pointer",
-  length: "tsin_length",
-  pattern: "tsin_pattern"
-};
-function inputPlugins(plan) {
-  const before = {};
-  if (plan.chats.length) before.chatEvent = { __addr__: INPUT_NAMES.heard, __ptrAddr__: INPUT_NAMES.pointer, __lenAddr__: INPUT_NAMES.length, __patternAddr__: INPUT_NAMES.pattern };
-  const msqc = { QCUnit: QC_UNIT, QCLoc: plan.qcLocation, QCPlayer: QC_PLAYER, QCDebug: "false" };
-  plan.keys.forEach((key, i) => {
-    msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`;
-  });
-  plan.buttons.forEach((b, i) => {
-    msqc[`MouseDown(${MSQC_BUTTON[b]})`] = `${INPUT_NAMES.button(i)}, 1`;
-  });
-  if (plan.mouseBase !== null) msqc.Mouse = plan.mouseBase;
-  if (plan.chats.length) {
-    const sent = `${INPUT_NAMES.chatLocal}.AtLeast(1)`;
-    msqc[`${sent}; val, ${INPUT_NAMES.chatLocal}`] = INPUT_NAMES.chatIn;
-    const captures = Math.max(0, ...plan.chats.map((c2) => c2.captures.length));
-    for (let i = 0; i < captures; i++) msqc[`${sent}; val, ${INPUT_NAMES.captureLocal(i)}`] = INPUT_NAMES.captureIn(i);
-  }
-  return { before, after: { MSQC: msqc } };
-}
-function buildPlugins(plan, irPath) {
-  const input = plan ? inputPlugins(plan) : { before: {}, after: {} };
-  return { ...input.before, trigscript: { ir: irPath }, ...input.after, eudTurbo: {} };
-}
+
+// compiler/fogShapes.ts
+var FOG_SHAPES = [
+  // 1
+  ["###", "###", "#@#", "###"],
+  // 2
+  [".###.", "#####", "#####", "##@##", "#####", "#####"],
+  // 3
+  ["..###..", "#######", "#######", "#######", "###@###", "#######", "#######", "#######"],
+  // 4
+  ["..#####...", ".#######..", "#########.", "##########", "##########", "####@#####", "##########", "##########", "#########.", ".#######..", "......#..."],
+  // 5
+  ["...#####....", "..#######...", ".#########..", "###########.", "############", "############", "#####@######", "############", "############", "###########.", ".#########..", "..#######...", ".......#...."],
+  // 6
+  ["....#####.....", "..#########...", ".###########..", "#############.", "#############.", "##############", "##############", "######@#######", "##############", "##############", "#############.", "#############.", ".###########..", "..#########...", "........#....."],
+  // 7
+  [".....#####......", "...#########....", "..###########...", ".#############..", "###############.", "###############.", "################", "################", "#######@########", "################", "################", "###############.", "###############.", ".#############..", "..###########...", "...#########....", ".........#......"],
+  // 8
+  ["......#####.......", "....#########.....", "..#############...", ".###############..", ".###############..", "#################.", "#################.", "##################", "##################", "########@#########", "##################", "##################", "#################.", "#################.", ".###############..", ".###############..", "..#############...", "....#########.....", "..........#......."],
+  // 9
+  ["......#######.......", "....###########.....", "...#############....", "..###############...", ".#################..", "###################.", "###################.", "####################", "####################", "####################", "#########@##########", "####################", "####################", "####################", "###################.", "###################.", ".#################..", "..###############...", "...#############....", "....###########.....", "........#####......."],
+  // 10
+  [".......#######........", ".....###########......", "....#############.....", "..#################...", "..#################...", ".###################..", "#####################.", "#####################.", "######################", "######################", "######################", "##########@###########", "######################", "######################", "######################", "#####################.", "#####################.", ".###################..", "..#################...", "..#################...", "....#############.....", ".....###########......", ".........#####........"],
+  // 11
+  ["........#######.........", "......###########.......", "....###############.....", "...#################....", "..###################...", ".#####################..", ".#####################..", "#######################.", "#######################.", "########################", "########################", "########################", "###########@############", "########################", "########################", "########################", "#######################.", "#######################.", ".#####################..", ".#####################..", "..###################...", "...#################....", "....###############.....", "......###########.......", "..........#####........."]
+];
 
 // compiler/simulateIr.ts
+var FOG_SIZE = 256;
 var FRAMES_PER_SECOND = 24;
 var FRAMES_PER_GAME_SECOND = 16;
-var U32 = 4294967296;
-var UNIT_FIELD_MAX = { hp: 16777215, shields: 16777215, energy: 255, kills: 255, cooldown: 255, resources: 65535, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
+var U322 = 4294967296;
+var HELD_GRACE = 2;
+var SLOT_COLOR_CODES = [8, 14, 15, 16, 17, 21, 22, 23];
+var UNIT_FIELD_MAX = { hp: 16777215, shields: 16777215, energy: 255, kills: 255, cooldown: 255, resources: 65535, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255, buildTime: 65535, rank: 255, matrix: 255 };
 var Halt = class extends Error {
 };
 var Stopped = class extends Error {
+};
+var Thrown = class extends Error {
 };
 var UTF8 = new TextEncoder();
 var bytesOf = (s) => UTF8.encode(s).length;
@@ -2086,7 +2458,10 @@ var ProgramRun = class {
   bits = /* @__PURE__ */ new Map();
   /** The `u32` variables. */
   unsigned = /* @__PURE__ */ new Set();
+  /** Every latch's state; a task has its own, swapped in while it runs. */
   latches = /* @__PURE__ */ new Map();
+  /** The units of on.died() turns: read as they died, though they are gone. */
+  asDied = /* @__PURE__ */ new Set();
   /** The program's arrays: their cells, as a variable's value is kept. */
   arrays = new class extends Map {
     run;
@@ -2103,17 +2478,30 @@ var ProgramRun = class {
   depth = 0;
   /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
   apart = [];
+  /** The number of the task whose turn it is (`taskHandle`); 0 in the program's own turn. */
+  taskNow = 0;
+  /** Where the error in flight was thrown: what an uncaught one is said at. */
+  thrownAt;
+  /** The `start` statements' tasks, in order of their numbers. */
+  pools = [];
+  /** Frames the tasks have run, for a slot to tell whether it has had its turn in this one. */
+  taskFrame = 0;
+  /** A task was started during this frame's turn of the tasks: they are gone through again, for it to start in this frame too. */
+  again = false;
   sim;
   index;
   program;
   /** The player this run is: who Current Player is while it runs. */
   player;
   common;
-  constructor(sim, index, program, player, common = newCommon()) {
+  /** The variables the closures count (`VarDecl.held`): read by their own declare, 0 before it. */
+  held;
+  constructor(sim, index, program, player3, common = newCommon()) {
+    this.held = new Set(programDeclarations(program).filter((d) => d.held).map((d) => d.id));
     this.sim = sim;
     this.index = index;
     this.program = program;
-    this.player = player;
+    this.player = player3;
     this.common = common;
     this.vars = new Cells(common.ids, common.vars);
     this.unitVars = new Cells(common.ids, common.unitVars);
@@ -2125,35 +2513,136 @@ var ProgramRun = class {
       this.arrays.set(decl.id, held);
     }
     this.body = this.run();
+    const decls = programDeclarations(this.program);
+    const starts = [];
+    eachStart([program.body, program.functions ?? []], (st) => starts.push(st));
+    starts.sort((a2, b) => a2.task - b.task);
+    for (const start of starts) {
+      const slots = Array.from({ length: start.max }, () => ({ exec: null, apart: [], gen: 0, ran: 0, vars: /* @__PURE__ */ new Map(), units: /* @__PURE__ */ new Map(), texts: /* @__PURE__ */ new Map(), arrays: /* @__PURE__ */ new Map(), latches: /* @__PURE__ */ new Map() }));
+      this.pools.push({ start, vars: decls.filter((d) => d.task === start.task).map((d) => d.id), arrays: (program.arrays ?? []).filter((a2) => a2.task === start.task), slots, said: false });
+    }
   }
   *run() {
     const flow = yield* this.block(this.program.body, {});
     void flow;
     return "next";
   }
-  /** One frame: resume the body until it gives the frame back or ends. */
+  /** One frame: resume the body until it gives the frame back or ends, then each task that is running. */
   tick() {
-    if (this.done || !this.body) return;
     this.steps = 0;
-    try {
-      if (this.drive()) {
+    if (!this.done && this.body) {
+      try {
+        if (this.drive(this.body)) {
+          this.done = true;
+          this.body = null;
+        }
+      } catch (err) {
+        this.apart.length = 0;
+        if (!(err instanceof Stopped)) throw err;
         this.done = true;
         this.body = null;
+        this.depth = 0;
+      }
+    }
+    this.runTasks();
+  }
+  /** Whether a task of the program is still running. */
+  get tasksRunning() {
+    return this.pools.some((p) => p.slots.some((s) => s.exec));
+  }
+  /**
+   * The tasks' turn, after the program's: each that is running goes on until it gives the frame back or ends, in order of
+   * their start's number and then of their slot. A task started meanwhile has its first turn in this frame too.
+   */
+  runTasks() {
+    if (!this.pools.length) return;
+    this.taskFrame++;
+    do {
+      this.again = false;
+      for (const pool of this.pools) {
+        for (const slot of pool.slots) {
+          if (!slot.exec || slot.ran === this.taskFrame) continue;
+          slot.ran = this.taskFrame;
+          this.runSlot(pool, slot);
+        }
+      }
+    } while (this.again);
+  }
+  /** A task's turn: its cells in place of the slot's, its body driven as the program's is. */
+  runSlot(pool, slot) {
+    const exec = slot.exec;
+    const outer = this.apart, latches = this.latches;
+    this.taskNow = pool.slots.indexOf(slot) | pool.start.task << 8 | slot.gen << 16;
+    this.swap(pool, slot, true);
+    this.apart = slot.apart;
+    this.latches = slot.latches;
+    try {
+      if (this.drive(exec)) {
+        slot.exec = null;
+        slot.apart.length = 0;
       }
     } catch (err) {
-      this.apart.length = 0;
+      slot.apart.length = 0;
       if (!(err instanceof Stopped)) throw err;
-      this.done = true;
-      this.body = null;
+      slot.exec = null;
       this.depth = 0;
+    } finally {
+      this.taskNow = 0;
+      this.apart = outer;
+      this.latches = latches;
+      this.swap(pool, slot, false);
     }
   }
+  /** A slot's cells into the run's (`into`), or back out of them: between turns nothing of a task is among the run's. */
+  swap(pool, slot, into) {
+    const move = (run, own, id) => {
+      if (into) {
+        if (own.has(id)) run.set(id, own.get(id));
+        else run.delete(id);
+      } else {
+        if (run.has(id)) own.set(id, run.get(id));
+        else own.delete(id);
+        run.delete(id);
+      }
+    };
+    for (const id of pool.vars) {
+      move(this.vars, slot.vars, id);
+      move(this.unitVars, slot.units, id);
+      move(this.textVars, slot.texts, id);
+    }
+    for (const a2 of pool.arrays) {
+      if (into) this.arrays.set(a2.id, slot.arrays.get(a2.id) ?? this.newHeld(a2));
+      else {
+        const held = this.arrays.get(a2.id);
+        if (held) slot.arrays.set(a2.id, held);
+      }
+    }
+  }
+  newHeld(decl) {
+    return { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array(decl.length).fill(decl.kind === "number" ? 0 : false) };
+  }
+  /** The pool and slot a task's number names, while that task is in it; undefined for a number that is no running task's. */
+  taskOf(handle) {
+    const pool = this.pools.find((p) => p.start.task === (handle >>> 8 & 255));
+    const slot = pool?.slots[handle & 255];
+    return pool && slot?.exec && slot.gen === handle >>> 16 ? { pool, slot } : void 0;
+  }
   /** The run until it gives the frame back (false) or ends (true): the body, and above it each body that was handed over to be run apart. */
-  drive() {
+  drive(body2) {
     let send;
+    let thrown;
     for (; ; ) {
-      const top = this.apart[this.apart.length - 1] ?? this.body;
-      const r = top.next(send);
+      const top2 = this.apart[this.apart.length - 1] ?? body2;
+      let r;
+      try {
+        r = thrown ? top2.throw(thrown) : top2.next(send);
+      } catch (err) {
+        if (!(err instanceof Thrown) || !this.apart.length) throw err;
+        this.apart.pop();
+        thrown = err;
+        continue;
+      }
+      thrown = void 0;
       send = void 0;
       if (r.done) {
         if (!this.apart.length) return true;
@@ -2169,6 +2658,7 @@ var ProgramRun = class {
   /* ── storage ── */
   read(id, at) {
     const v = this.vars.get(id);
+    if (v === void 0 && this.held.has(id)) return 0;
     if (v === void 0) throw new Error(`The variable ${id} was read before it was declared${at ? ` (line ${at.line})` : ""}.`);
     return v;
   }
@@ -2208,7 +2698,7 @@ var ProgramRun = class {
     return void 0;
   }
   /**
-   * Room for `cells` in a growing array, as the game finds it (`python/trigscript.py`): a block twice the size from the
+   * Room for `cells` in a growing array, as the game finds it (`compiler/backend/heap.ts`): a block twice the size from the
    * heap, the old one given back. False, and said once, when the heap has none left.
    */
   grow(a2, cells, at) {
@@ -2229,9 +2719,9 @@ var ProgramRun = class {
    * back (the row was popped, and this is a copy of its handle kept somewhere) leads nowhere: in the game that is some
    * other array's cells by now, and here it is said.
    */
-  inner(decl, plain, release = false) {
+  inner(decl, plain2, release = false) {
     const nothing = () => ({ decl, cells: [], room: 0 });
-    const ptrs = plain(decl.through.ptr);
+    const ptrs = plain2(decl.through.ptr);
     const i = Number(this.read(decl.through.index)) | 0;
     if (!ptrs || i < 0 || i >= ptrs.cells.length) return nothing();
     const ptr = Number(ptrs.cells[i]);
@@ -2291,11 +2781,14 @@ var ProgramRun = class {
         yield* this.call(e.call);
         return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null;
       }
+      case "selected":
+        return this.sim.selectedUnit(e.index);
     }
   }
   /** The unit, when there is one and it is still on the map. */
   *living(e) {
     const u = yield* this.unit(e);
+    if (u && e.kind === "unitVar" && this.asDied.has(e.id)) return u;
     return u?.alive ? u : null;
   }
   *unitDo(e, verb, at) {
@@ -2305,15 +2798,17 @@ var ProgramRun = class {
     switch (verb.do) {
       case "kill":
       case "remove":
-        this.sim.game.gone(u, verb.do === "kill");
+        this.sim.game.gone(u, verb.do === "kill", void 0, false);
         this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at);
         break;
       case "give": {
         const to = this.sim.slotOf(verb.to);
-        if (to < 12) u.owner = to;
+        if (to < 12) this.sim.game.setOwner(u, to);
         break;
       }
+      // (The unit takes up the order and keeps it here: the simulator moves nothing, so it never arrives.)
       case "order":
+        u.orderId = ORDER_OF_VERB[verb.order];
         this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order });
         break;
       case "locate":
@@ -2325,7 +2820,7 @@ var ProgramRun = class {
         const raw = verb.do === "damage" ? Math.max(0, u.hp * 256 - step) : Math.min(u.maxHp * 256, u.hp * 256 + step);
         u.hp = Math.ceil(raw / 256);
         if (u.hp === 0) {
-          this.sim.game.gone(u, true);
+          this.sim.game.gone(u, true, void 0, false);
           this.sim.unitEvent(this, ActionType.KillUnit, u, at);
         }
         break;
@@ -2334,7 +2829,7 @@ var ProgramRun = class {
   }
   /* ── expressions ── */
   /**
-   * A number, the way the game computes it (`python/trigscript.py`): 32 bits, given here as the
+   * A number, the way the game computes it (`compiler/backend/emit.ts`): 32 bits, given here as the
    * signed reading of them (`| 0`). + − × and the bitwise operators are the same bits whichever
    * way they are read; what reads them one way or the other — ÷, %, a shift right, min and max, a
    * comparison — says which in the IR. A divisor of 0 gives 0, as `(a / 0) | 0` does.
@@ -2351,6 +2846,8 @@ var ProgramRun = class {
       }
       case "length":
         return this.arrays.get(e.array)?.cells.length ?? 0;
+      case "taskHandle":
+        return this.taskNow;
       case "pop":
         return Number(this.arrays.get(e.array)?.cells.pop() ?? 0) | 0;
       case "unary":
@@ -2411,6 +2908,13 @@ var ProgramRun = class {
         const args = [];
         for (const a2 of e.args) args.push(yield* this.num(a2));
         if (e.name === "abs") return Math.abs(args[0]) | 0;
+        if (e.name === "fmul") return fixedMul(args[0], args[1]);
+        if (e.name === "fdiv") return fixedDiv(args[0], args[1]);
+        if (e.name === "sqrt") return fixedSqrt(args[0], !!e.unsigned);
+        if (e.name === "atan2" || e.name === "sin" || e.name === "cos") {
+          const table2 = (this.arrays.get(e.table ?? "")?.cells ?? []).map((c2) => Number(c2) | 0);
+          return e.name === "atan2" ? fixedAtan2(args[0], args[1], table2) : fixedSin(args[0], args[1], table2, e.name === "cos");
+        }
         const seen = e.unsigned ? args.map((a2) => a2 >>> 0) : args;
         return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
       }
@@ -2440,7 +2944,7 @@ var ProgramRun = class {
   }
   /* ── texts ── */
   /**
-   * A text that was just made, as the game keeps it (`python/trigscript.py`): past `TEXT_BYTES` it is cut, and its
+   * A text that was just made, as the game keeps it (`compiler/backend/texts.ts`): past `TEXT_BYTES` it is cut, and its
    * bytes go into a block of the heap. When the heap has none, the text is empty — and both are said.
    */
   made(s, at, cameTo = bytesOf(s)) {
@@ -2468,8 +2972,11 @@ var ProgramRun = class {
   *parts(parts, used) {
     let out = "";
     for (const p of parts) {
-      if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
-      else if (p.kind === "value") {
+      if (p.kind === "number") out += p.fixed ? fixedText(yield* this.num(p.expr)) : String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      else if (p.kind === "char") {
+        const code = (yield* this.num(p.expr)) & 255;
+        if (code) out += String.fromCharCode(code);
+      } else if (p.kind === "value") {
         const v = yield* this.text(p.text);
         used.push(v);
         out += v.s;
@@ -2536,6 +3043,8 @@ var ProgramRun = class {
         this.used(of);
         return out;
       }
+      case "built":
+        return { s: this.sim.buffers.get(e.buffer) ?? "", room: 0, taken: false };
       case "textCall": {
         yield* this.call(e.call);
         const held = e.call.result ? this.textVars.get(e.call.result.decl.id) : void 0;
@@ -2550,11 +3059,11 @@ var ProgramRun = class {
   /** The texts kept in cells of arrays, by the number the cells hold for one: what moves a row moves numbers, and the text goes with them. */
   cellTexts = /* @__PURE__ */ new Map();
   lastCellText = 0;
-  releaseCellText(key) {
-    const old = key ? this.cellTexts.get(key) : void 0;
+  releaseCellText(key2) {
+    const old = key2 ? this.cellTexts.get(key2) : void 0;
     if (!old) return;
     if (old.room) this.sim.heap.give(old.room);
-    this.cellTexts.delete(key);
+    this.cellTexts.delete(key2);
   }
   *putText(id, e, at) {
     const v = this.owned(yield* this.text(e), at);
@@ -2645,6 +3154,8 @@ var ProgramRun = class {
       }
       case "ternary":
         return (yield* this.bool(e.cond)) ? yield* this.bool(e.whenTrue) : yield* this.bool(e.whenFalse);
+      case "running":
+        return !!this.taskOf((yield* this.num(e.task)) >>> 0);
       case "call":
         return Boolean(yield* this.call(e.call));
       case "textCompare": {
@@ -2674,15 +3185,22 @@ var ProgramRun = class {
     if (decl.kind === "unit") this.unitVars.set(decl.id, yield* this.unit(e));
     else this.store(decl.id, yield* this.init(e, decl.kind));
   }
+  /** A task's body, as its slot runs it: what it returns into is the task's own, and nothing reads it. */
+  *taskBody(c2) {
+    if (c2.result) this.declare(c2.result.decl);
+    const flow = yield* this.block(c2.body, { fn: { result: c2.result?.decl } });
+    if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a task reached its end (line ${c2.at.line}).`);
+    return "next";
+  }
   *call(c2) {
     if (c2.result) this.declare(c2.result.decl);
     const fn = c2.fn ? this.program.functions?.find((f) => f.id === c2.fn) : void 0;
     if (c2.fn && !fn) throw new Error(`The function ${c2.fn} is not one of the program's (line ${c2.at.line}).`);
-    let kept;
+    let kept2;
     if (fn) {
       const values = [];
       for (const p of c2.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init) : p.decl.kind === "text" ? this.owned(yield* this.text(p.init), c2.at) : yield* this.init(p.init, p.decl.kind));
-      if (c2.saves) kept = this.keep(c2);
+      if (c2.saves) kept2 = this.keep(c2);
       c2.params.forEach((p, i) => {
         this.declare(p.decl);
         if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i]);
@@ -2699,18 +3217,32 @@ var ProgramRun = class {
       }
     }
     const ctx = { fn: { result: c2.result?.decl } };
-    const flow = kept && fn ? yield { run: this.block(fn.body, ctx) } : yield* this.block(fn ? fn.body : c2.body, ctx);
+    let flow;
+    try {
+      flow = kept2 && fn ? yield { run: this.block(fn.body, ctx) } : yield* this.block(fn ? fn.body : c2.body, ctx);
+    } catch (err) {
+      if (kept2 && err instanceof Thrown) this.bringBack(kept2);
+      throw err;
+    }
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c2.at.line}).`);
-    if (kept) this.bringBack(kept);
+    if (kept2) this.bringBack(kept2);
     return c2.result && c2.result.kind !== "unit" && c2.result.kind !== "text" ? this.read(c2.result.decl.id) : 0;
   }
   /**
    * A call that may come back into the function it is in: what that function holds goes on the stack, as the game
-   * keeps it (`python/trigscript.py`) — its variables, and the handle of each array declared in it, which is "no block"
+   * keeps it (`compiler/backend/emit.ts`, `Emitter.keep`) — its variables, and the handle of each array declared in it, which is "no block"
    * for the length of the call. Past the depth the map allows the program stops, and says where.
    */
   keep(c2) {
     const saves = c2.saves;
+    if (this.depth >= this.sim.stackDepth && this.program.errors) {
+      this.store(this.program.errors.thrown, ERROR_CODES.RangeError);
+      const old = this.textVars.get(this.program.errors.message);
+      if (old?.room) this.sim.heap.give(old.room);
+      this.textVars.set(this.program.errors.message, { s: STACK_OVERFLOW_MESSAGE, room: 0 });
+      this.thrownAt = c2.at;
+      throw new Thrown();
+    }
     if (this.depth >= this.sim.stackDepth) {
       this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: c2.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
       throw new Stopped();
@@ -2781,10 +3313,10 @@ var ProgramRun = class {
         }
         const [addr, block2, chars] = cells;
         this.releaseCellText(block2.cells[i]);
-        const key = ++this.lastCellText;
-        this.cellTexts.set(key, v);
-        addr.cells[i] = key;
-        block2.cells[i] = v.room ? key : 0;
+        const key2 = ++this.lastCellText;
+        this.cellTexts.set(key2, v);
+        addr.cells[i] = key2;
+        block2.cells[i] = v.room ? key2 : 0;
         chars.cells[i] = [...v.s].length;
         return "next";
       }
@@ -2800,22 +3332,31 @@ var ProgramRun = class {
         this.declare(s.decl);
         const over = this.owned(yield* this.text(s.of), s.at);
         let flow = "next";
-        for (const ch of over.s) {
-          const old = this.textVars.get(s.decl.id);
-          const turn = this.made(ch, s.at);
-          if (old?.room) this.sim.heap.give(old.room);
-          this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
-          flow = yield* this.block(s.body, ctx);
-          if (flow === "break" || flow === "return") break;
+        try {
+          for (const ch of over.s) {
+            const old = this.textVars.get(s.decl.id);
+            const turn = this.made(ch, s.at);
+            if (old?.room) this.sim.heap.give(old.room);
+            this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
+            flow = yield* this.block(s.body, ctx);
+            if (flow === "break" || flow === "return") break;
+          }
+        } catch (err) {
+          if (err instanceof Thrown && over.room) this.sim.heap.give(over.room);
+          throw err;
         }
         if (over.room) this.sim.heap.give(over.room);
         return flow === "return" ? flow : "next";
       }
       case "unitLoop": {
         this.declare(s.decl);
-        for (const u of this.sim.matching(s.filter)) {
-          if (!u.alive) continue;
+        const dead = s.source === "died" || s.source === "killed";
+        if (dead) this.asDied.add(s.decl.id);
+        if (s.was) this.declare(s.was);
+        for (const { u, was } of s.source ? this.sim.eventUnits(s.source, s.filter, s.event) : this.sim.matching(s.filter).map((u2) => ({ u: u2, was: 0 }))) {
+          if (!dead && !u.alive) continue;
           this.unitVars.set(s.decl.id, u);
+          if (s.was) this.store(s.was.id, was);
           const flow = yield* this.block(s.body, ctx);
           if (flow === "break") break;
           if (flow === "return") return flow;
@@ -2825,16 +3366,16 @@ var ProgramRun = class {
       case "unitWrite": {
         const u = yield* this.living(s.unit);
         const field = s.field;
-        if (field === "invincible") {
+        if (UNIT_FLAGS.includes(field)) {
           const on = yield* this.bool(s.value);
-          if (u) u.invincible = on;
+          if (u) u[field] = on;
           return "next";
         }
         const value = yield* this.amount(s.value);
         if (!u) return "next";
         u[field] = Math.min(value, UNIT_FIELD_MAX[field] ?? 4294967295);
         if (field === "hp" && u.hp === 0) {
-          this.sim.game.gone(u, true);
+          this.sim.game.gone(u, true, void 0, false);
           this.sim.unitEvent(this, ActionType.KillUnit, u, s.at);
         }
         return "next";
@@ -2991,6 +3532,36 @@ var ProgramRun = class {
         for (let i = 0; i < n; i++) yield;
         return "next";
       }
+      case "parallel": {
+        const branches2 = s.branches.map((b) => this.block(b, {}));
+        const done = branches2.map(() => false);
+        for (; ; ) {
+          for (let i = 0; i < branches2.length; i++) {
+            if (done[i]) continue;
+            let send;
+            let thrown;
+            for (; ; ) {
+              const r = thrown ? branches2[i].throw(thrown) : branches2[i].next(send);
+              send = void 0;
+              thrown = void 0;
+              if (r.done) {
+                done[i] = true;
+                break;
+              }
+              if (r.value === void 0) break;
+              try {
+                send = yield r.value;
+              } catch (err) {
+                if (!(err instanceof Thrown)) throw err;
+                thrown = err;
+              }
+            }
+            if (done[i] && s.mode === "race") return "next";
+          }
+          if (done.every(Boolean)) return "next";
+          yield;
+        }
+      }
       case "action": {
         const record = { ...s.record };
         for (const v of s.variables ?? []) record[v.field] = yield* this.amount(v.expr);
@@ -3010,10 +3581,86 @@ var ProgramRun = class {
         this.sim.print(this, text, s.to, s.at);
         return "next";
       }
+      case "buildText": {
+        const used = [];
+        const more = yield* this.parts(s.parts, used);
+        this.used(...used);
+        const was = s.reset ? "" : this.sim.buffers.get(s.buffer) ?? "";
+        let text = was + more;
+        if (bytesOf(text) > BUILD_BYTES) {
+          if (bytesOf(was) <= BUILD_BYTES) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `This text came to more than the ${BUILD_BYTES.toLocaleString("en-US")} bytes a text put together piece by piece holds: it is cut off there, as it is in the game.` });
+          text = cutTo(text, BUILD_BYTES);
+        }
+        this.sim.buffers.set(s.buffer, text);
+        return "next";
+      }
+      case "select": {
+        const units = [];
+        for (const u of s.units) {
+          const got = yield* this.unit(u);
+          if (got?.alive && units.length < 12) units.push(got);
+        }
+        this.sim.selectUnits(units, this.sim.slotOf(s.player));
+        return "next";
+      }
+      case "syncSend": {
+        this.sim.readAt(s.player);
+        let value;
+        try {
+          value = yield* this.num(s.value);
+        } finally {
+          this.sim.readAt(null);
+        }
+        this.sim.syncSend(s.slot, s.player, value);
+        return "next";
+      }
       case "centerLocation": {
         const x = yield* this.amount(s.x);
         const y = yield* this.amount(s.y);
-        this.sim.centre(s.location, x, y);
+        const size = s.size ? { width: yield* this.amount(s.size.width), height: yield* this.amount(s.size.height) } : void 0;
+        this.sim.centre(s.location, x, y, size);
+        return "next";
+      }
+      case "start": {
+        const pool = this.pools.find((p) => p.start === s);
+        if (!pool) throw new Error(`The start of task ${s.task} is not one of the program's (line ${s.at.line}).`);
+        const values = [];
+        for (const p of s.call.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init) : p.decl.kind === "text" ? this.owned(yield* this.text(p.init), s.at) : this.kept(yield* this.init(p.init, p.decl.kind), p.decl));
+        const i = pool.slots.findIndex((slot2) => !slot2.exec);
+        if (i < 0) {
+          for (const v of values) if (v && typeof v === "object" && "room" in v && v.room) this.sim.heap.give(v.room);
+          if (!pool.said) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `${s.call.name ?? "The task"} did not start: all ${s.max} of this start's tasks are running. start(\u2026, { max: \u2026 }) lets more run at once.` });
+          pool.said = true;
+          if (s.handle) this.store(s.handle, 0);
+          return "next";
+        }
+        const slot = pool.slots[i];
+        slot.gen = slot.gen >= 65535 ? 1 : slot.gen + 1;
+        s.call.params.forEach((p, k) => {
+          this.declare(p.decl);
+          if (p.decl.kind === "unit") slot.units.set(p.decl.id, values[k]);
+          else if (p.decl.kind === "text") {
+            const old = slot.texts.get(p.decl.id);
+            if (old?.room) this.sim.heap.give(old.room);
+            slot.texts.set(p.decl.id, values[k]);
+          } else slot.vars.set(p.decl.id, values[k]);
+          this.vars.delete(p.decl.id);
+          this.unitVars.delete(p.decl.id);
+          this.textVars.delete(p.decl.id);
+        });
+        slot.exec = this.taskBody(s.call);
+        slot.apart = [];
+        slot.ran = 0;
+        this.again = true;
+        if (s.handle) this.store(s.handle, i | s.task << 8 | slot.gen << 16);
+        return "next";
+      }
+      case "cancel": {
+        const t = this.taskOf((yield* this.num(s.task)) >>> 0);
+        if (t) {
+          t.slot.exec = null;
+          t.slot.apart.length = 0;
+        }
         return "next";
       }
       case "call": {
@@ -3022,8 +3669,38 @@ var ProgramRun = class {
       }
       case "block":
         return yield* this.block(s.body, ctx);
+      case "try": {
+        try {
+          return yield* this.block(s.body, ctx);
+        } catch (err) {
+          if (!(err instanceof Thrown)) throw err;
+          return yield* this.block(s.catch, ctx);
+        }
+      }
+      case "throw": {
+        if (!s.rethrow) this.thrownAt = s.at;
+        throw new Thrown();
+      }
+      case "uncaught": {
+        const errors = this.program.errors;
+        if (!errors) throw new Error(`An uncaught error, but the program keeps none (line ${s.at.line}).`);
+        const code = this.read(errors.thrown);
+        const names = this.arrays.get(errors.names);
+        const name = names?.decl.texts?.[names.cells[code]] || "Error";
+        const message = this.textVars.get(errors.message)?.s ?? "";
+        const at = this.thrownAt ?? s.at;
+        this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `Uncaught ${name}${message ? `: ${message}` : ""}` });
+        this.sim.print(this, `TrigScript: uncaught ${name}: ${message}, line ${at.line}.`, 13, s.at);
+        this.store(errors.thrown, 0);
+        return "next";
+      }
       case "remark":
         return "next";
+      // (A map of our own's own statements, which only its backend makes and never hands the simulator.)
+      case "textBlock":
+      case "showText":
+      case "watch":
+        throw new Error(`the simulator does not run a ${s.kind}`);
     }
   }
   /** The unit a variable holds, by its source name; null for none or a unit that is gone. */
@@ -3098,6 +3775,8 @@ var ProgramSimulation = class {
   /** The arrays that grow inside others, by the number their handle's cell holds. */
   inner = /* @__PURE__ */ new Map();
   lastInner = 0;
+  /** What each buffer of `buildText` holds: one for the whole game, as in the game. */
+  buffers = /* @__PURE__ */ new Map();
   heap = {
     cells: HEAP_CELLS,
     top: 1,
@@ -3124,6 +3803,7 @@ var ProgramSimulation = class {
   conditionOf;
   readOf;
   nameOf;
+  colorOf;
   /** The units, the locations and who the players are: the trigger interpreter's, so both see one game. */
   game;
   /** What the programs wrote into the game's tables, as the cell stores it; a name as its text. */
@@ -3134,11 +3814,22 @@ var ProgramSimulation = class {
   /** The typed-line patterns of all the programs, in the order the game tries them: the first that matches a line is the one that line is. */
   chats = [];
   unitByName;
-  /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
+  /** What the players did, for the next frame and for the one running: "key:0:F7", "click:0:left", and a typed line as the pattern it matched with its values. */
   queued = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
   current = this.queued;
+  /** The keys and buttons down on the last frame, and on this one (what keyHeld() finds). */
+  down = /* @__PURE__ */ new Set();
+  downNow = /* @__PURE__ */ new Set();
+  lastDown = /* @__PURE__ */ new Map();
+  /** Whether a program reads a held key: then a press is worked out from the held keys, as the game does. */
+  heldKeys = false;
   /** Where each player's mouse is, in map pixels. */
   mice = /* @__PURE__ */ new Map();
+  /** Where each player's screen is on the map, its top left corner in pixels (`local.camera`; B5). */
+  cameras = /* @__PURE__ */ new Map();
+  /** sync() (B5): what arrived this frame, "slot:player" → the value + 1; and what was sent, arriving at the next frame. */
+  synced = /* @__PURE__ */ new Map();
+  sending = [];
   cycle = 0;
   /** The world is the caller's, run on the game's schedule: the programs run in its passes, and its frame is the game's. */
   shared;
@@ -3175,6 +3866,7 @@ var ProgramSimulation = class {
     this.conditionOf = options.condition;
     this.readOf = options.read;
     this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
+    this.colorOf = options.playerColor ?? ((p) => SLOT_COLOR_CODES[p] ?? SLOT_COLOR_CODES[7]);
     this.tableOf = options.table;
     const cellOf = (name, type) => {
       const f = TABLE_FIELDS.unit.find((x) => x.name === name);
@@ -3187,6 +3879,7 @@ var ProgramSimulation = class {
     };
     this.unitByName = options.unitByName ?? (() => void 0);
     for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c2) => c2.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
+    this.heldKeys = inputsOf(programs).sources.some((s) => s.source === "key" && s.held);
     this.current = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
     this.runs = programs.flatMap((p, i) => {
       const common = newCommon();
@@ -3232,22 +3925,22 @@ var ProgramSimulation = class {
     }
   }
   /** The players a player number means, to the run that is running. */
-  slotsOf(player) {
-    return this.game.players.of(player, this.world.current);
+  slotsOf(player3) {
+    return this.game.players.of(player3, this.world.current);
   }
   /** The one player a player number means where one is wanted (a mouse, a name, a table's row): the first of a group. */
-  slotOf(player) {
-    return this.slotsOf(player)[0] ?? player;
+  slotOf(player3) {
+    return this.slotsOf(player3)[0] ?? player3;
   }
   /** A player's ore and gas; a group's are its players' together. */
-  resourcesOf(player) {
+  resourcesOf(player3) {
     let ore = 0, gas = 0;
-    for (const p of this.slotsOf(player)) if (p < 12) {
+    for (const p of this.slotsOf(player3)) if (p < 12) {
       const s = this.stockOf(p);
       ore += s[0];
       gas += s[1];
     }
-    return [ore % U32, gas % U32];
+    return [ore % U322, gas % U322];
   }
   stockOf(slot) {
     let r = this.resources.get(slot);
@@ -3271,7 +3964,7 @@ var ProgramSimulation = class {
           ore += s[0];
           gas += s[1];
         }
-        return (c2.resource === ResourceType.Ore ? ore : c2.resource === ResourceType.Gas ? gas : ore + gas) % U32;
+        return (c2.resource === ResourceType.Ore ? ore : c2.resource === ResourceType.Gas ? gas : ore + gas) % U322;
       }
       case ConditionType.ElapsedTime:
         return Math.floor((this.shared ? this.world.frame : this.cycle) / FRAMES_PER_GAME_SECOND);
@@ -3282,31 +3975,87 @@ var ProgramSimulation = class {
   /** What a read finds: the caller's answer, else the simulation's own, else 0. */
   read(r) {
     const given = this.readOf?.(r, this);
-    if (given !== void 0) return Math.max(0, Math.trunc(given)) % U32;
+    if (given !== void 0) return Math.max(0, Math.trunc(given)) % U322;
     if (r.source === "condition") return this.quantity(r.record) ?? 0;
     if (r.source === "player" && r.fact === "slot") return this.game.players.slots.includes(this.slotOf(r.player)) ? 2 : 0;
     return 0;
   }
   /* ── what the players do ── */
   /** A key goes down: the next frame finds it. `player` is a slot (default: the simulated player). */
-  press(key, player = this.player) {
-    this.queued.events.add(`key:${player}:${keyName(key) ?? key}`);
+  press(key2, player3 = this.player) {
+    this.queued.events.add(`key:${player3}:${keyName(key2) ?? key2}`);
     return this;
   }
-  click(button = "left", player = this.player) {
-    this.queued.events.add(`click:${player}:${button}`);
+  click(button = "left", player3 = this.player) {
+    this.queued.events.add(`click:${player3}:${button}`);
     return this;
   }
-  moveMouse(x, y, player = this.player) {
-    this.mice.set(player, { x, y });
+  moveMouse(x, y, player3 = this.player) {
+    this.mice.set(player3, { x, y });
     return this;
+  }
+  /** What each player has selected (B5): \`local.selected\`, \`local.selectionCount\`; select() and the tests set it. */
+  selections = /* @__PURE__ */ new Map();
+  /** A player selects units: what \`local.selected\` reads at their computer, and what select() makes it. */
+  selectUnits(units, player3 = this.player) {
+    this.selections.set(player3, units.slice(0, 12));
+    return this;
+  }
+  /** The unit in a slot of the selection at the computer a program reads (\`localRead\`'s), if it is still there. */
+  selectedUnit(index) {
+    const u = this.selections.get(this.sendingFrom ?? this.slotOf(13))?.[index];
+    return u?.alive ? u : null;
+  }
+  /** A player's screen moves: its top left corner to this place on the map, in pixels (what \`local.camera\` reads). */
+  moveCamera(x, y, player3 = this.player) {
+    this.cameras.set(player3, { x, y });
+    return this;
+  }
+  /**
+   * \`local.…\` (B5): what this computer knows. The simulator runs every computer's programs at once, so a program reads
+   * the computer of the player it runs for, and a sync()'s value is read at the computer of the player it is sent from
+   * (\`sendingFrom\`).
+   */
+  sendingFrom = null;
+  localRead(name) {
+    const at = this.sendingFrom ?? this.slotOf(13);
+    const camera = this.cameras.get(at) ?? { x: 0, y: 0 };
+    const mouse = this.mice.get(at) ?? camera;
+    switch (name) {
+      case "local.player":
+        return at;
+      case "local.camera.x":
+        return camera.x;
+      case "local.camera.y":
+        return camera.y;
+      case "local.mouse.x":
+        return mouse.x - camera.x;
+      case "local.mouse.y":
+        return mouse.y - camera.y;
+      default: {
+        const slot = /^local\.selection\[(\d+)\]$/.exec(name);
+        if (!slot) return void 0;
+        const u = this.selections.get(at)?.[Number(slot[1])];
+        return u?.alive ? u.slot + 1 : 0;
+      }
+    }
+  }
+  /** While a sync()'s value is worked out: whose computer's local values it reads. */
+  readAt(player3) {
+    this.sendingFrom = player3 === null ? null : this.slotOf(player3);
+  }
+  /** sync()'s first half: the slot's arrival cleared everywhere, and the value on its way, arriving at the next frame. */
+  syncSend(slot, player3, value) {
+    const key2 = `${slot}:${this.slotOf(player3)}`;
+    this.synced.delete(key2);
+    this.sending.push([key2, Math.min(Math.max(0, Math.trunc(value)), 1048574) + 1]);
   }
   /** A player sends a line of chat: the next frame finds it, as the first of the programs' patterns it matches — or not at all. */
-  type(line, player = this.player) {
+  type(line, player3 = this.player) {
     for (const c2 of this.chats) {
       const values = matchChat(c2, line, this.unitByName);
       if (values) {
-        this.queued.lines.set(player, { pattern: c2.pattern, values });
+        this.queued.lines.set(player3, { pattern: c2.pattern, values });
         break;
       }
     }
@@ -3317,11 +4066,13 @@ var ProgramSimulation = class {
     const p = this.slotOf(i.player);
     switch (i.source) {
       case "key":
-        return this.current.events.has(`key:${p}:${i.key}`) ? 1 : 0;
+        return (i.held ? this.downNow : this.current.events).has(`key:${p}:${i.key}`) ? 1 : 0;
       case "click":
         return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
       case "mouse":
         return this.mice.get(p)?.[i.axis] ?? 0;
+      case "sync":
+        return this.synced.get(`${i.slot}:${p}`) ?? 0;
       case "chat": {
         const line = this.current.lines.get(p);
         if (!line || line.pattern !== i.pattern) return 0;
@@ -3330,9 +4081,9 @@ var ProgramSimulation = class {
     }
   }
   /* ── units and tables ── */
-  /** The living units a filter matches, in table order. */
+  /** The living units a filter matches, in the order a program's loop comes to them (the players' lists: `World.listed`). */
   matching(f) {
-    return this.game.matching(f.owner === void 0 ? void 0 : this.slotsOf(f.owner), f.type, f.at);
+    return this.game.listed(f.owner === void 0 ? void 0 : this.slotsOf(f.owner), f.type, f.at);
   }
   /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
   pick(by, f, near, mouse, within) {
@@ -3356,21 +4107,83 @@ var ProgramSimulation = class {
     return best;
   }
   /** A location centred on a point, its size kept. */
-  centre(location, x, y) {
-    this.game.centre(location, x, y);
+  centre(location, x, y, size) {
+    this.game.centre(location, x, y, size);
   }
   cellKey(c2) {
     return `${c2.name}:${c2.player ? this.slotOf(c2.index) : c2.index}${c2.key !== void 0 ? `:${c2.key}` : ""}`;
   }
   /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
   tableRead(c2) {
+    if (c2.name === "memory.game.frame") return this.frame;
+    if (c2.name === "memory.vision.countdown") return this.countdown;
+    const local = c2.name.startsWith("local.") ? this.localRead(c2.name) : void 0;
+    if (local !== void 0) return local;
+    if (c2.name.startsWith("location.")) return this.locations.get(c2.index + 1)?.[c2.name.slice("location.".length)] ?? 0;
     const stored = this.tables.get(this.cellKey(c2));
     if (typeof stored === "number") return Math.floor(stored / (c2.scale ?? 1));
     const given = this.tableOf?.(c2);
     return given === void 0 ? 0 : Math.max(0, Math.trunc(given));
   }
+  /**
+   * The fog of war, as far as the simulator draws it: each player's tiles, 0 never seen, 1 seen before, 2 seen now. A
+   * unit lights the tiles of its sight when it is made — a unit whose type's sight a program set (\`stats(t).sight\`),
+   * with the shape a flying unit of that sight has in the game (FOG_SHAPES), which is what the fog library draws with —
+   * and the vision countdown (\`memory.vision.countdown\`) run down to 0 at the start of a frame puts every tile seen
+   * now back to seen before and has the units there light theirs again, as the game's frame step does.
+   */
+  vision = /* @__PURE__ */ new Map();
+  countdown = 0;
+  visionOf(player3) {
+    let v = this.vision.get(player3);
+    if (!v) {
+      v = new Uint8Array(FOG_SIZE * FOG_SIZE);
+      this.vision.set(player3, v);
+    }
+    return v;
+  }
+  reveal(u) {
+    const sight = this.tables.get(`unit.sight:${u.type}`);
+    if (typeof sight !== "number" || sight < 1 || u.owner > 7) return;
+    const shape = FOG_SHAPES[Math.min(sight, FOG_SHAPES.length) - 1];
+    const cy = shape.findIndex((r) => r.includes("@")), cx = shape[cy].indexOf("@");
+    const tx = Math.floor(u.x / 32), ty = Math.floor(u.y / 32), v = this.visionOf(u.owner);
+    shape.forEach((row, dy) => {
+      for (let dx = 0; dx < row.length; dx++) if (row[dx] !== ".") {
+        const x = tx + dx - cx, y = ty + dy - cy;
+        if (x >= 0 && y >= 0 && x < FOG_SIZE && y < FOG_SIZE) v[y * FOG_SIZE + x] = 2;
+      }
+    });
+  }
+  /** At the start of a frame: the countdown, and the wipe when it runs out. */
+  visionStep() {
+    if (this.countdown <= 0) return;
+    if (--this.countdown > 0) return;
+    this.countdown = 100;
+    for (const v of this.vision.values()) for (let i = 0; i < v.length; i++) if (v[i] === 2) v[i] = 1;
+    for (const u of this.world.game.units) if (u.alive) this.reveal(u);
+  }
+  /** What a player sees of the fog, as GameSim.fog gives it from the game: "#" now, "+" before, "." never. */
+  fog(player3, area) {
+    const w = this.tableOf?.({ name: "memory.map.width", base: 5763540, stride: 0, index: 0, width: 2 }) || 128;
+    const h = this.tableOf?.({ name: "memory.map.height", base: 5763542, stride: 0, index: 0, width: 2 }) || 128;
+    const { x = 0, y = 0, width = w, height = h } = area ?? {};
+    const v = this.visionOf(player3), rows = [];
+    for (let ty = y; ty < Math.min(y + height, FOG_SIZE); ty++) {
+      let row = "";
+      for (let tx = x; tx < Math.min(x + width, FOG_SIZE); tx++) row += ".+#"[v[ty * FOG_SIZE + tx]];
+      rows.push(row);
+    }
+    return rows;
+  }
   /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
   tableWrite(c2, value, scaled, text) {
+    if (c2.name === "memory.vision.countdown") this.countdown = value;
+    if (c2.name.startsWith("location.")) {
+      const n = c2.index + 1, b = this.locations.get(n) ?? { left: 0, top: 0, right: 0, bottom: 0 };
+      this.locations.set(n, { ...b, [c2.name.slice("location.".length)]: Math.min(value, cellMax(4)) });
+      return;
+    }
     if (text !== void 0) {
       this.tables.set(this.cellKey(c2), text);
       return;
@@ -3384,7 +4197,7 @@ var ProgramSimulation = class {
     this.events.push({ cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...extra.location ? { location: extra.location } : {} }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
   partText(p) {
-    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
+    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : p.kind === "color" ? String.fromCharCode(this.colorOf(this.slotOf(p.player))) : "";
   }
   /** A printed text: an event like a Display Text action's, the text already filled in. */
   print(run, text, to, at) {
@@ -3394,7 +4207,7 @@ var ProgramSimulation = class {
   act(run, a2, at, programText) {
     if (a2.type === ActionType.SetResources) {
       const n = a2.target >>> 0;
-      const set = (cur) => a2.modifier === SetModifier.SetTo ? n : a2.modifier === SetModifier.Add ? (cur + n) % U32 : Math.max(0, cur - n);
+      const set = (cur) => a2.modifier === SetModifier.SetTo ? n : a2.modifier === SetModifier.Add ? (cur + n) % U322 : Math.max(0, cur - n);
       for (const slot of this.slotsOf(a2.player)) {
         if (slot >= 12) continue;
         const stock = this.stockOf(slot);
@@ -3429,7 +4242,9 @@ var ProgramSimulation = class {
       case ActionType.PreserveTrigger:
         return;
       default: {
-        this.game.act(a2, run.player);
+        const made = [];
+        this.game.act(a2, run.player, made);
+        for (const u of made) this.reveal(u);
         const ev = { cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: a2 };
         const text = programText ?? this.world.text(a2.text);
         if (text !== void 0) ev.text = text;
@@ -3437,10 +4252,73 @@ var ProgramSimulation = class {
       }
     }
   }
+  /**
+   * The frame's events pass (on.created / on.died), as the game's lowering has it: a unit is seen the first time a pass
+   * finds it on the map, and its death is found by the first pass after it, once. A unit made and gone between two
+   * passes is neither. Each list is the latest first, as the game's lists keep them.
+   */
+  eventsFrom = 0;
+  /** Each unit seen on the map, with its order and type as the pass before found them (on.order / on.morphed). */
+  seen = /* @__PURE__ */ new Map();
+  events_ = { created: [], died: [], killed: [], ordered: [], morphed: [] };
+  eventsPass() {
+    const out = { created: [], died: [], killed: [], ordered: [], morphed: [] };
+    for (const [u, last] of [...this.seen].reverse()) {
+      if (!u.alive) {
+        out.died.push({ u, was: 0 });
+        if (u.killedBy !== void 0) out.killed.push({ u, was: u.killedBy });
+        this.seen.delete(u);
+        continue;
+      }
+      if (u.orderId !== last.order) {
+        out.ordered.push({ u, was: last.order });
+        last.order = u.orderId;
+      }
+      if (u.type !== last.type) {
+        out.morphed.push({ u, was: last.type });
+        last.type = u.type;
+      }
+    }
+    const all = this.game.units;
+    for (; this.eventsFrom < all.length; this.eventsFrom++) {
+      const u = all[this.eventsFrom];
+      if (u.alive) {
+        out.created.push({ u, was: 0 });
+        this.seen.set(u, { order: u.orderId, type: u.type });
+      }
+    }
+    out.created.reverse();
+    this.events_ = out;
+  }
+  /**
+   * What this frame's events pass found that a filter matches, each with what the unit was (the killer, the order it had,
+   * the type it was): the units that came on, took up an order or turned into another type and are still here, or the
+   * ones that died, as they died.
+   */
+  eventUnits(source, f, event = {}) {
+    const owners = f.owner === void 0 ? void 0 : this.slotsOf(f.owner);
+    const by = event.by === void 0 ? void 0 : this.slotsOf(event.by);
+    const dead = source === "died" || source === "killed";
+    return this.events_[source].filter(({ u, was }) => (dead || u.alive) && this.game.fits(u, owners, f.type, f.at) && (event.order === void 0 || u.orderId === event.order) && (!by || by.includes(was)));
+  }
   /** One frame: every program in order, from where it left off. */
   step() {
+    this.eventsPass();
+    this.visionStep();
     this.current = this.queued;
     this.queued = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
+    this.synced.clear();
+    for (const [key2, value] of this.sending) this.synced.set(key2, value);
+    this.sending = [];
+    const down = new Set([...this.current.events].filter((e) => e.startsWith("key:") || e.startsWith("click:")));
+    for (const e of down) if (this.down.has(e)) this.current.events.delete(e);
+    this.down = down;
+    for (const e of down) this.lastDown.set(e, this.frame);
+    const was = this.downNow;
+    this.downNow = new Set([...this.lastDown].filter(([, f]) => this.frame - f <= HELD_GRACE).map(([e]) => e));
+    if (this.heldKeys) {
+      for (const e of [...this.current.events]) if (e.startsWith("key:") && (!this.downNow.has(e) || was.has(e))) this.current.events.delete(e);
+    }
     for (const run of this.runs) {
       this.world.current = run.player;
       try {
@@ -3459,32 +4337,250 @@ var ProgramSimulation = class {
   }
   /** Whether every program has ended. */
   finished() {
-    return this.runs.every((r) => r.done);
+    return this.runs.every((r) => r.done && !r.tasksRunning);
   }
   /** A program's run: the program by its place in the list or its name, and of a per-player program the player's (the first by default). */
-  runOf(program = 0, player) {
-    return this.runs.find((r) => (typeof program === "number" ? r.index === program : r.program.name === program) && (player === void 0 || r.player === player));
+  runOf(program = 0, player3) {
+    return this.runs.find((r) => (typeof program === "number" ? r.index === program : r.program.name === program) && (player3 === void 0 || r.player === player3));
   }
   /** The unit a variable holds by its source name, in a program (the first by default). */
-  unit(name, program = 0, player) {
-    return this.runOf(program, player)?.unitValue(name) ?? null;
+  unit(name, program = 0, player3) {
+    return this.runOf(program, player3)?.unitValue(name) ?? null;
   }
   /** A variable's value by its source name, in a program (the first by default). */
-  value(name, program = 0, player) {
-    return this.runOf(program, player)?.value(name);
+  value(name, program = 0, player3) {
+    return this.runOf(program, player3)?.value(name);
   }
   /** A text variable's characters by its source name, in a program (the first by default). */
-  text(name, program = 0, player) {
-    return this.runOf(program, player)?.textValue(name);
+  text(name, program = 0, player3) {
+    return this.runOf(program, player3)?.textValue(name);
   }
   /** An array's cells, by its name in the source. */
-  list(name, program = 0, player) {
-    return this.runOf(program, player)?.list(name);
+  list(name, program = 0, player3) {
+    return this.runOf(program, player3)?.list(name);
   }
 };
 
 // compiler/testing.ts
+var ExpectError = class extends Error {
+  expected;
+  actual;
+  constructor(message, expected, actual) {
+    super(message);
+    this.name = "ExpectError";
+    this.expected = expected;
+    this.actual = actual;
+  }
+};
+var DEFAULT_SEED = 24301;
+var UNTIL_FRAMES = 2400;
 var isTestFile = (path) => /\.test\.ts$/i.test(path);
+var WORLD = /* @__PURE__ */ Symbol.for("trigscript.world");
+var mulberry = (seed) => () => {
+  let t = seed += 1831565813;
+  t = Math.imul(t ^ t >>> 15, t | 1);
+  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+  return ((t ^ t >>> 14) >>> 0) / 4294967296;
+};
+var TestSim = class {
+  [WORLD] = true;
+  /** Set by `expect(sim).toHaveFaulted`: the faults are the test's business, and do not fail it by themselves. */
+  faultsExpected = false;
+  rng = mulberry(DEFAULT_SEED);
+  world;
+  programs;
+  constructor(triggers, ir, strings, options, as) {
+    const random = () => this.rng();
+    const stats = options.unitStats ?? {};
+    this.world = new Simulation(triggers, {
+      everyFrame: ir.length > 0,
+      strings,
+      random,
+      units: options.units,
+      locations: options.locations,
+      players: options.players,
+      forces: options.forces,
+      computers: options.computers,
+      unitStats: (type) => stats[type],
+      properties: (slot) => options.properties?.[slot - 1] ?? void 0,
+      ...as !== void 0 ? { player: as } : options.players ? {} : { player: ir[0]?.owner !== void 0 && ir[0].owner < 12 ? ir[0].owner : void 0 }
+    });
+    const names = options.unitNames ?? {};
+    this.programs = new ProgramSimulation(ir, { world: this.world, strings, random, heapCells: options.heapCells, stackDepth: options.stackDepth, unitStats: (type) => stats[type], unitByName: (lower) => names[lower] });
+  }
+  /** How many frames have run: the game's frame number. */
+  get frame() {
+    return this.world.frame;
+  }
+  /** `random()` from this number on: the same run every time. Before anything that draws one. */
+  seed(n) {
+    this.rng = mulberry(n >>> 0);
+    return this;
+  }
+  /* ── time ── */
+  frames(n = 1) {
+    for (let i = 0; i < n; i++) if (this.world.tick()) this.programs.step();
+    return this;
+  }
+  seconds(n) {
+    return this.frames(Math.round(n * FRAMES_PER_SECOND));
+  }
+  /** Frames until `done()` is true: asked before the first and after each. The test fails when `most` frames pass. */
+  until(done, most = UNTIL_FRAMES) {
+    for (let i = 0; ; i++) {
+      if (done()) return this;
+      if (i >= most) throw new ExpectError(`until: still not true after ${most} frames`);
+      this.frames(1);
+    }
+  }
+  /* ── what the test does to the world ── */
+  /** Units of a type for a player at a location's centre; they are given back. */
+  place(player3, type, at, n = 1) {
+    const { x, y } = this.world.game.centreOf(at);
+    const made = [];
+    for (let i = 0; i < n; i++) {
+      const u = this.world.game.create(type, player3, x, y);
+      if (u) made.push(u);
+    }
+    return made;
+  }
+  /** What a fight is in a test. `by`: the player the kill is counted for. */
+  kill(unit, by) {
+    this.world.game.gone(unit, true, by);
+    return this;
+  }
+  remove(unit) {
+    this.world.game.gone(unit, false);
+    return this;
+  }
+  give(unit, to) {
+    this.world.game.setOwner(unit, to);
+    return this;
+  }
+  /** A unit turns into another type and stays the same unit: the new type's hit points and shields, in the same part of them. */
+  morph(unit, type) {
+    if (!unit.alive) return this;
+    const s = this.world.game.stats(type) ?? {};
+    const maxHp = Math.max(1, s.hp ?? unit.maxHp), maxShields = Math.max(0, s.shields ?? 0);
+    unit.hp = Math.max(1, Math.round(unit.hp * maxHp / Math.max(1, unit.maxHp)));
+    unit.shields = unit.maxShields ? Math.round(unit.shields * maxShields / unit.maxShields) : maxShields;
+    Object.assign(unit, { type, maxHp, maxShields });
+    return this;
+  }
+  /** A unit to a location's centre, or to a point. */
+  move(unit, to) {
+    const p = typeof to === "number" ? this.world.game.centreOf(to) : to;
+    if (unit.alive) {
+      unit.x = p.x;
+      unit.y = p.y;
+    }
+    return this;
+  }
+  /* ── what the players do ── */
+  press(key2, player3) {
+    this.programs.press(key2, player3);
+    return this;
+  }
+  click(button = "left", player3) {
+    this.programs.click(button, player3);
+    return this;
+  }
+  type(line, player3) {
+    this.programs.type(line, player3);
+    return this;
+  }
+  moveMouse(x, y, player3) {
+    this.programs.moveMouse(x, y, player3);
+    return this;
+  }
+  moveCamera(x, y, player3) {
+    this.programs.moveCamera(x, y, player3);
+    return this;
+  }
+  selectUnits(units, player3) {
+    this.programs.selectUnits(units, player3);
+    return this;
+  }
+  /* ── the world read back ── */
+  owners(player3) {
+    return this.world.game.players.of(player3, this.world.player);
+  }
+  count(player3, type, at) {
+    return this.world.game.matching(this.owners(player3), type, at).length;
+  }
+  /** The units on the map, in the order of the game's unit table. */
+  units(filter = {}) {
+    return this.world.game.matching(filter.owner === void 0 ? void 0 : this.owners(filter.owner), filter.type, filter.at);
+  }
+  resources(player3) {
+    const [ore, gas] = this.programs.resourcesOf(player3);
+    return { ore, gas };
+  }
+  deaths(player3, type) {
+    return this.world.death(player3, type);
+  }
+  kills(player3, type) {
+    return this.world.game.kills(this.owners(player3), type);
+  }
+  switch(n) {
+    return this.world.switches[n] === 1;
+  }
+  /** The fog of war as the simulator draws it: of the units a program set the sight of (simulateIr.ts, fog). */
+  fog(player3, area) {
+    return this.programs.fog(player3, area);
+  }
+  /** Where a location is now. */
+  location(n) {
+    const b = this.world.game.locations.get(n);
+    return b ? { ...b } : void 0;
+  }
+  /**
+   * A program's variables by the names in the source: numbers, booleans, texts, arrays, a
+   * record as an object, a unit (null for none). The program by its name (its `name`
+   * option) or its place in the script; of a per-player program, `player`'s. A name the
+   * program does not have is undefined.
+   */
+  program(name = 0, player3) {
+    const run = this.programs.runOf(name, player3);
+    if (!run) {
+      const known = [...new Set(this.programs.runs.map((r) => r.program.name).filter(Boolean))];
+      throw new Error(typeof name === "number" ? `There is no program ${name}: the script has ${new Set(this.programs.runs.map((r) => r.index)).size}.` : `There is no program named "${name}"${player3 !== void 0 ? ` that runs for P${player3 + 1}` : ""}. ${known.length ? `Named: ${known.join(", ")}.` : 'A program is named by its option: program(() => { \u2026 }, { name: "waves" }).'}`);
+    }
+    return new Proxy({}, { get: (_, key2) => typeof key2 === "string" ? run.lookup(key2) : void 0, has: (_, key2) => typeof key2 === "string" && run.lookup(key2) !== void 0 });
+  }
+  /** What was shown, in order: to everybody, or what one player saw. */
+  printed(player3) {
+    const shown = (to, runner) => player3 === void 0 || this.world.game.players.of(to, runner).includes(player3);
+    const lines = [];
+    this.world.events.forEach((e, i) => {
+      if (e.action.type === ActionType.DisplayText && e.text !== void 0 && shown(e.action.player || 13, e.player)) lines.push({ frame: e.frame, order: i, text: e.text });
+    });
+    this.programs.events.forEach((e, i) => {
+      if (e.action.type === ActionType.DisplayText && e.text !== void 0 && shown(e.action.player || 13, e.player)) lines.push({ frame: e.frame, order: this.world.events.length + i, text: e.text });
+    });
+    return lines.sort((a2, b) => a2.frame - b.frame || a2.order - b.order).map((l) => l.text);
+  }
+  /** Everything that happened, by frame. `sourceOf` says where a trigger came from. */
+  log(sourceOf = () => null) {
+    const out = [];
+    const say = (action, text) => {
+      const name = actionDef(action.type)?.name ?? `Action ${action.type}`;
+      return text !== void 0 ? `${name} \u2014 ${text}` : name;
+    };
+    this.world.events.forEach((e, i) => {
+      const at = sourceOf(e.trigger);
+      out.push({ frame: e.frame, order: i, player: e.player, text: say(e.action, e.text), ...at ? { file: at.file, line: at.line } : {} });
+    });
+    this.programs.events.forEach((e, i) => out.push({ frame: e.frame, order: this.world.events.length + i, player: e.player, text: say(e.action, e.text), file: e.at.file, line: e.at.line }));
+    return out.sort((a2, b) => a2.frame - b.frame || a2.order - b.order).map(({ order: _order, ...e }) => e);
+  }
+  get events() {
+    return this.log();
+  }
+  get faults() {
+    return this.programs.faults;
+  }
+};
 
 // compiler/record.ts
 var CONDITION_FIELDS = ["type", "location", "player", "amount", "unitId", "comparison", "resource"];
@@ -3971,7 +5067,7 @@ var TECH_NAMES = [
 
 // compiler/names.ts
 var ANYWHERE_INDEX = 63;
-var allTables = (n) => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs];
+var allTables = (n) => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs, n.orders, n.sounds];
 function identifier(name) {
   const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
   let id = words.map((w) => w[0].toUpperCase() + w.slice(1)).join("");
@@ -4035,7 +5131,7 @@ function aiScriptEntries() {
 }
 var defaultSwitchName = (index) => `Switch ${index + 1}`;
 function scriptNames(src = {}) {
-  const withMap = !!(src.forceNames || src.locations || src.switchNames || src.unitCustomName);
+  const withMap = !!(src.forceNames || src.locations || src.switchNames || src.unitCustomName || src.sounds);
   const locations = [{ value: 0, keys: ["NoLocation", "No Location"] }];
   const listed = (src.locations ?? []).slice().sort((a2, b) => a2.index - b.index);
   if (!listed.some((l) => l.index === ANYWHERE_INDEX)) listed.push({ index: ANYWHERE_INDEX, name: "Anywhere" });
@@ -4058,7 +5154,13 @@ function scriptNames(src = {}) {
     aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries()),
     weapons: table("weapons", "Weapon", "Weapons, for stats() and a unit type's groundWeapon / airWeapon.", [...WEAPON_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })), { value: WEAPON_NAMES.length, keys: ["None"] }]),
     upgrades: table("upgrades", "Upgrade", "Upgrades, for stats().", UPGRADE_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
-    techs: table("techs", "Tech", "Technologies, for stats().", TECH_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })))
+    techs: table("techs", "Tech", "Technologies, for stats().", TECH_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
+    orders: table("orders", "Order", "Orders, what a unit is doing: u.orderId, and what on.order() listens for.", ORDER_NAMES.map((name, id) => ({ value: id, keys: [name] }))),
+    // `staredit\wav\bad apple.ogg` is sounds.BadApple — the file's name without its folder or extension — or by its path.
+    sounds: table("sounds", "Sound", "The map's sounds (the Sound Editor's list), for playWav() and transmission().", (src.sounds ?? []).filter((w) => w.stringIndex > 0).map((w) => {
+      const file = w.path.split(/[\\/]/).pop() ?? w.path;
+      return { value: w.stringIndex, keys: [identifier(file.replace(/\.[^.]*$/, "")), w.path] };
+    }))
   };
 }
 function defaultScriptNames() {
@@ -4068,13 +5170,1191 @@ function entryFor(t, value) {
   return t.entries.find((e) => e.value === value);
 }
 
+// compiler/jsx.ts
+var TEXT_COLORS = Object.freeze({
+  white: 4,
+  grey: 5,
+  red: 8,
+  orange: 17,
+  yellow: 3,
+  paleYellow: 25,
+  green: 7,
+  darkGreen: 24,
+  sage: 29,
+  teal: 15,
+  cyan: 31,
+  blue: 14,
+  lightBlue: 28,
+  paleBlue: 2,
+  purple: 16,
+  lavender: 30,
+  brown: 21,
+  cream: 27
+});
+var DEFAULT_COLOR = TEXT_COLORS.white;
+var EMPTY_COLOR = TEXT_COLORS.lavender;
+var JSX_ELEMENTS = Object.freeze({
+  line: ["color"],
+  span: ["color"],
+  cell: ["color"],
+  bar: ["value", "max", "width", "color"]
+});
+
+// compiler/memory.ts
+var MEMORY_GROUPS = {
+  vision: ["MemoryVision", "How the game keeps fog of war."],
+  game: ["MemoryGame", "The game as a whole."],
+  map: ["MemoryMap", "The map being played."]
+};
+var MEMORY_FIELDS = [
+  {
+    path: ["vision", "countdown"],
+    base: 5361304,
+    width: 4,
+    doc: "Frames until the game works out again what every player sees. It counts down from 100 each frame; at 0 every tile goes back to fog and every unit reveals what it sees again. Between, a tile once revealed stays revealed. Write 1 after drawing and the next frame starts from a wiped board \u2014 `fog` does this for you.",
+    remastered: "Remastered: read and written as in 1.16.1 (its own EUD emulator; its frame step is 1.16.1's line for line). Played: the S4 fog probes."
+  },
+  {
+    path: ["game", "frame"],
+    base: 5763644,
+    width: 4,
+    readonly: true,
+    doc: "Game frames since the game began: 24 a second on Fastest, the same on every player's computer.",
+    remastered: "Remastered: read allowed (its own EUD emulator). The game keeps it; a write would only confuse its own count."
+  },
+  {
+    path: ["map", "width"],
+    base: 5763540,
+    width: 2,
+    readonly: true,
+    doc: "The map's width, in tiles (a tile is 32 pixels).",
+    remastered: "Remastered: read allowed (its own EUD emulator)."
+  },
+  {
+    path: ["map", "height"],
+    base: 5763542,
+    width: 2,
+    readonly: true,
+    doc: "The map's height, in tiles (a tile is 32 pixels).",
+    remastered: "Remastered: read allowed (its own EUD emulator)."
+  }
+];
+var LOCAL_FIELDS = [
+  {
+    path: ["player", ""],
+    base: 5318276,
+    width: 4,
+    readonly: true,
+    doc: "The player sitting at this computer: 0 for Player 1, 1 for Player 2, \u2026 Every computer has its own.",
+    remastered: "Remastered: the real local player number (its own EUD emulator). Played: 0 in a game hosted alone."
+  },
+  {
+    path: ["camera", "x"],
+    base: 6456460,
+    width: 4,
+    readonly: true,
+    doc: "Where this computer's screen is on the map: the left edge, in pixels. The screen is 640 pixels wide in Classic graphics and 853 in Remastered's at 16:9.",
+    remastered: "Remastered: the real camera, read live (its own EUD emulator); a write is ignored \u2014 centerView() moves it. Played."
+  },
+  {
+    path: ["camera", "y"],
+    base: 6456488,
+    width: 4,
+    readonly: true,
+    doc: "Where this computer's screen is on the map: the top edge, in pixels.",
+    remastered: "Remastered: the real camera, read live (its own EUD emulator); a write is ignored. Played."
+  },
+  {
+    path: ["mouse", "x"],
+    base: 7134660,
+    width: 4,
+    readonly: true,
+    doc: "Where this computer's mouse is on the screen, from its left edge, in the game's pixels: 0 to 639 in Classic graphics, to 852 in Remastered's at 16:9. On the map it is local.camera.x + local.mouse.x; mouse(p) is that place, sent to every computer.",
+    remastered: "Remastered: its input record, read live; in widescreen wider than 640 (2560 screen pixels read as 853). Played."
+  },
+  {
+    path: ["mouse", "y"],
+    base: 7134664,
+    width: 4,
+    readonly: true,
+    doc: "Where this computer's mouse is on the screen, from its top edge, in the game's pixels: 0 to 479.",
+    remastered: "Remastered: its input record, read live. Played."
+  }
+];
+
+// compiler/cover.ts
+var prepared = /* @__PURE__ */ new WeakMap();
+function prepareShapes(shapes) {
+  const hit = prepared.get(shapes);
+  if (hit) return hit;
+  const cells = [], runs = [];
+  shapes.forEach((rows, i) => {
+    const cy = rows.findIndex((r2) => r2.includes("@"));
+    if (cy < 0) throw new Error(`Shape ${i + 1} has no centre: mark it with @.`);
+    const cx = rows[cy].indexOf("@");
+    const c2 = [], r = [];
+    rows.forEach((row, y) => {
+      let from = -1, to = -1;
+      for (let x = 0; x < row.length; x++) {
+        if (row[x] !== "#" && row[x] !== "@") continue;
+        if (from >= 0 && to !== x - 1) throw new Error(`Shape ${i + 1}, row ${y + 1}: a row of a shape is one run of tiles.`);
+        if (from < 0) from = x;
+        to = x;
+        c2.push(x - cx, y - cy);
+      }
+      if (from >= 0) r.push(y - cy, from - cx, to - cx);
+    });
+    cells.push(Int16Array.from(c2));
+    runs.push(Int16Array.from(r));
+  });
+  const has = (i, dx, dy) => {
+    const c2 = cells[i];
+    for (let k = 0; k < c2.length; k += 2) if (c2[k] === dx && c2[k + 1] === dy) return true;
+    return false;
+  };
+  let nested = true;
+  for (let i = 0; i + 1 < cells.length && nested; i++) for (let k = 0; k < cells[i].length; k += 2) if (!has(i + 1, cells[i][k], cells[i][k + 1])) {
+    nested = false;
+    break;
+  }
+  const inside2 = cells.map(() => []);
+  if (nested) {
+    for (let i = 0; i < cells.length; i++) for (let j = i + 1; j <= i + 2 && j < cells.length; j++) {
+      const places = [];
+      for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        let all = true;
+        for (let k = 0; k < cells[i].length && all; k += 2) all = has(j, cells[i][k] - dx, cells[i][k + 1] - dy);
+        if (all) places.push(dx, dy);
+      }
+      if (places.length) inside2[i].push([j, Int16Array.from(places)]);
+    }
+  }
+  const out = Object.freeze({ count: shapes.length, cells, runs, nested, inside: inside2 });
+  prepared.set(shapes, out);
+  return out;
+}
+function cover(ink2, width, height, shapes) {
+  const n = width * height;
+  const dark = new Int32Array(n + height);
+  for (let y = 0; y < height; y++) {
+    const at = y * (width + 1);
+    for (let x = 0; x < width; x++) dark[at + x + 1] = dark[at + x] + (ink2[y * width + x] ? 0 : 1);
+  }
+  const fits = (s, cx, cy) => {
+    const r = shapes.runs[s];
+    for (let k = 0; k < r.length; k += 3) {
+      const y = cy + r[k], x0 = cx + r[k + 1], x1 = cx + r[k + 2];
+      if (y < 0 || y >= height || x0 < 0 || x1 >= width) return false;
+      const at = y * (width + 1);
+      if (dark[at + x1 + 1] !== dark[at + x0]) return false;
+    }
+    return true;
+  };
+  const covered = new Uint8Array(n);
+  const done = new Int32Array(n + height);
+  const recount = (y) => {
+    const at = y * (width + 1);
+    for (let x = 0; x < width; x++) done[at + x + 1] = done[at + x] + covered[y * width + x];
+  };
+  const gain = (s, cx, cy) => {
+    const r = shapes.runs[s];
+    let g = 0;
+    for (let k = 0; k < r.length; k += 3) {
+      const at = (cy + r[k]) * (width + 1), x0 = cx + r[k + 1], x1 = cx + r[k + 2];
+      g += x1 - x0 + 1 - (done[at + x1 + 1] - done[at + x0]);
+    }
+    return g;
+  };
+  let left = 0;
+  for (let i = 0; i < n; i++) left += ink2[i] ? 1 : 0;
+  const chosen = [];
+  if (left) {
+    const room = shapes.nested ? n : n * shapes.count;
+    const gains = new Int32Array(room), keys = new Int32Array(room);
+    let size = 0;
+    const swap = (a2, b) => {
+      const g = gains[a2], k = keys[a2];
+      gains[a2] = gains[b];
+      keys[a2] = keys[b];
+      gains[b] = g;
+      keys[b] = k;
+    };
+    const up = (i) => {
+      while (i > 0) {
+        const p = i - 1 >> 1;
+        if (gains[p] >= gains[i]) break;
+        swap(p, i);
+        i = p;
+      }
+    };
+    const down = (i) => {
+      for (; ; ) {
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < size && gains[l] > gains[m]) m = l;
+        if (r < size && gains[r] > gains[m]) m = r;
+        if (m === i) break;
+        swap(m, i);
+        i = m;
+      }
+    };
+    const push = (g, key2) => {
+      gains[size] = g;
+      keys[size] = key2;
+      up(size++);
+    };
+    if (shapes.nested) {
+      const largest = new Int8Array(n).fill(-1);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        if (!ink2[y * width + x]) continue;
+        let lo = -1, hi = shapes.count - 1;
+        while (lo < hi) {
+          const mid = lo + hi + 1 >> 1;
+          if (fits(mid, x, y)) lo = mid;
+          else hi = mid - 1;
+        }
+        largest[y * width + x] = lo;
+      }
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        const s = largest[y * width + x];
+        if (s < 0) continue;
+        let held = false;
+        for (const [j, places] of shapes.inside[s]) {
+          for (let k = 0; k < places.length && !held; k += 2) {
+            const X2 = x + places[k], Y2 = y + places[k + 1];
+            held = X2 >= 0 && X2 < width && Y2 >= 0 && Y2 < height && largest[Y2 * width + X2] >= j;
+          }
+          if (held) break;
+        }
+        if (!held) push(shapes.cells[s].length >> 1, (s * height + y) * width + x);
+      }
+    } else {
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        if (!ink2[y * width + x]) continue;
+        for (let s = 0; s < shapes.count; s++) if (fits(s, x, y)) push(shapes.cells[s].length >> 1, (s * height + y) * width + x);
+      }
+    }
+    while (size && left) {
+      const key2 = keys[0], x = key2 % width, y = Math.floor(key2 / width) % height, s = Math.floor(key2 / (width * height));
+      const g = gain(s, x, y);
+      size--;
+      swap(0, size);
+      down(0);
+      if (g === 0) continue;
+      if (size && g < gains[0]) {
+        push(g, key2);
+        continue;
+      }
+      chosen.push({ x, y, shape: s });
+      const c2 = shapes.cells[s];
+      for (let k = 0; k < c2.length; k += 2) {
+        const i = (y + c2[k + 1]) * width + x + c2[k];
+        if (!covered[i]) {
+          covered[i] = 1;
+          left--;
+        }
+      }
+      const r = shapes.runs[s];
+      for (let k = 0; k < r.length; k += 3) recount(y + r[k]);
+    }
+  }
+  if (left) {
+    const c2 = shapes.cells[0];
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      if (!ink2[y * width + x] || covered[y * width + x]) continue;
+      let best = -1, bx = x, by = y;
+      for (let k = 0; k < c2.length; k += 2) {
+        const cx = x - c2[k], cy = y - c2[k + 1];
+        let cost = 0;
+        for (let j = 0; j < c2.length; j += 2) {
+          const X2 = cx + c2[j], Y2 = cy + c2[j + 1];
+          cost += X2 < 0 || X2 >= width || Y2 < 0 || Y2 >= height ? 1e3 : ink2[Y2 * width + X2] ? 0 : 1;
+        }
+        if (best < 0 || cost < best) {
+          best = cost;
+          bx = cx;
+          by = cy;
+        }
+      }
+      chosen.push({ x: bx, y: by, shape: 0 });
+      for (let k = 0; k < c2.length; k += 2) {
+        const X2 = bx + c2[k], Y2 = by + c2[k + 1];
+        if (X2 >= 0 && X2 < width && Y2 >= 0 && Y2 < height) covered[Y2 * width + X2] = 1;
+      }
+    }
+  }
+  return chosen.sort((a2, b) => a2.shape - b.shape);
+}
+function covers(brushes, width, height, shapes) {
+  const out = new Uint8Array(width * height);
+  for (const b of brushes) {
+    const c2 = shapes.cells[b.shape];
+    for (let k = 0; k < c2.length; k += 2) {
+      const X2 = b.x + c2[k], Y2 = b.y + c2[k + 1];
+      if (X2 >= 0 && X2 < width && Y2 >= 0 && Y2 < height) out[Y2 * width + X2] = 1;
+    }
+  }
+  return out;
+}
+
+// compiler/rangeCoder.ts
+var PROB_BITS = 11;
+var MOVE_BITS = 5;
+var TOP = 1 << 24;
+var PROB_HALF = 1 << PROB_BITS - 1;
+var RangeEncoder = class {
+  low = 0;
+  range = 4294967295;
+  cache = 0;
+  cacheSize = 1;
+  out = [];
+  bit(odds, k, bit) {
+    const p = odds[k], bound = (this.range >>> PROB_BITS) * p;
+    if (bit) {
+      this.low += bound;
+      this.range -= bound;
+      odds[k] = p - (p >> MOVE_BITS);
+    } else {
+      this.range = bound;
+      odds[k] = p + ((1 << PROB_BITS) - p >> MOVE_BITS);
+    }
+    while (this.range < TOP) {
+      this.range = this.range * 256 >>> 0;
+      this.shiftLow();
+    }
+  }
+  shiftLow() {
+    if (this.low < 4278190080 || this.low >= 4294967296) {
+      const carry = this.low >= 4294967296 ? 1 : 0;
+      let byte = this.cache;
+      do {
+        this.out.push(byte + carry & 255);
+        byte = 255;
+      } while (--this.cacheSize !== 0);
+      this.cache = Math.floor(this.low / 16777216) & 255;
+    }
+    this.cacheSize++;
+    this.low = this.low % 16777216 * 256;
+  }
+  finish() {
+    for (let i = 0; i < 5; i++) this.shiftLow();
+    return Uint8Array.from(this.out);
+  }
+};
+var RangeDecoder = class {
+  range = 4294967295;
+  code = 0;
+  at = 0;
+  /** Read past the end: the file was cut short. */
+  overrun = false;
+  bytes;
+  constructor(bytes2) {
+    this.bytes = bytes2;
+    for (let i = 0; i < 5; i++) this.code = (this.code * 256 + this.next()) % 4294967296;
+  }
+  next() {
+    if (this.at < this.bytes.length) return this.bytes[this.at++];
+    this.overrun = this.at++ > this.bytes.length + 4;
+    return 0;
+  }
+  bit(odds, k) {
+    const p = odds[k], bound = (this.range >>> PROB_BITS) * p;
+    let bit;
+    if (this.code < bound) {
+      this.range = bound;
+      odds[k] = p + ((1 << PROB_BITS) - p >> MOVE_BITS);
+      bit = 0;
+    } else {
+      this.code -= bound;
+      this.range -= bound;
+      odds[k] = p - (p >> MOVE_BITS);
+      bit = 1;
+    }
+    while (this.range < TOP) {
+      this.range = this.range * 256 >>> 0;
+      this.code = (this.code * 256 + this.next()) % 4294967296;
+    }
+    return bit;
+  }
+};
+function toBase64(bytes2) {
+  let s = "";
+  for (let i = 0; i < bytes2.length; i += 32768) s += String.fromCharCode(...bytes2.subarray(i, i + 32768));
+  return btoa(s);
+}
+function fromBase64(text) {
+  const s = atob(text);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
+// compiler/image.ts
+var IMAGE_EXTENSION = ".image";
+var MAX_IMAGE_SIDE = 1024;
+var VERSION = 1;
+var luma = (r, g, b) => Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+function writeImage(p) {
+  const { width, height } = p;
+  checkSize(width, height);
+  const n = width * height;
+  if (p.rgba.length !== n * 4) throw new Error(`A ${width} \xD7 ${height} image has ${n * 4} bytes of red, green, blue and alpha, not ${p.rgba.length}.`);
+  const rgba = Uint8Array.from(p.rgba);
+  if (p.grey) for (let i = 0; i < n * 4; i += 4) rgba[i] = rgba[i + 1] = rgba[i + 2] = luma(rgba[i], rgba[i + 1], rgba[i + 2]);
+  let color = false, alpha = false;
+  for (let i = 0; i < n * 4; i += 4) {
+    if (rgba[i] !== rgba[i + 1] || rgba[i + 1] !== rgba[i + 2]) color = true;
+    if (rgba[i + 3] !== 255) alpha = true;
+  }
+  const coder = new RangeEncoder();
+  const odds = newOdds();
+  planes(rgba, n, color, alpha).forEach((plane, k) => codePlane(plane, width, height, (ctx, value) => {
+    for (let bit = 7, node = 1; bit >= 0; bit--) {
+      const b = value >> bit & 1;
+      coder.bit(odds, oddsAt(k, ctx, node), b);
+      node = node * 2 + b;
+    }
+    return value;
+  }));
+  const header = { trigscript: "image", version: VERSION, width, height, color, alpha, ...p.source ? { source: p.source } : {}, data: toBase64(coder.finish()) };
+  return JSON.stringify(header);
+}
+function readImage(text) {
+  let h;
+  try {
+    h = JSON.parse(text);
+  } catch {
+    throw new Error("This is not an image TrigScript imported: an .image file is one line of JSON.");
+  }
+  if (h?.trigscript !== "image" || typeof h.data !== "string") throw new Error("This is not an image TrigScript imported.");
+  if (h.version !== VERSION) throw new Error(`This image was written by a newer TrigScript (format ${h.version}); update the plugin to read it.`);
+  const width = Number(h.width), height = Number(h.height), color = h.color === true, alpha = h.alpha === true;
+  checkSize(width, height);
+  const n = width * height;
+  const coder = new RangeDecoder(fromBase64(h.data));
+  const odds = newOdds();
+  const got = planes(new Uint8Array(n * 4), n, color, alpha).map((plane, k) => {
+    codePlane(plane, width, height, (ctx) => {
+      let node = 1;
+      for (let bit = 0; bit < 8; bit++) node = node * 2 + coder.bit(odds, oddsAt(k, ctx, node));
+      return node - 256;
+    });
+    if (coder.overrun) throw new Error("The image's pixels end too soon: the file is cut short.");
+    return plane;
+  });
+  const rgba = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    if (color) {
+      const g = got[0][i];
+      rgba[i * 4] = got[1][i] + g - 128 & 255;
+      rgba[i * 4 + 1] = g;
+      rgba[i * 4 + 2] = got[2][i] + g - 128 & 255;
+    } else rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = got[0][i];
+    rgba[i * 4 + 3] = alpha ? got[color ? 3 : 1][i] : 255;
+  }
+  return Object.freeze({ width, height, color, alpha, ...typeof h.source === "string" ? { source: h.source } : {}, rgba });
+}
+function describeImage(text) {
+  try {
+    const h = JSON.parse(text);
+    if (h?.trigscript !== "image") return "This is not an image TrigScript imported.";
+    return `An image, ${Number(h.width)} \xD7 ${Number(h.height)} pixels, ${h.color ? "in colour" : "in grey"}${h.alpha ? ", with transparency" : ""}${typeof h.source === "string" ? `, from ${h.source}` : ""}.`;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+function checkSize(width, height) {
+  if (!(Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0 && width <= MAX_IMAGE_SIDE && height <= MAX_IMAGE_SIDE)) {
+    throw new Error(`An image is 1 to ${MAX_IMAGE_SIDE} pixels each way, not ${width} \xD7 ${height}.`);
+  }
+}
+var BUSY = 8;
+var newOdds = () => new Uint16Array(4 * BUSY * 256).fill(PROB_HALF);
+var oddsAt = (plane, busy2, node) => (plane * BUSY + busy2) * 256 + node;
+function planes(rgba, n, color, alpha) {
+  const plane = (f) => Uint8Array.from({ length: n }, (_, i) => f(i * 4));
+  const out = color ? [plane((i) => rgba[i + 1]), plane((i) => rgba[i] - rgba[i + 1] + 128 & 255), plane((i) => rgba[i + 2] - rgba[i + 1] + 128 & 255)] : [plane((i) => rgba[i])];
+  if (alpha) out.push(plane((i) => rgba[i + 3]));
+  return out;
+}
+function codePlane(plane, width, height, code) {
+  for (let y = 0, i = 0; y < height; y++) for (let x = 0; x < width; x++, i++) {
+    const a2 = x > 0 ? plane[i - 1] : y > 0 ? plane[i - width] : 0;
+    const b = y > 0 ? plane[i - width] : a2;
+    const c2 = x > 0 && y > 0 ? plane[i - width - 1] : b;
+    const guess = c2 >= Math.max(a2, b) ? Math.min(a2, b) : c2 <= Math.min(a2, b) ? Math.max(a2, b) : a2 + b - c2;
+    const d = Math.abs(a2 - c2) + Math.abs(b - c2);
+    const busy2 = d === 0 ? 0 : Math.min(BUSY - 1, 1 + Math.floor(Math.log2(d)));
+    const e = plane[i] - guess & 255, s = e < 128 ? e : e - 256;
+    const got = code(busy2, s >= 0 ? 2 * s : -2 * s - 1);
+    plane[i] = guess + (got & 1 ? -(got + 1) / 2 : got / 2) & 255;
+  }
+}
+var OPAQUE = 128;
+var whole = (v, what) => {
+  if (typeof v !== "number" || !Number.isInteger(v)) throw new Error(`${what} is a whole number, not ${String(v)}.`);
+  return v;
+};
+var inkOf = (options) => {
+  const ink2 = options?.ink ?? "light";
+  if (ink2 !== "light" && ink2 !== "dark") throw new Error(`ink is "light" or "dark", not ${JSON.stringify(ink2)}.`);
+  return ink2 === "dark";
+};
+function makeImage(d) {
+  const { width: w, height: h, rgba } = d;
+  const n = w * h;
+  const at = (x, y) => {
+    whole(x, "x");
+    whole(y, "y");
+    if (x < 0 || y < 0 || x >= w || y >= h) throw new RangeError(`The image is ${w} \xD7 ${h}; there is no pixel (${String(x)}, ${String(y)}).`);
+    return (y * w + x) * 4;
+  };
+  const greyAt = (i) => d.color ? luma(rgba[i], rgba[i + 1], rgba[i + 2]) : rgba[i];
+  const remap = (nw, nh, from) => {
+    const out = new Uint8Array(nw * nh * 4);
+    for (let y = 0, o = 0; y < nh; y++) for (let x = 0; x < nw; x++, o += 4) out.set(rgba.subarray(from(x, y), from(x, y) + 4), o);
+    return makeImage({ ...d, width: nw, height: nh, rgba: out });
+  };
+  const rows = (char) => {
+    const out = [];
+    for (let y = 0; y < h; y++) {
+      let row = "";
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        row += rgba[i + 3] < OPAQUE ? "." : char(greyAt(i), y * w + x);
+      }
+      out.push(row);
+    }
+    return Object.freeze(out);
+  };
+  const image = {
+    __trigscript: "image",
+    width: w,
+    height: h,
+    color: d.color,
+    transparent: d.alpha,
+    grey: (x, y) => greyAt(at(x, y)),
+    rgb: (x, y) => {
+      const i = at(x, y);
+      return Object.freeze({ r: rgba[i], g: rgba[i + 1], b: rgba[i + 2] });
+    },
+    alpha: (x, y) => rgba[at(x, y) + 3],
+    crop(x, y, cw, ch) {
+      for (const [v, what] of [[x, "x"], [y, "y"], [cw, "width"], [ch, "height"]]) whole(v, what);
+      if (x < 0 || y < 0 || cw < 1 || ch < 1 || x + cw > w || y + ch > h) throw new RangeError(`crop(${x}, ${y}, ${cw}, ${ch}) is not inside the image, which is ${w} \xD7 ${h}.`);
+      return remap(cw, ch, (px, py) => ((y + py) * w + x + px) * 4);
+    },
+    scale(sw, sh) {
+      whole(sw, "width");
+      const th = sh === void 0 ? Math.max(1, Math.round(sw * h / w)) : whole(sh, "height");
+      checkSize(sw, th);
+      return makeImage({ ...d, width: sw, height: th, rgba: resample(rgba, w, h, sw, th) });
+    },
+    flip(axis) {
+      if (axis === "horizontal") return remap(w, h, (x, y) => (y * w + (w - 1 - x)) * 4);
+      if (axis === "vertical") return remap(w, h, (x, y) => ((h - 1 - y) * w + x) * 4);
+      throw new Error(`flip() takes "horizontal" or "vertical", not ${JSON.stringify(axis)}.`);
+    },
+    rotate(turn) {
+      if (turn === 90) return remap(h, w, (x, y) => ((h - 1 - x) * w + y) * 4);
+      if (turn === 180) return remap(w, h, (x, y) => ((h - 1 - y) * w + (w - 1 - x)) * 4);
+      if (turn === 270) return remap(h, w, (x, y) => (x * w + (w - 1 - y)) * 4);
+      throw new Error(`rotate() turns by 90, 180 or 270 degrees clockwise, not ${String(turn)}.`);
+    },
+    invert() {
+      const out = Uint8Array.from(rgba);
+      for (let i = 0; i < n * 4; i += 4) {
+        out[i] = 255 - out[i];
+        out[i + 1] = 255 - out[i + 1];
+        out[i + 2] = 255 - out[i + 2];
+      }
+      return makeImage({ ...d, rgba: out });
+    },
+    threshold(level = 128, options) {
+      if (typeof level !== "number" || !(level >= 0 && level <= 256)) throw new RangeError(`threshold() takes a grey from 0 to 256, not ${String(level)}.`);
+      const dark = inkOf(options);
+      return rows((g) => g >= level !== dark ? "#" : ".");
+    },
+    tones(count) {
+      whole(count, "tones()' count");
+      if (count < 2 || count > 10) throw new RangeError(`tones() makes 2 to 10 tones, a digit each, not ${count}.`);
+      return rows((g) => String(Math.min(count - 1, Math.floor(g * count / 256))));
+    },
+    halftone(cw, ch, options) {
+      whole(cw, "halftone()'s cell width");
+      const cellH = ch === void 0 ? cw + 1 : whole(ch, "halftone()'s cell height");
+      if (cw < 3 || cellH < 4 || cw > 32 || cellH > 32) throw new RangeError(`halftone() takes cells 3 to 32 tiles across and 4 to 32 down (the smallest brush is 3 \xD7 4), not ${cw} \xD7 ${cellH}.`);
+      return halftone(w, h, (i) => rgba[i * 4 + 3] < OPAQUE ? -1 : greyAt(i * 4), cw, cellH, options?.diffuse !== false);
+    }
+  };
+  return Object.freeze(image);
+}
+function halftone(w, h, grey, cw, ch, diffuse) {
+  const lit = new Uint8Array(w * h), brushes = [];
+  const starts = (size, cell, least) => {
+    const at = [];
+    for (let p = 0; p < size; p += cell) at.push(p);
+    if (at.length > 1 && size - at[at.length - 1] < least) at.pop();
+    return [...at, size];
+  };
+  const xs = starts(w, cw, 3), ys = starts(h, ch, 4);
+  const cols = xs.length - 1, rowsOfCells = ys.length - 1;
+  const err = new Float32Array(cols * rowsOfCells);
+  for (let cy = 0; cy < rowsOfCells; cy++) for (let cx = 0; cx < cols; cx++) {
+    const x0 = xs[cx], y0 = ys[cy], x1 = xs[cx + 1], y1 = ys[cy + 1];
+    const area = (x1 - x0) * (y1 - y0);
+    let sum = 0, seen = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const g = grey(y * w + x);
+      if (g >= 0) {
+        sum += g;
+        seen++;
+      }
+    }
+    if (seen * 2 < area) continue;
+    const place = (shape) => {
+      const fit = (at, size, room) => Math.max(0, Math.min(room - size, at));
+      const sx = fit(x0 + (x1 - x0 - shape[0].length >> 1), shape[0].length, w), sy = fit(y0 + (y1 - y0 - shape.length >> 1), shape.length, h), tiles = [];
+      let centre = { x: 0, y: 0 }, inside2 = true;
+      shape.forEach((row, dy) => {
+        for (let dx = 0; dx < row.length; dx++) {
+          const x = sx + dx, y = sy + dy;
+          if (row[dx] === "@") centre = { x, y };
+          if (row[dx] === ".") continue;
+          if (x < 0 || y < 0 || x >= w || y >= h) inside2 = false;
+          else tiles.push(y * w + x);
+        }
+      });
+      return inside2 ? { tiles, centre } : null;
+    };
+    const share = (tiles) => tiles.reduce((n, i) => n + (lit[i] ? 0 : 1), 0) / area;
+    const want = sum / seen / 255 + err[cy * cols + cx];
+    let best = null, bestShare = 0;
+    for (const [k, shape] of FOG_SHAPES.entries()) {
+      if (shape[0].length > x1 - x0 + 2 || shape.length > y1 - y0 + 2) break;
+      const at = place(shape);
+      if (!at) continue;
+      const s = share(at.tiles);
+      if (Math.abs(s - want) < Math.abs(bestShare - want)) {
+        best = { ...at, shape: k };
+        bestShare = s;
+      }
+    }
+    if (best) {
+      for (const i of best.tiles) lit[i] = 1;
+      brushes.push(Object.freeze({ ...best.centre, shape: best.shape }));
+    }
+    const miss = diffuse ? want - bestShare : 0;
+    const give = (dx, dy, part) => {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx >= 0 && nx < cols && ny < rowsOfCells) err[ny * cols + nx] += miss * part / 16;
+    };
+    give(1, 0, 7);
+    give(-1, 1, 3);
+    give(0, 1, 5);
+    give(1, 1, 1);
+  }
+  const out = [];
+  for (let y = 0; y < h; y++) {
+    let row = "";
+    for (let x = 0; x < w; x++) row += lit[y * w + x] ? "#" : ".";
+    out.push(row);
+  }
+  return Object.freeze(Object.assign(out, { brushes: Object.freeze(brushes) }));
+}
+function resample(rgba, w, h, tw, th) {
+  const spans = (from, to) => Array.from({ length: to }, (_, t) => {
+    const lo = t * from / to, hi = (t + 1) * from / to, parts = [];
+    for (let s = Math.floor(lo); s < Math.min(from, Math.ceil(hi)); s++) parts.push([s, Math.min(hi, s + 1) - Math.max(lo, s)]);
+    return parts;
+  });
+  const xs = spans(w, tw), ys = spans(h, th);
+  const out = new Uint8Array(tw * th * 4);
+  for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+    let r = 0, g = 0, b = 0, a2 = 0, area = 0;
+    for (const [sy, wy] of ys[y]) for (const [sx, wx] of xs[x]) {
+      const i = (sy * w + sx) * 4, part = wx * wy, opaque = rgba[i + 3] / 255 * part;
+      r += rgba[i] * opaque;
+      g += rgba[i + 1] * opaque;
+      b += rgba[i + 2] * opaque;
+      a2 += rgba[i + 3] * part;
+      area += part;
+    }
+    const o = (y * tw + x) * 4, weight = a2 / 255 || 1;
+    out[o] = Math.round(r / weight);
+    out[o + 1] = Math.round(g / weight);
+    out[o + 2] = Math.round(b / weight);
+    out[o + 3] = Math.round(a2 / area);
+  }
+  return out;
+}
+
+// compiler/sound.ts
+var SOUND_EXTENSION = ".sound";
+var MAX_SECONDS = 600;
+var VERSION2 = 1;
+var INDEX_STEP = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
+var STEPS = [
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  16,
+  17,
+  19,
+  21,
+  23,
+  25,
+  28,
+  31,
+  34,
+  37,
+  41,
+  45,
+  50,
+  55,
+  60,
+  66,
+  73,
+  80,
+  88,
+  97,
+  107,
+  118,
+  130,
+  143,
+  157,
+  173,
+  190,
+  209,
+  230,
+  253,
+  279,
+  307,
+  337,
+  371,
+  408,
+  449,
+  494,
+  544,
+  598,
+  658,
+  724,
+  796,
+  876,
+  963,
+  1060,
+  1166,
+  1282,
+  1411,
+  1552,
+  1707,
+  1878,
+  2066,
+  2272,
+  2499,
+  2749,
+  3024,
+  3327,
+  3660,
+  4026,
+  4428,
+  4871,
+  5358,
+  5894,
+  6484,
+  7132,
+  7845,
+  8630,
+  9493,
+  10442,
+  11487,
+  12635,
+  13899,
+  15289,
+  16818,
+  18500,
+  20350,
+  22385,
+  24623,
+  27086,
+  29794,
+  32767
+];
+var blockAlign = (rate) => 256 * Math.max(1, Math.round(rate / 11025));
+var samplesPerBlock = (align) => (align - 4) * 2 + 1;
+function encodeAdpcm(samples, rate) {
+  const align = blockAlign(rate), per = samplesPerBlock(align);
+  const blocks = Math.max(1, Math.ceil(samples.length / per));
+  const out = new Uint8Array(blocks * align);
+  const at = (i) => i < samples.length ? Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767))) : 0;
+  let index = 0;
+  for (let b = 0; b < blocks; b++) {
+    const base = b * align, first = b * per;
+    let predicted = at(first);
+    out[base] = predicted & 255;
+    out[base + 1] = predicted >> 8 & 255;
+    out[base + 2] = index;
+    out[base + 3] = 0;
+    for (let k = 1; k < per; k++) {
+      const step = STEPS[index];
+      let diff = at(first + k) - predicted, code = 0;
+      if (diff < 0) {
+        code = 8;
+        diff = -diff;
+      }
+      let delta = step >> 3;
+      if (diff >= step) {
+        code |= 4;
+        diff -= step;
+        delta += step;
+      }
+      if (diff >= step >> 1) {
+        code |= 2;
+        diff -= step >> 1;
+        delta += step >> 1;
+      }
+      if (diff >= step >> 2) {
+        code |= 1;
+        delta += step >> 2;
+      }
+      predicted = Math.max(-32768, Math.min(32767, predicted + (code & 8 ? -delta : delta)));
+      index = Math.max(0, Math.min(88, index + INDEX_STEP[code]));
+      const byte = base + 4 + (k - 1 >> 1);
+      out[byte] |= k - 1 & 1 ? code << 4 : code;
+    }
+  }
+  return out;
+}
+function decodeAdpcm(data, rate, frames) {
+  const align = blockAlign(rate), per = samplesPerBlock(align), out = new Float32Array(frames);
+  for (let b = 0, n = 0; b * align < data.length && n < frames; b++) {
+    const base = b * align;
+    let predicted = (data[base] | data[base + 1] << 8) << 16 >> 16, index = Math.min(88, data[base + 2]);
+    out[n++] = predicted / 32767;
+    for (let k = 1; k < per && n < frames; k++) {
+      const byte = data[base + 4 + (k - 1 >> 1)], code = k - 1 & 1 ? byte >> 4 : byte & 15, step = STEPS[index];
+      let delta = step >> 3;
+      if (code & 4) delta += step;
+      if (code & 2) delta += step >> 1;
+      if (code & 1) delta += step >> 2;
+      predicted = Math.max(-32768, Math.min(32767, predicted + (code & 8 ? -delta : delta)));
+      index = Math.max(0, Math.min(88, index + INDEX_STEP[code]));
+      out[n++] = predicted / 32767;
+    }
+  }
+  return out;
+}
+function writeSound(s) {
+  checkRate(s.rate);
+  if (s.samples.length / s.rate > MAX_SECONDS) throw new Error(`A sound is at most ${MAX_SECONDS / 60} minutes long, not ${(s.samples.length / s.rate / 60).toFixed(1)}.`);
+  const header = { trigscript: "sound", version: VERSION2, rate: s.rate, frames: s.samples.length, ...s.source ? { source: s.source } : {}, data: toBase64(encodeAdpcm(s.samples, s.rate)) };
+  return JSON.stringify(header);
+}
+function readSound(text) {
+  let h;
+  try {
+    h = JSON.parse(text);
+  } catch {
+    throw new Error("This is not a sound TrigScript imported: a .sound file is one line of JSON.");
+  }
+  if (h?.trigscript !== "sound" || typeof h.data !== "string") throw new Error("This is not a sound TrigScript imported.");
+  if (h.version !== VERSION2) throw new Error(`This sound was written by a newer TrigScript (format ${h.version}); update the plugin to read it.`);
+  const rate = Number(h.rate), frames = Number(h.frames);
+  checkRate(rate);
+  if (!(Number.isInteger(frames) && frames >= 0 && frames <= MAX_SECONDS * rate)) throw new Error("The sound's length is not a whole number of samples.");
+  const adpcm = fromBase64(h.data), align = blockAlign(rate);
+  if (adpcm.length < Math.ceil(frames / samplesPerBlock(align)) * align) throw new Error("The sound's samples end too soon: the file is cut short.");
+  return Object.freeze({ rate, frames, ...typeof h.source === "string" ? { source: h.source } : {}, adpcm, samples: decodeAdpcm(adpcm, rate, frames) });
+}
+function describeSound(text) {
+  try {
+    const h = JSON.parse(text);
+    if (h?.trigscript !== "sound") return "This is not a sound TrigScript imported.";
+    const rate = Number(h.rate), seconds = Number(h.frames) / rate;
+    return `A sound, ${seconds.toFixed(seconds < 10 ? 2 : 1)} seconds at ${rate.toLocaleString("en-US")} Hz${typeof h.source === "string" ? `, from ${h.source}` : ""}.`;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+function checkRate(rate) {
+  if (!(Number.isInteger(rate) && rate >= 8e3 && rate <= 48e3)) throw new Error(`A sound's rate is 8 000 to 48 000 samples a second, not ${rate}.`);
+}
+var HALF = 16;
+var RES = 512;
+var KERNEL = (() => {
+  const t = new Float32Array(HALF * RES + 2);
+  for (let i = 0; i < t.length; i++) {
+    const u = i / RES;
+    const sinc = u === 0 ? 1 : Math.sin(Math.PI * u) / (Math.PI * u);
+    t[i] = u >= HALF ? 0 : sinc * (0.42 + 0.5 * Math.cos(Math.PI * u / HALF) + 0.08 * Math.cos(2 * Math.PI * u / HALF));
+  }
+  return t;
+})();
+var SIDE = 16;
+var BETWEEN = [1, 2, 3, 4, 5, 6, 7].map((k) => k / 8).map((f) => {
+  const taps = new Float32Array(2 * SIDE);
+  let sum = 0;
+  for (let k = 0; k < 2 * SIDE; k++) {
+    const x = k - (SIDE - 1) - f, w = 0.42 + 0.5 * Math.cos(Math.PI * x / (SIDE + 0.5)) + 0.08 * Math.cos(2 * Math.PI * x / (SIDE + 0.5));
+    taps[k] = (x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x)) * w;
+    sum += taps[k];
+  }
+  return taps.map((t) => t / sum);
+});
+
+// compiler/notes.ts
+var NOTES_EXTENSION = ".notes";
+var VERSION3 = 1;
+function readMidi(bytes2, source) {
+  const view = new DataView(bytes2.buffer, bytes2.byteOffset, bytes2.byteLength);
+  const tag = (at2) => String.fromCharCode(...bytes2.subarray(at2, at2 + 4));
+  if (bytes2.length < 14 || tag(0) !== "MThd") throw new Error("This is not a MIDI file: a MIDI file starts with MThd.");
+  const headerLength = view.getUint32(4), format2 = view.getUint16(8), count = view.getUint16(10), division = view.getUint16(12);
+  if (format2 > 1) throw new Error("This MIDI file holds separate songs (format 2): only formats 0 and 1 are read.");
+  if (division & 32768) throw new Error("This MIDI file counts time in SMPTE frames: only files that count in beats are read.");
+  const ppq = division;
+  let at = 8 + headerLength;
+  const tempos = [];
+  let meter = null;
+  const groups = /* @__PURE__ */ new Map();
+  for (let t = 0; t < count && at + 8 <= bytes2.length; t++) {
+    if (tag(at) !== "MTrk") {
+      at += 8 + view.getUint32(at + 4);
+      t--;
+      continue;
+    }
+    const end = Math.min(bytes2.length, at + 8 + view.getUint32(at + 4));
+    let p = at + 8, tick = 0, status = 0, trackName = "";
+    const programs = /* @__PURE__ */ new Map();
+    const open = /* @__PURE__ */ new Map();
+    const varint = () => {
+      let v = 0;
+      for (let k = 0; k < 4; k++) {
+        const b = bytes2[p++];
+        v = v << 7 | b & 127;
+        if (!(b & 128)) break;
+      }
+      return v;
+    };
+    const group = (channel) => {
+      const key2 = `${t}:${channel}`;
+      let g = groups.get(key2);
+      if (!g) {
+        g = { track: t, channel, name: "", program: programs.get(channel) ?? 0, notes: [] };
+        groups.set(key2, g);
+      }
+      return g;
+    };
+    const close = (channel, pitch, now) => {
+      const list = open.get(channel * 128 + pitch);
+      const on = list?.shift();
+      if (on && now > on.tick) group(channel).notes.push({ at: on.tick / ppq, beats: (now - on.tick) / ppq, pitch, velocity: on.velocity });
+    };
+    while (p < end) {
+      tick += varint();
+      let b = bytes2[p];
+      if (b & 128) {
+        status = b;
+        p++;
+      } else if (!status) throw new Error("This MIDI file is damaged: a track starts with data and no event.");
+      b = status;
+      if (b === 255) {
+        const type = bytes2[p++], length = varint(), data = bytes2.subarray(p, p + length);
+        p += length;
+        if (type === 81 && length === 3) tempos.push([tick, data[0] << 16 | data[1] << 8 | data[2]]);
+        else if (type === 88 && length >= 2 && !meter) meter = [data[0], 2 ** data[1]];
+        else if (type === 3 && !trackName) trackName = new TextDecoder("latin1").decode(data).trim();
+        else if (type === 47) break;
+        status = 0;
+        continue;
+      }
+      if (b === 240 || b === 247) {
+        p += varint();
+        status = 0;
+        continue;
+      }
+      const kind = b & 240, channel = b & 15;
+      const one = bytes2[p++], two = kind === 192 || kind === 208 ? 0 : bytes2[p++];
+      if (kind === 144 && two > 0) {
+        const key2 = channel * 128 + one;
+        const list = open.get(key2);
+        if (list?.length) close(channel, one, tick);
+        (open.get(key2) ?? open.set(key2, []).get(key2)).push({ tick, velocity: two });
+        group(channel);
+      } else if (kind === 128 || kind === 144) close(channel, one, tick);
+      else if (kind === 192) {
+        programs.set(channel, one);
+        const g = groups.get(`${t}:${channel}`);
+        if (g && g.notes.length === 0) g.program = one;
+      }
+    }
+    for (const [key2, list] of open) for (const on of list) if (tick > on.tick) group(key2 >> 7).notes.push({ at: on.tick / ppq, beats: (tick - on.tick) / ppq, pitch: key2 & 127, velocity: on.velocity });
+    for (const g of groups.values()) if (g.track === t) g.name = trackName;
+    at = end;
+  }
+  tempos.sort((a2, b) => a2[0] - b[0]);
+  const first = tempos.find((x) => x[0] === 0) ?? tempos[0];
+  const bpm = first ? 6e7 / first[1] : 120;
+  const kept2 = [...groups.values()].filter((g) => g.notes.length > 0);
+  const several = /* @__PURE__ */ new Map();
+  for (const g of kept2) several.set(g.track, (several.get(g.track) ?? 0) + 1);
+  const tracks = kept2.map((g) => ({
+    name: g.name ? several.get(g.track) > 1 ? `${g.name} (channel ${g.channel + 1})` : g.name : `Track ${g.track + 1}${several.get(g.track) > 1 || count === 1 ? ` channel ${g.channel + 1}` : ""}`,
+    channel: g.channel + 1,
+    program: g.program + 1,
+    notes: g.notes.sort((a2, b) => a2.at - b.at || a2.pitch - b.pitch)
+  }));
+  if (tracks.length === 0) throw new Error("This MIDI file has no notes.");
+  const seen = /* @__PURE__ */ new Map();
+  for (const tr2 of tracks) {
+    const n = (seen.get(tr2.name) ?? 0) + 1;
+    seen.set(tr2.name, n);
+    if (n > 1) tr2.name = `${tr2.name} ${n}`;
+  }
+  let changes = 0;
+  for (let k = 1; k < tempos.length; k++) if (tempos[k][1] !== tempos[k - 1][1]) changes++;
+  return { bpm: Math.round(bpm * 1e3) / 1e3, beats: meter ? meter[0] * 4 / meter[1] : 4, tempoChanges: changes, tracks, ...source ? { source } : {} };
+}
+function writeNotes(data) {
+  const q = (x) => Math.round(x * 960);
+  return JSON.stringify({
+    trigscript: "notes",
+    version: VERSION3,
+    bpm: data.bpm,
+    beats: data.beats,
+    tempoChanges: data.tempoChanges,
+    ...data.source ? { source: data.source } : {},
+    tracks: data.tracks.map((t) => ({ name: t.name, channel: t.channel, program: t.program, notes: t.notes.flatMap((n) => [q(n.at), q(n.beats), n.pitch, n.velocity]) }))
+  });
+}
+function readNotes(text) {
+  let h;
+  try {
+    h = JSON.parse(text);
+  } catch {
+    throw new Error("These are not notes TrigScript imported: a .notes file is one line of JSON.");
+  }
+  if (h?.trigscript !== "notes") throw new Error("These are not notes TrigScript imported.");
+  if (h.version !== VERSION3) throw new Error(`These notes are of version ${String(h.version)}; this TrigScript reads version ${VERSION3}.`);
+  const bpm = Number(h.bpm), beats = Number(h.beats);
+  if (!(bpm > 0) || !(beats > 0) || !Array.isArray(h.tracks)) throw new Error("These notes are damaged: no tempo, no bar or no tracks.");
+  const tracks = h.tracks.map((t, k) => {
+    const ns = t?.notes;
+    if (!Array.isArray(ns) || ns.length % 4 !== 0 || ns.some((x) => typeof x !== "number" || !Number.isFinite(x))) throw new Error(`These notes are damaged: track ${k + 1}'s notes are not four numbers each.`);
+    const notes = [];
+    for (let i = 0; i < ns.length; i += 4) notes.push({ at: ns[i] / 960, beats: ns[i + 1] / 960, pitch: ns[i + 2], velocity: ns[i + 3] });
+    return { name: String(t.name ?? `Track ${k + 1}`), channel: Number(t.channel ?? 1), program: Number(t.program ?? 1), notes };
+  });
+  return { bpm, beats, tempoChanges: Number(h.tempoChanges ?? 0), tracks, ...typeof h.source === "string" ? { source: h.source } : {} };
+}
+function describeNotes(text) {
+  try {
+    const d = readNotes(text);
+    const n = d.tracks.reduce((s, t) => s + t.notes.length, 0);
+    const end = Math.max(0, ...d.tracks.flatMap((t) => t.notes.map((x) => x.at + x.beats)));
+    const seconds = Math.round(end * 60 / d.bpm);
+    return `Notes: ${d.tracks.length} track${d.tracks.length === 1 ? "" : "s"} (${d.tracks.map((t) => t.name).join(", ")}), ${n.toLocaleString("en-US")} notes, ${Math.round(d.bpm * 100) / 100} beats a minute (${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")})${d.tempoChanges ? `, the tempo changing ${d.tempoChanges} time${d.tempoChanges === 1 ? "" : "s"} (a song plays at the first)` : ""}${d.source ? `, from ${d.source}` : ""}.`;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+// compiler/media.ts
+var isMediaFile = (path) => /\.(?:video|image|sound|notes)$/i.test(path);
+var isImageFile = (path) => path.toLowerCase().endsWith(IMAGE_EXTENSION);
+var isSoundFile = (path) => path.toLowerCase().endsWith(SOUND_EXTENSION);
+var isNotesFile = (path) => path.toLowerCase().endsWith(NOTES_EXTENSION);
+var FASTEST_FRAME_MS = 42;
+var VERSION4 = 1;
+function writeVideo(v) {
+  const { width, height } = v;
+  if (!(Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0 && width <= 256 && height <= 256)) throw new Error(`A video is 1 to 256 tiles each way, not ${width} \xD7 ${height}.`);
+  const n = width * height;
+  const coder = new RangeEncoder();
+  const odds = new Uint16Array(1 << CONTEXT_BITS).fill(PROB_HALF);
+  let previous = new Uint8Array(n), now = new Uint8Array(n);
+  for (const frame of v.frames) {
+    if (frame.length !== n) throw new Error(`A frame of a ${width} \xD7 ${height} video has ${n} tiles, not ${frame.length}.`);
+    for (let i = 0; i < n; i++) now[i] = frame[i] ? 1 : 0;
+    for (let y = 0, i = 0; y < height; y++) for (let x = 0; x < width; x++, i++) coder.bit(odds, context(now, previous, width, height, x, y), now[i]);
+    [previous, now] = [now, previous];
+  }
+  const header = { trigscript: "video", version: VERSION4, width, height, frames: v.frames.length, frameMs: v.frameMs, ...v.source ? { source: v.source } : {}, data: toBase64(coder.finish()) };
+  return JSON.stringify(header);
+}
+function readVideo(text) {
+  let h;
+  try {
+    h = JSON.parse(text);
+  } catch {
+    throw new Error("This is not a video TrigScript imported: a .video file is one line of JSON.");
+  }
+  if (h?.trigscript !== "video" || typeof h.data !== "string") throw new Error("This is not a video TrigScript imported.");
+  if (h.version !== VERSION4) throw new Error(`This video was written by a newer TrigScript (format ${h.version}); update the plugin to read it.`);
+  const width = Number(h.width), height = Number(h.height), length = Number(h.frames), frameMs = Number(h.frameMs);
+  if (![width, height, length].every((k) => Number.isInteger(k) && k >= 0) || !(frameMs > 0)) throw new Error("The video's sizes are not whole numbers.");
+  const n = width * height, stride = n + 7 >> 3;
+  const coder = new RangeDecoder(fromBase64(h.data));
+  const odds = new Uint16Array(1 << CONTEXT_BITS).fill(PROB_HALF);
+  const bits = new Uint8Array(stride * length);
+  let previous = new Uint8Array(n), now = new Uint8Array(n);
+  for (let f = 0; f < length; f++) {
+    const base = f * stride;
+    for (let y = 0, i = 0; y < height; y++) for (let x = 0; x < width; x++, i++) {
+      const b = coder.bit(odds, context(now, previous, width, height, x, y));
+      now[i] = b;
+      if (b) bits[base + (i >> 3)] |= 1 << (i & 7);
+    }
+    if (coder.overrun) throw new Error("The video's frames end too soon: the file is cut short.");
+    [previous, now] = [now, previous];
+  }
+  return Object.freeze({
+    width,
+    height,
+    length,
+    frameMs,
+    ...typeof h.source === "string" ? { source: h.source } : {},
+    tiles(i) {
+      if (!(Number.isInteger(i) && i >= 0 && i < length)) throw new RangeError(`The video has frames 0 \u2026 ${length - 1}; there is no frame ${i}.`);
+      const out = new Uint8Array(n), base = i * stride;
+      for (let k = 0; k < n; k++) out[k] = bits[base + (k >> 3)] >> (k & 7) & 1;
+      return out;
+    }
+  });
+}
+function describeVideo(text) {
+  try {
+    const h = JSON.parse(text);
+    if (h?.trigscript !== "video") return "This is not a video TrigScript imported.";
+    const v = { width: Number(h.width), height: Number(h.height), length: Number(h.frames), frameMs: Number(h.frameMs), source: typeof h.source === "string" ? h.source : void 0 };
+    const seconds = Math.round(v.length * v.frameMs / 1e3);
+    const speed = v.frameMs === FASTEST_FRAME_MS ? "at the game's speed on Fastest" : `${(1e3 / v.frameMs).toFixed(1)} a second`;
+    return `A video, ${v.width} \xD7 ${v.height} tiles, ${v.length.toLocaleString("en-US")} frame${v.length === 1 ? "" : "s"} ${speed} (${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")})${v.source ? `, from ${v.source}` : ""}.`;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+var describeMedia = (path, text) => isImageFile(path) ? describeImage(text) : isSoundFile(path) ? describeSound(text) : isNotesFile(path) ? describeNotes(text) : describeVideo(text);
+var CONTEXT_BITS = 11;
+function context(now, previous, width, height, x, y) {
+  const i = y * width + x;
+  const left = x > 0, right = x + 1 < width, up = y > 0;
+  return (left ? now[i - 1] : 0) | (x > 1 ? now[i - 2] : 0) << 1 | (up && left ? now[i - width - 1] : 0) << 2 | (up ? now[i - width] : 0) << 3 | (up && right ? now[i - width + 1] : 0) << 4 | (y > 1 ? now[i - 2 * width] : 0) << 5 | previous[i] << 6 | (left ? previous[i - 1] : 0) << 7 | (right ? previous[i + 1] : 0) << 8 | (up ? previous[i - width] : 0) << 9 | (y + 1 < height ? previous[i + width] : 0) << 10;
+}
+
 // compiler/runtime.ts
 var READ_ARITY = new Map(
   [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
 );
 var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
 var UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "underMouse", "stats"];
-var INPUT_CALL_NAMES = ["keyPressed", "clicked", "mouse", "chatted", "centerLocation"];
+var INPUT_CALL_NAMES = ["keyPressed", "keyHeld", "clicked", "mouse", "chatted", "centerLocation"];
 
 // compiler/declarations.ts
 var DECLARATIONS_FILE = "trigscript.d.ts";
@@ -4088,6 +6368,8 @@ var HEADER = `// \u2500\u2500 TrigScript \u2500\u2500\u2500\u2500\u2500\u2500\u2
 function types(kw) {
   return `
 ${kw}type Brand<K extends string> = { readonly __kind?: K };
+/** A number that is none of the named tables' (units.*, orders.* \u2026): what an argument takes where a table's would be wrong. */
+${kw}type RawNumber = number & { readonly __kind?: never };
 /** A player or player group (P1 \u2026 P12, CurrentPlayer, AllPlayers, players.*, or a raw group number). */
 ${kw}type Player<N extends number = number> = N & Brand<"player">;
 /** A unit type (units.*, or a raw units.dat id): what a condition or an action names. A unit on the map is a Unit. */
@@ -4098,6 +6380,10 @@ ${kw}type Weapon<N extends number = number> = N & Brand<"weapon">;
 ${kw}type Upgrade<N extends number = number> = N & Brand<"upgrade">;
 /** A technology (techs.*, or a raw techdata.dat id), for stats(). */
 ${kw}type Tech<N extends number = number> = N & Brand<"tech">;
+/** An order (orders.*, or a raw orders.dat id): what a unit is doing. */
+${kw}type Order<N extends number = number> = N & Brand<"order">;
+/** The orders the Order action gives: orders.Move, orders.Patrol and orders.AttackMove ("move", "patrol", "attack"). */
+${kw}type OrderOfAction = ${Object.values(ORDER_OF_VERB).map((n) => `Order<${n}>`).join(" | ")};
 /** A player colour (colors.*), for stats(player).color. */
 ${kw}type PlayerColor<N extends number = number> = N & Brand<"color">;
 ${kw}type ColorName = __COLOR_NAMES__;
@@ -4105,6 +6391,8 @@ ${kw}type ColorName = __COLOR_NAMES__;
 ${kw}type Location<N extends number = number> = N & Brand<"location">;
 /** A switch (switches.*, or a raw 0-based switch number). */
 ${kw}type Switch<N extends number = number> = N & Brand<"switch">;
+/** A sound of the map (sounds.*, the Sound Editor's list): the string of its path, what playWav() takes. A path in the map's archive as text also works. */
+${kw}type Sound<N extends number = number> = N & Brand<"sound">;
 /** An AI script (aiScripts.*; a four-character code or StarEdit name as a string also works). */
 ${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
 /** A race (races.*), as race() returns it. */
@@ -4123,6 +6411,14 @@ ${kw}type u16 = number & Brand<"u16">;
  * but compare exactly: a number below zero is smaller than any u32.
  */
 ${kw}type u32 = number & Brand<"u32">;
+/**
+ * A number with a fraction: 16.16 fixed point, \u221232 768 \u2026 32 767.99998 in steps of 1/65 536. A number is one as soon as a
+ * fraction is stored into it (\`let x = 0.5\`, \`x += speed * 0.1\`, \`Math.cos(a)\`), so the annotation is only needed
+ * to say so before anything does. + \u2212 \xD7 \xF7 and the comparisons work as on any number, and a whole number beside one is
+ * turned into one; Math.floor / round / trunc / ceil make a whole number of it, which is what an index, a count or a
+ * place on the map takes. Math.sqrt, sin, cos, tan, atan, atan2 and hypot give one (angles in radians, as in JavaScript).
+ */
+${kw}type fixed = number & Brand<"fixed">;
 /** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
 ${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
 
@@ -4174,10 +6470,22 @@ ${kw}interface Unit {
   readonly y: number;
   /** How many units it has killed, 0 \u2026 255. */
   kills: number;
-  /** The orders.dat id of what the unit is doing (3 is standing guard, 6 moving, 10 attacking). */
-  readonly orderId: number;
-  /** Frames until the unit can attack or cast again, 0 \u2026 255; writing it holds the unit's fire that long. */
+  /** What the unit is doing: \`if (u.orderId == orders.Move)\`. orders.PlayerGuard is standing guard, orders.AttackUnit attacking. */
+  readonly orderId: Order;
+  /** Frames until the unit can attack or cast again, 0 \u2026 255; writing it holds the unit's fire that long (the ground weapon's, the air weapon's and the spells' alike). */
   cooldown: number;
+  /**
+   * Frames left of a unit's or building's making, 0 \u2026 65535; 0 once complete. Writing it lengthens or shortens the making.
+   * A building finished early keeps the hit points it had reached, and a Terran one under a third of its full hit points
+   * burns down (Remastered, played): heal it after.
+   */
+  buildTime: number;
+  /** The unit's rank, added to the type's (the one shown on its panel: Private, Corporal \u2026), 0 \u2026 255. */
+  rank: number;
+  /** Frames left of a defensive matrix, 0 \u2026 255: writing one gives the unit a matrix of 250 points for that long; 0 takes it away. */
+  matrix: number;
+  /** How fast the unit is moving now, in 256ths of a pixel a frame: 0 standing still, 1024 a Marine's walk. Read only. */
+  readonly speed: number;
   /** What a mineral field or a geyser still holds. */
   resources: number;
   /** Frames left of each effect, 0 \u2026 255: write one to start, lengthen or end it. Stim, ensnare and the rest tick down about every eighth frame. */
@@ -4190,11 +6498,21 @@ ${kw}interface Unit {
   stasis: number;
   /** Whether the unit cannot be hurt. */
   invincible: boolean;
-  readonly hallucinated: boolean;
+  /** Whether the unit is a hallucination: made so, it takes double damage and dies after a while, as a Templar's do. */
+  hallucinated: boolean;
+  /** Whether the unit moves at its upgraded speed (a Zergling's metabolic boost, a Vulture's ion thrusters) regardless of the upgrade. */
+  speedUpgrade: boolean;
   readonly cloaked: boolean;
   readonly burrowed: boolean;
-  /** True for about a second after something hit the unit. */
+  /**
+   * True for about a second after the game raised its "under attack" alert for the unit: a hit out of the player's view.
+   * A unit hit on the player's screen does not count \u2014 the game keeps no other "recently hit" mark a map may read.
+   */
   readonly underAttack: boolean;
+  /** True while the unit's order is aimed at another unit (attacking, following, repairing \u2026). */
+  readonly hasTarget: boolean;
+  /** True while the unit rides in a transport or a bunker. */
+  readonly inTransport: boolean;
   /** Send the unit somewhere, as the Order action does, this unit alone. */
   order(order: "move" | "patrol" | "attack", target: Location): void;
   /** Hand the unit to another player. */
@@ -4216,7 +6534,7 @@ ${kw}interface UnitFilter {
   /** Inside this location. */
   at?: Location;
 }
-/** A key keyPressed() knows. F6 is not among them: the game reports no press of it. */
+/** A key keyPressed() knows. F2 to F6 are not among them: StarCraft: Remastered reports no press of them. */
 ${kw}type Key = __KEY_NAMES__;
 /** What a chatted() pattern's captures are read as: {n} a number, {unit:unit} a unit type, {kind:ore|gas} the place of the word in its list. */
 ${kw}type ChatCapture<C extends string> = C extends \`\${infer N}:unit\` ? { readonly [K in N]: UnitType } : C extends \`\${infer N}:\${string}\` ? { readonly [K in N]: number } : { readonly [K in C]: number };
@@ -4236,6 +6554,7 @@ ${kw}interface ProgramOptions {
 `;
 }
 var COLOR_NAMES = Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(" | ");
+var TEXT_COLOR_TABLE = Object.entries(TEXT_COLORS).map(([w, n]) => `readonly ${w}: ${n}`).join("; ");
 var COLOR_TABLE = Object.entries(PLAYER_COLORS).map(([w, n]) => `readonly ${w}: PlayerColor<${n}>`).join("; ");
 function choiceTypes(kw) {
   const out = [];
@@ -4299,10 +6618,43 @@ ${kw}function frames(n: number): Duration;
 ${kw}function cycles(n: number): Duration;
 /**
  * Pause the program, inside program() only: the statements after it run that much later, and nothing
- * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); sleep(seconds(15)); }\`
+ * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); await sleep(seconds(15)); }\`
  * is a wave every fifteen seconds. Unlike wait(), it takes nothing from the triggers: a Wait uses the player's one wait slot.
+ * In an async function it is awaited; in a program that is not async, \`sleep(\u2026)\` on its own pauses as before.
  */
-${kw}function sleep(duration: Duration): void;
+${kw}function sleep(duration: Duration): Promise<void>;
+/**
+ * Wait for the next frame \u2014 the same as sleep(frames(1)), as a frame loop reads:
+ * \`while (true) { \u2026draw\u2026; await nextFrame(); }\`. Inside program() only.
+ */
+${kw}function nextFrame(): Promise<void>;
+/**
+ * Wait until a condition holds, inside an async program only: \`await until(() => countUnits(P8, units.ZergZergling) === 0)\`.
+ * The function is asked once now and then once every frame; the program goes on in the frame it answers true.
+ * A condition on its own is asked again the same way: \`await until(bring(P1, units.AnyUnit, locations.Exit, ">=", 1))\`.
+ */
+${kw}function until(test: (() => boolean) | Condition): Promise<void>;
+/**
+ * A task that start() started: \`t.cancel()\` stops it where it is, \`t.running\` is true until it ends or is cancelled,
+ * and \`await t\` waits for it to end. Kept in a variable, it is a number of the program, 0 for none.
+ */
+${kw}interface Task extends Promise<void> {
+  readonly __task: true;
+  /** Stop the task where it is. Nothing happens when it has ended already. */
+  cancel(): void;
+  /** True until the task ends or is cancelled. */
+  readonly running: boolean;
+}
+/**
+ * Start a task and go on without waiting for it, inside an async program only: \`start(wave(3))\`, or
+ * \`start(async () => { \u2026 })\`. The arguments are worked out now; the task runs beside the program, from this frame on,
+ * and keeps running after the program ends. \`void wave(3)\` starts one too, without a Task to keep.
+ *
+ * Each start() is a body of its own, and \`max\` of its tasks (16 unless said) can run at once: a start with all of
+ * them running starts nothing, and the game says so. \`for (\u2026) start(wave(n), { max: 40 })\`. A loop unrolled when the
+ * script is built has a start() for each of its turns.
+ */
+${kw}function start(task: Promise<unknown> | (() => Promise<unknown>), options?: { max?: number }): Task;
 /** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(\u2026)))\`. */
 ${kw}function rose(condition: Condition | boolean): boolean;
 /** True the first time its condition holds, never again. Inside program(), in an if. */
@@ -4318,6 +6670,8 @@ ${kw}function clamp(value: number, low: number, high: number): number;
 ${kw}function u32(value: number): u32;
 /** The same 32 bits read as a signed number: i32(4294967295) is -1. Costs nothing in a program; \`x | 0\` of a u32 says the same. */
 ${kw}function i32(value: number): number;
+/** A whole number as a fixed one, so that what is computed with it keeps the fraction: 3 / 2 is 1, 3 / fixed(2) is 1.5. Costs a shift in a program. */
+${kw}function fixed(value: number): fixed;
 /**
  * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
  * number goes \u2014 \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,
@@ -4389,12 +6743,12 @@ ${kw}function unitsAt(location: Location, filter?: Omit<UnitFilter, "at">): Unit
 ${kw}function unitsOf(player: Player, filter?: Omit<UnitFilter, "owner">): UnitSet;
 /** Every unit on the map the filter matches. */
 ${kw}function allUnits(filter?: UnitFilter): UnitSet;
-/** The first unit the filter matches, or null. */
-${kw}function first(filter?: UnitFilter): Unit | null;
+/** The first unit the filter matches, or null; a set of units \u2014 \`first(unitsAt(locations.Base, { owner: P1 }))\` \u2014 is its filter. */
+${kw}function first(filter?: UnitFilter | UnitSet): Unit | null;
 /** The unit of a type nearest to the centre of a location, or null; units.AnyUnit for any type. */
 ${kw}function nearest(unit: UnitType, location: Location, filter?: Omit<UnitFilter, "type">): Unit | null;
 /** One of the units the filter matches, picked by the game, or null. */
-${kw}function randomUnit(filter?: UnitFilter): Unit | null;
+${kw}function randomUnit(filter?: UnitFilter | UnitSet): Unit | null;
 /**
  * The game's own tables, inside program() only: what a unit type costs, what a weapon does, a player's
  * upgrades. Read a field as a number, assign to it, += it: \`stats(units.TerranMarine).minerals = 25;\`
@@ -4406,6 +6760,261 @@ ${kw}function stats(weapon: Weapon): WeaponStats;
 ${kw}function stats(upgrade: Upgrade): UpgradeStats;
 ${kw}function stats(tech: Tech): TechStats;
 ${kw}function stats(player: Player): PlayerStats;
+/**
+ * For a library: a location of the map's first 63 that the map does not use, taken when the script is
+ * built, so the library's users never have to give it one. The same reason gives the same location; the
+ * reason is what the map's requirements show. \`const spot = reserveLocation("fog: where each brush is made");\`
+ */
+${kw}function reserveLocation(why: string): Location;
+/**
+ * A video the script imports, when the script is built: \`import badApple from "./bad-apple.video"\`.
+ * A .video file is made by Import Video\u2026 in the Explorer \u2014 the frames the editor decoded, a tile a pixel,
+ * ink or not, a frame for every frame of the game \u2014 and kept in the map with the script.
+ */
+${kw}interface Video {
+  /** Tiles across. */
+  readonly width: number;
+  /** Tiles down. */
+  readonly height: number;
+  /** How many frames. */
+  readonly length: number;
+  /** How long a frame shows, in milliseconds: 42 is a frame of the game on Fastest. */
+  readonly frameMs: number;
+  /** How long the whole video plays, in seconds. */
+  readonly seconds: number;
+  /** Frame i as rows of text, # ink and . not: what fog.picture takes. When the script is built. */
+  frame(i: number): readonly string[];
+}
+/**
+ * An image the script imports, when the script is built: \`import logo from "./logo.image"\`.
+ * An .image file is made by Import Video\u2026 in the Explorer from a picture \u2014 its pixels at the size
+ * chosen, in grey or in colour, with its transparency \u2014 and kept in the map with the script.
+ * Everything here is worked out when the script is built; what reaches the game is what the
+ * script makes of it: \`fog.picture(logo.scale(64).threshold(140))\`.
+ */
+${kw}interface Image {
+  /** Pixels across. */
+  readonly width: number;
+  /** Pixels down. */
+  readonly height: number;
+  /** Whether it was kept in colour; when not, a pixel's red, green and blue are its grey. */
+  readonly color: boolean;
+  /** Whether any pixel is less than opaque. */
+  readonly transparent: boolean;
+  /** Pixel (x, y)'s grey, 0 black to 255 white. (0, 0) is the top left. */
+  grey(x: number, y: number): number;
+  /** Pixel (x, y)'s colour, each 0 to 255. */
+  rgb(x: number, y: number): { readonly r: number; readonly g: number; readonly b: number };
+  /** How opaque pixel (x, y) is: 0 transparent to 255. A pixel under 128 is never ink. */
+  alpha(x: number, y: number): number;
+  /** The part of the image width \xD7 height pixels in size whose top left is (x, y). */
+  crop(x: number, y: number, width: number, height: number): Image;
+  /** The image at another size (up to 1024 each way), each pixel the average of what it covers; height kept in shape when left out. */
+  scale(width: number, height?: number): Image;
+  /** The image mirrored: "horizontal" swaps left and right, "vertical" top and bottom. */
+  flip(axis: "horizontal" | "vertical"): Image;
+  /** The image turned clockwise. */
+  rotate(turn: 90 | 180 | 270): Image;
+  /** Light for dark: each colour 255 minus itself. */
+  invert(): Image;
+  /**
+   * Rows of text for fog.picture, # the ink: with light ink (the default) a pixel whose grey is
+   * level or more, with dark ink one under it. \`logo.threshold(100, { ink: "dark" })\`
+   */
+  threshold(level?: number, options?: { readonly ink?: "light" | "dark" }): readonly string[];
+  /** Rows of digits, a pixel each from 0 (darkest) to count \u2212 1 (lightest), . where it is transparent: 2 to 10 tones. */
+  tones(count: number): readonly string[];
+  /**
+   * Rows of text for fog.picture that show grey: the image cut into cells (cellHeight one more than the width
+   * when left out, as the fog's brushes are), each lit by one brush or none \u2014 larger for lighter, the largest
+   * running into its neighbours \u2014 what one cell misses handed on to the next so an area's share of light is
+   * its grey. fog.picture draws it a brush a cell at most: 6 \xD7 7 cells over 128 \xD7 96 tiles are about 300.
+   * { diffuse: false }: each cell by its own grey alone, an even grid whose greys come in steps.
+   * \`fog.picture(photo.halftone(6))\`
+   */
+  halftone(cellWidth: number, cellHeight?: number, options?: { readonly diffuse?: boolean }): readonly string[];
+}
+/**
+ * Notes when the script is built, imported from a MIDI file (\`import tune from "./tune.notes"\`, made by
+ * Import Video\u2026 from a .mid): each track's notes, in beats from the start. \`music.midi(tune, { Piano: keys })\`
+ * makes a song of the tracks it names, each played by an instrument.
+ */
+${kw}interface Notes {
+  /** The tempo the file starts at, beats a minute. */
+  readonly bpm: number;
+  /** Quarter notes a bar, by the file's time signature (4 for 4/4, 3 for 6/8). */
+  readonly beats: number;
+  /** How often the tempo changes later in the file: a song plays at one tempo, the first. */
+  readonly tempoChanges: number;
+  readonly tracks: readonly NotesTrack[];
+  /** The MIDI file it came from. */
+  readonly source?: string;
+}
+
+/** A track of imported notes: one channel of one track of the MIDI file. */
+${kw}interface NotesTrack {
+  /** Its name in the file (unique among the tracks), or "Track 2", "Track 1 channel 3". */
+  readonly name: string;
+  /** 1 \u2026 16. */
+  readonly channel: number;
+  /** The General MIDI instrument the file asks for, 1 (piano) \u2026 128. */
+  readonly program: number;
+  /** Whether it is on channel 10, the drums. */
+  readonly drums: boolean;
+  /** Its notes in the order they start: \`at\` and \`beats\` in beats (quarter notes), \`pitch\` the MIDI number (60 is C4), \`note\` its name, \`velocity\` 1 \u2026 127. */
+  readonly notes: readonly { readonly at: number; readonly beats: number; readonly pitch: number; readonly note: string; readonly velocity: number }[];
+}
+
+/**
+ * A sound when the script is built: imported (\`import boom from "./boom.sound"\`, made by Import Video\u2026 in
+ * the Explorer from any sound file) or made by tone(), noise() and silence(). Every method makes a new clip.
+ * A program plays one with playWav(boom); the build puts each clip it plays in the map once.
+ * In the game a sound starts within 21 ms of its frame; playing it again adds a second copy beside the
+ * first, and nothing stops one, so a clip's length and loudness are what is heard. 32 play at once, and
+ * copies add with no limiter: keep peak under 1 where they overlap. A clip of 2 seconds or more that a
+ * program plays goes in the map as Ogg Vorbis (Remastered plays it). A shorter one, or one a trigger()
+ * plays (which 1.16.1 plays too, and it plays no Ogg), is a WAV: IMA ADPCM, a quarter of 16-bit, unless
+ * that would distort it (the jumps of a square or saw wave) or it has two channels: then 16-bit.
+ */
+${kw}interface Clip {
+  /** How long it plays. */
+  readonly seconds: number;
+  /** Samples a second. */
+  readonly rate: number;
+  /** 1, or 2 for a clip with a left and a right (pan(), or a mix with one). */
+  readonly channels: 1 | 2;
+  /** The loudest sample, 0 to 1; above 1 is cut off when the map's file is written. */
+  readonly peak: number;
+  /** The part from \`from\` to \`to\` seconds (the end when left out). */
+  trim(from: number, to?: number): Clip;
+  /** Louder or quieter: 0.5 is half as loud, 2 twice. The game plays it as loud as written. */
+  gain(factor: number): Clip;
+  /** Rising from silence over the first \`inSeconds\`, falling to it over the last \`outSeconds\`. */
+  fade(inSeconds: number, outSeconds?: number): Clip;
+  /** Played backwards. */
+  reverse(): Clip;
+  /** Higher or lower by semitones, as a sampler plays a note: 12 is an octave up and half as long. */
+  pitch(semitones: number): Clip;
+  /** This clip, then each of these after it. */
+  then(...clips: Clip[]): Clip;
+  /** \`other\` played over this one, starting \`at\` seconds in (0 when left out). */
+  mix(other: Clip, at?: number): Clip;
+  /** Played \`times\` times, one after another. */
+  repeat(times: number): Clip;
+  /**
+   * Its loudness through time, a straight line between [seconds, level] points \u2014 an instrument's attack,
+   * decay, sustain and release: \`tone("C4", 0.5).envelope([0, 0], [0.01, 1], [0.1, 0.6], [0.4, 0.6], [0.5, 0])\`
+   */
+  envelope(...points: readonly (readonly [number, number])[]): Clip;
+  /**
+   * Where it is heard, \u22121 left to 1 right: a balance, the far side turned down, so 0 is the clip as it
+   * was. The clip then has two channels.
+   */
+  pan(position: number): Clip;
+  /** Its two channels as one. */
+  mono(): Clip;
+  /**
+   * Never louder than \`ceiling\` (0.84, \u22121.5 dB, when left out), between the samples too: turned down smoothly over the 5 ms before
+   * each peak that would go over, and back up over \`release\` seconds (0.1). What a mix goes through last,
+   * so that the parts can add up without cutting off: \`mixdown(parts).limit()\`.
+   */
+  /**
+   * The same clip, put in the map as Ogg Vorbis at \`quality\`, \u22121 \u2026 10 (5, about 160 kbit/s for two channels, when
+   * left out): 4 is about 130, 3 about 110 \u2014 smaller files, for clips many of which play at once. However short it is
+   * (a clip shorter than two seconds is otherwise a WAV).
+   */
+  ogg(quality?: number): Clip;
+  limit(options?: { readonly ceiling?: number; readonly release?: number }): Clip;
+  /** Louder or quieter, so its loudest sample is \`peak\` (0.84, \u22121.5 dB, when left out). */
+  normalize(peak?: number): Clip;
+  /** In the map as a WAV however long it is, for StarCraft 1.16.1, which plays no Ogg. */
+  wav(): Clip;
+  /**
+   * A filter. "lowpass" keeps what is below \`cutoff\` hertz, "highpass" what is above, "bandpass" what is
+   * near it, "notch" all but it \u2014 \`cutoff\` a number, or [seconds, hertz] points to sweep it (a synth's
+   * filter opening: \`saw.filter("lowpass", [[0, 300], [0.1, 4000], [0.6, 800]], { resonance: 0.6 })\`);
+   * \`resonance\` 0 to 1 rings at the cutoff. "lowshelf" and "highshelf" turn everything below or above
+   * \`cutoff\` up or down by \`gain\` dB, "peak" what is around it, \`q\` wide (0.707).
+   */
+  filter(type: "lowpass" | "highpass" | "bandpass" | "notch" | "lowshelf" | "highshelf" | "peak", cutoff: number | readonly (readonly [number, number])[], options?: { readonly resonance?: number; readonly gain?: number; readonly q?: number }): Clip;
+  /**
+   * Saturation, \`dB\` of push (6 warm, 18 gritty, 30 fuzz): quiet parts as they were, loud ones rounded
+   * off toward a square \u2014 the harmonics a guitar amp or a tape adds.
+   */
+  drive(dB: number): Clip;
+  /**
+   * An echo \`seconds\` later (a beat's worth: 60 / bpm), each repeat \`feedback\` as loud (0.35) and a little
+   * duller (\`tone\`, the hertz kept, 5 000), \`mix\` its level (0.35). \`pingPong\`: left, right, left (two
+   * channels). The clip gets longer by the repeats.
+   */
+  delay(seconds: number, options?: { readonly feedback?: number; readonly mix?: number; readonly tone?: number; readonly pingPong?: boolean }): Clip;
+  /**
+   * A plate reverb: the room around the sound, different left and right (two channels), the clip longer
+   * by its tail. \`decay\` 0 to 1 (0.6; 0.3 a small room, 0.9 a hall), \`damping\` 0 to 1 (0.4: how fast the
+   * top dies), \`predelay\` seconds before it starts (0.015), \`mix\` the reverb's level (0.3), \`dry\` the
+   * clip's (1), \`width\` 0 to 1 (1).
+   */
+  reverb(options?: { readonly decay?: number; readonly damping?: number; readonly predelay?: number; readonly mix?: number; readonly dry?: number; readonly width?: number }): Clip;
+  /** A chorus: copies a few ms late and wobbling, left and right apart (two channels). \`speed\` Hz (0.8), \`depth\` seconds (0.003), \`mix\` (0.5). */
+  chorus(options?: { readonly speed?: number; readonly depth?: number; readonly mix?: number }): Clip;
+  /**
+   * A compressor: above \`threshold\` dB (\u221218), every \`ratio\` dB louder (4) comes out one, turned down
+   * over \`attack\` seconds (0.005) and back over \`release\` (0.12), eased over a \`knee\` dB wide (6);
+   * \`makeup\` dB after (0). Evens a part out, or glues a mix.
+   */
+  compress(options?: { readonly threshold?: number; readonly ratio?: number; readonly attack?: number; readonly release?: number; readonly knee?: number; readonly makeup?: number }): Clip;
+}
+/**
+ * When the script is built: a tone of \`pitch\` \u2014 hertz, or a note's name: "A4" (440), "C#5", "Eb3" \u2014 for
+ * \`seconds\`, or [seconds, pitch] points to glide (a kick's drop: [[0, 150], [0.08, 45]]). wave: "sine"
+ * (the default), "square", "triangle" or "saw"; volume 0 to 1 (0.5). \`voices\` copies (1 to 16) spread
+ * \`detune\` cents apart from lowest to highest (20), and \`width\` 0 to 1 across left and right: a
+ * supersaw is \`tone("A3", 1, { wave: "saw", voices: 7, detune: 30, width: 0.8 })\`.
+ *   const beep = tone("A5", 0.1, { wave: "square", volume: 0.3 }).fade(0, 0.05);
+ */
+${kw}function tone(pitch: number | string | readonly (readonly [number, number | string])[], seconds: number, options?: { readonly wave?: "sine" | "square" | "triangle" | "saw"; readonly volume?: number; readonly rate?: number; readonly voices?: number; readonly detune?: number; readonly width?: number }): Clip;
+/**
+ * When the script is built: two-operator FM \u2014 a sine whose phase another, \`ratio\` times its pitch,
+ * pushes by \`index\` (2; or [seconds, index] points, bright at the start and mellow after). ratio 1 a
+ * reed or an electric piano, 3.5 or 7 a bell, 0.5 a bass; \`feedback\` 0 to 2 gives the push an edge.
+ *   const bell = fm("E5", 2, { ratio: 3.5, index: [[0, 6], [2, 0.3]], volume: 0.3 }).fade(0, 1.5);
+ */
+${kw}function fm(pitch: number | string | readonly (readonly [number, number | string])[], seconds: number, options?: { readonly ratio?: number; readonly index?: number | readonly (readonly [number, number])[]; readonly feedback?: number; readonly volume?: number; readonly rate?: number }): Clip;
+/**
+ * When the script is built: a plucked string (Karplus\u2013Strong) \u2014 a guitar, a harp, a koto. \`brightness\`
+ * 0 to 1 (0.5), \`decay\` seconds to fade away (2).
+ */
+${kw}function pluck(pitch: number | string, seconds: number, options?: { readonly brightness?: number; readonly decay?: number; readonly volume?: number; readonly rate?: number }): Clip;
+/** When the script is built: noise for \`seconds\` (the same every build) \u2014 with fade(), a hit or a burst. */
+${kw}function noise(seconds: number, options?: { readonly volume?: number; readonly rate?: number }): Clip;
+/** When the script is built: nothing for \`seconds\`, to put a gap between clips: \`a.then(silence(0.2), b)\`. */
+${kw}function silence(seconds: number, options?: { readonly rate?: number }): Clip;
+/**
+ * When the script is built: clips laid over one another, each from its own time in seconds, as one clip \u2014
+ * a song mixed before the game, every note exactly in time. \`mixdown([{ clip: kick, at: 0 }, { clip: hat, at: 0.25 }])\`
+ * At the first part's rate, or \`rate\`; two channels when a part has two. \`seconds\`: that long at least.
+ */
+${kw}function mixdown(parts: readonly { readonly clip: Clip; readonly at: number }[], seconds?: number, rate?: number): Clip;
+/**
+ * Clips the game will play together, each from its time \u2014 the bars of a song played one after another and the layers
+ * over them \u2014 each turned down by one gain, so what they add up to never goes over \`peak\` (0.84, \u22121.5 dB), between
+ * the samples too: what a limiter does for a mix, for sounds the game adds up itself. Never turned up. The same clip
+ * given twice comes back as one. \`over\`: clips that may play on top, each at any of its times (a stinger on any bar
+ * line), room left for them too; they come back after the parts, turned down with them. When the script is built: \`const [a, b] = together([{ clip: x, at: 0 }, { clip: y, at: 1 }])\`
+ */
+${kw}function together(parts: readonly { readonly clip: Clip; readonly at: number }[], options?: { readonly peak?: number; readonly over?: readonly { readonly clip: Clip; readonly at: readonly number[] }[] }): Clip[];
+/** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
+${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
+/**
+ * When the script is built: the brushes whose union is a picture's ink \u2014 rows of text, # the ink \u2014 each one
+ * of \`shapes\` (rows of text, # its tiles and @ its centre, a row one run of tiles) lying on ink only. Ink
+ * thinner than the first shape gets the first shape on it anyway. Greedy, the largest gain first. For a
+ * renderer of a library's own: fog.picture is this with the game's sight ranges.
+ *   cover([".##.", "####"], [["#@#"]])   // brushes of a 3-wide bar
+ * Of a video, each frame's brushes (worked out once while the file and the shapes stay the same).
+ */
+${kw}function cover(picture: readonly string[], shapes: readonly (readonly string[])[]): readonly Brush[];
+${kw}function cover(video: Video, shapes: readonly (readonly string[])[]): readonly (readonly Brush[])[];
 /** The player colours stats(player).color takes. */
 ${kw}const colors: { __COLOR_TABLE__ };
 /**
@@ -4422,16 +7031,117 @@ ${kw}function color(player: Player): string;
  */
 ${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
 /**
+ * The colours a text in the game takes, as their colour codes: for an array that holds a colour a cell,
+ * \`board[i] = textColors.orange\`, and \`<cell color={board[i]} />\` shows it (0 is an empty cell).
+ * grey ends what colour a line can change: everything after it on its line stays grey.
+ */
+${kw}const textColors: { __TEXT_COLORS__ };
+/** A colour of a text: one of textColors' names, or a colour code (0 for none). */
+${kw}type TextColor = keyof typeof textColors | number;
+/** What a program shows on the screen, redrawn by the game as the program's variables change. */
+${kw}const ui: {
+  /**
+   * Show a text in the player's text lines, top left, and keep it there: the function is worked out again every
+   * frame from the program's variables, and shown when it changed. Inside an async program only, as a task: it keeps
+   * going after the program moves on, and the Task it gives back stops it (\`board.cancel()\`). Eleven lines: one
+   * player's text lines are this text's only, so give a player one ui.lines at a time.
+   *
+   *   ui.lines(P1, () => (
+   *     <>
+   *       <line color="yellow">Score {score}</line>
+   *       {rows.map((r) => <line>{r.map((c) => <cell color={c} />)}</line>)}
+   *     </>
+   *   ));
+   */
+  lines(player: Player, view: () => string): Task;
+};
+/** A unit as it was when it died, which is what on.died() hands its function: the unit itself is gone. */
+${kw}interface DeadUnit {
+  readonly type: UnitType;
+  readonly owner: Player;
+  /** Where it died, in pixels (32 a tile). */
+  readonly x: number;
+  readonly y: number;
+}
+/** How many of an event's handlers can be waiting at once, when the handler is async (16 unless said, up to 255). */
+${kw}interface EventOptions { max?: number }
+/** What on.order() looks for: a unit filter and, if you like, the order the unit takes up. */
+${kw}interface OrderFilter extends UnitFilter { order?: Order }
+/** What on.killed() looks for: a unit filter and, if you like, the player who killed it. */
+${kw}interface KillFilter extends UnitFilter { by?: Player }
+/**
+ * What happens in the game, as it happens: on.created(\u2026), on.died(\u2026), on.chat(\u2026) and the rest each runs its function for
+ * every time it happens from the next frame on. Each is a task (it keeps listening after the program moves on, and the
+ * Task it gives back stops it), inside an async program \u2014 or at the top of a script, where it listens from the start
+ * of the game as a program of its own. A function that is not async runs within the frame, once for each time; an
+ * async one is started as a task each time, so it can wait: \`max\` of them at once.
+ */
+${kw}const on: {
+  /**
+   * A unit comes onto the map \u2014 made by an action or a program, trained, hatched, landed, placed by a test \u2014 and the
+   * function is handed it in the next frame. A unit in a transport or a hangar comes on when it first comes out.
+   * \`on.created(units.ZergZergling, (u) => { u.energy = 50; })\`
+   */
+  created(handler: (unit: Unit) => void, options?: EventOptions): Task;
+  created(filter: UnitType | UnitFilter, handler: (unit: Unit) => void, options?: EventOptions): Task;
+  /**
+   * A unit dies or is removed, and the function is handed what it was and where, in the next frame \u2014 once for every
+   * unit on.created() would have been handed. The filter is of the unit as it died.
+   * \`on.died({ owner: P8 }, async (u) => { await sleep(seconds(2)); createUnit(P8, u.type, 1, locations.Spawn); })\`
+   */
+  died(handler: (unit: DeadUnit) => void, options?: EventOptions): Task;
+  died(filter: UnitType | UnitFilter, handler: (unit: DeadUnit) => void, options?: EventOptions): Task;
+  /**
+   * A unit is killed in a fight \u2014 shot, burned, caught in a storm \u2014 and the function is handed what it was, where, and
+   * the player whose attack killed it. A unit a trigger or a program kills or removes, or one that goes down with its
+   * transport, has no killer and is not handed on (on.died() hears every one); nor does one its own player killed (a
+   * storm on your own units), for which the game keeps no attacker, as it counts no kill.
+   * \`on.killed({ owner: P8, by: P1 }, (u, by) => setResources(by, "add", 25, "ore"))\`
+   */
+  killed(handler: (unit: DeadUnit, by: Player) => void, options?: EventOptions): Task;
+  killed(filter: UnitType | KillFilter, handler: (unit: DeadUnit, by: Player) => void, options?: EventOptions): Task;
+  /**
+   * A unit takes up a new order \u2014 told to move, starting to cast, sieging, going back to guard \u2014 and the function is
+   * handed it in the next frame, with the order it took up and the one it had. An order held for less than a frame is
+   * not seen. This looks at every unit on the map each frame: the hint says what it costs.
+   * \`on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, (u) => print("Storm!"))\`
+   */
+  order(handler: (unit: Unit, order: Order, was: Order) => void, options?: EventOptions): Task;
+  order(filter: UnitType | OrderFilter, handler: (unit: Unit, order: Order, was: Order) => void, options?: EventOptions): Task;
+  order(filter: UnitType | UnitFilter, order: Order, handler: (unit: Unit, order: Order, was: Order) => void, options?: EventOptions): Task;
+  /**
+   * A unit turns into another type and stays the same unit: a Siege Tank sieging, a Larva becoming an egg and the egg
+   * its unit, a Drone becoming a building, a High Templar becoming an Archon (its partner leaves, as on.died() hears).
+   * The function is handed the unit, now of its new type, and the type it was. The filter is of the new type.
+   * \`on.morphed(units.TerranSiegeTankSiegeMode, (u) => print("Sieged"))\`
+   */
+  morphed(handler: (unit: Unit, was: UnitType) => void, options?: EventOptions): Task;
+  morphed(filter: UnitType | UnitFilter, handler: (unit: Unit, was: UnitType) => void, options?: EventOptions): Task;
+  /**
+   * A player types a line that fits the pattern, which is chatted()'s: \`on.chat("-give {n}", (p, { n }) => setResources(p, "add", n, "ore"))\`.
+   * Every player P1 \u2026 P8 unless \`from\` names one (CurrentPlayer in a program for several players); \`p\` is known
+   * when the script is built, so an action can be for them.
+   */
+  chat<const P extends string>(pattern: P, handler: (player: Player, values: ChatValues<P>) => void, options?: EventOptions & { from?: Player }): Task;
+  /** A player presses a key, as keyPressed() sees it: \`on.key("F7", (p) => print("Help", { to: p }))\`. Every player P1 \u2026 P8 unless \`from\` names one. */
+  key(key: Key, handler: (player: Player) => void, options?: EventOptions & { from?: Player }): Task;
+};
+/**
  * What the players do, inside program() only. A key, a click and a typed line are true on the one
  * frame they arrive, so look for them in a loop that runs every frame:
- * \`while (true) { if (keyPressed(CurrentPlayer, "F2")) \u2026; sleep(frames(1)); }\`. They reach every
+ * \`while (true) { if (keyPressed(CurrentPlayer, "F7")) \u2026; sleep(frames(1)); }\`. They reach every
  * player's computer in step, a few frames after they happen. The player is one of P1 \u2026 P8 or
  * CurrentPlayer \u2014 in a program with \`{ owner: AllPlayers }\`, each player's own keys.
- * The map gives up a little for it: one free location among the first 63 (nine when the mouse is read),
- * the Valkyrie unit type, and Player 12 to hold the units that carry the input.
+ * The map gives up a little for it: one unit-properties slot, one unit type the map does not use (the
+ * Valkyrie, unless the map uses it), and Player 12 to hold the hidden units that carry the input.
  */
 /** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
 ${kw}function keyPressed(player: Player, key: Key): boolean;
+/**
+ * True on every frame a key is down \u2014 for moving while it is held. It reaches every player's computer
+ * in step, a few frames after it happens, as a press does. Not while the player is typing a message.
+ */
+${kw}function keyHeld(player: Player, key: Key): boolean;
 /** True on the frame a player's press of a mouse button arrives ("left" when none is named). */
 ${kw}function clicked(player: Player, button?: "left" | "right" | "middle"): boolean;
 /** Where a player's mouse is on the map, in pixels (32 to a tile): \`const at = mouse(CurrentPlayer);\` keeps the place as it is now. */
@@ -4450,6 +7160,17 @@ ${kw}function underMouse(player: Player, filter?: UnitFilter & { within?: number
 ${kw}function chatted<const P extends string>(player: Player, pattern: P): ChatValues<P> | null;
 /** Centre a location on a point of the map, in pixels, its size kept; inside program() only. With mouse(): \`centerLocation(locations.Cursor, at.x, at.y)\`, then createUnit() there. */
 ${kw}function centerLocation(location: Location, x: number, y: number): void;
+/**
+ * Centre a location on a point of the map and give it a size, all in pixels; inside program() only. Nothing of its
+ * old size is read, so it costs less than keeping the size: \`centerLocation(spot, x, y, 32, 32)\`.
+ */
+${kw}function centerLocation(location: Location, x: number, y: number, width: number, height: number): void;
+/**
+ * A location's edges as the game holds them now, in pixels (32 to a tile), inside program() only: \`const b =
+ * bounds(locations.Pen);\` then \`b.left\`, \`b.top\`, \`b.right\`, \`b.bottom\` read them, and \`b.left += 32\`
+ * moves one. A location centerLocation() or Move Location moved is read where it is now.
+ */
+${kw}function bounds(location: Location): { left: number; top: number; right: number; bottom: number };
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -4474,8 +7195,15 @@ function signature(kw, ident, def, returns) {
   const all = scriptParams(def);
   const params = all.map((p) => `${p.name}${p.optional ? "?" : ""}: ${argType(p.arg.kind)}`);
   const doc = def.args.length ? `${def.name} \u2014 ${def.args.map((a2) => a2.label).join(", ")}` : def.name;
-  const out = `/** ${doc} */
+  let out = `/** ${doc} */
 ${kw}function ${ident}(${params.join(", ")}): ${returns};`;
+  const order = all.findIndex((p) => p.arg.kind === "order");
+  if (order >= 0) {
+    const raw = all.map((p, i) => `${p.name}${p.optional ? "?" : ""}: ${i === order ? "RawNumber" : argType(p.arg.kind)}`);
+    out += `
+/** ${doc}: the action's own number for the order, 0 move, 1 patrol, 2 attack. */
+${kw}function ${ident}(${raw.join(", ")}): ${returns};`;
+  }
   if (returns !== "Condition" || !READ_ARITY.has(ident)) return out;
   const read = all.filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount").map((p) => `${p.name}: ${argType(p.arg.kind)}`);
   return `${out}
@@ -4512,6 +7240,109 @@ function statsTypes(kw) {
     return lines.join("\n");
   }).join("\n");
 }
+function memoryTypes(kw) {
+  const groups = Object.entries(MEMORY_GROUPS).map(([group, [name, doc]]) => {
+    const lines = [`/** ${doc} */`, `${kw}interface ${name} {`];
+    for (const f of MEMORY_FIELDS.filter((x) => x.path[0] === group)) {
+      lines.push(`  /**
+   * ${f.doc}
+   *
+   * ${f.remastered}
+   * @address 0x${f.base.toString(16).toUpperCase()}, ${f.width * 8} bits
+   */`);
+      lines.push(`  ${f.readonly ? "readonly " : ""}${f.path[1]}: number;`);
+    }
+    lines.push("}");
+    return lines.join("\n");
+  });
+  return groups.join("\n");
+}
+function memoryNamespace(kw) {
+  const lines = [
+    `/**`,
+    ` * Cells of the game's memory that have no other word in the language, inside program() only:`,
+    ` * \\\`memory.vision.countdown = 1;\\\` \\\`if (memory.game.frame % 24 == 0) \u2026\\\`. Each field's hover says what`,
+    ` * StarCraft: Remastered does with it; one the game keeps for itself is readonly.`,
+    ` */`,
+    `${kw}namespace memory {`
+  ];
+  for (const [group, [name, doc]] of Object.entries(MEMORY_GROUPS)) lines.push(`  /** ${doc} */`, `  export const ${group}: ${name};`);
+  lines.push("}");
+  return lines.join("\n");
+}
+function localNamespace(kw, typeKw) {
+  const field = (f, indent) => `${indent}/**
+${indent} * ${f.doc}
+${indent} *
+${indent} * ${f.remastered}
+${indent} * @address 0x${f.base.toString(16).toUpperCase()}, ${f.width * 8} bits
+${indent} */`;
+  const lines = [
+    `/**`,
+    ` * A value only this computer knows: it may be different on every player's computer. It can be shown \u2014 in text, in`,
+    ` * ui.lines(), a sound, the camera \u2014 but nothing that changes the game may depend on it, or the game would go`,
+    ` * differently on each computer and split. The compiler says so where it happens. To act on one, send it to every`,
+    ` * computer first: \\\`const x = await sync(P1, local.camera.x);\\\``,
+    ` */`,
+    `${typeKw}type Local<T> = T;`,
+    `/**`,
+    ` * What only this computer knows, inside program() only: who sits at it, where its screen is, where its mouse is on the`,
+    ` * screen. Each is a Local value: show it as you like; to act on it, sync() it first.`,
+    ` */`,
+    `${kw}namespace local {`
+  ];
+  const groups = [...new Set(LOCAL_FIELDS.map((f) => f.path[0]))];
+  for (const g of groups) {
+    const fs = LOCAL_FIELDS.filter((f) => f.path[0] === g);
+    if (fs.length === 1 && !fs[0].path[1]) {
+      lines.push(field(fs[0], "  "), `  export const ${g}: Local<number>;`);
+      continue;
+    }
+    lines.push(`  export const ${g}: {`);
+    for (const f of fs) lines.push(field(f, "    "), `    readonly ${f.path[1]}: Local<number>;`);
+    lines.push(`  };`);
+  }
+  lines.push(
+    `  /**`,
+    `   * The unit this computer has selected \u2014 the first of a group, the one the panel at the bottom shows \u2014 or null. A`,
+    `   * Local value: show it (its hit points, its order, \u2026) as you like; to act on it, select() or sync() first.`,
+    `   *`,
+    `   * Remastered: the selection, read live (its own EUD emulator: each slot a unit's 1.16.1 address). Played.`,
+    `   * @address 0x6284B8, 32 bits a unit, twelve`,
+    `   */`,
+    `  export const selected: Local<Unit | null>;`,
+    `  /** How many units this computer has selected, 0 to 12. */`,
+    `  export const selectionCount: Local<number>;`
+  );
+  lines.push(`}`);
+  lines.push(
+    `/**`,
+    ` * What a player has selected becomes these units \u2014 at their computer (the panel shows them) and in the orders every`,
+    ` * computer runs for them, as if they had dragged a box round them: a Select command, sent from their computer as`,
+    ` * MSQC sends one. The units may be any, Local ones too: select(P1, local.selected) is safe. Up to twelve, written out;`,
+    ` * the selection circles may not follow.`,
+    ` */`,
+    `${kw}function select(player: Player, units: Unit | readonly Unit[]): void;`
+  );
+  lines.push(
+    `/**`,
+    ` * One player's value, sent from their computer to every computer: what \\\`value\\\` is on \\\`player\\\`'s computer, the same`,
+    ` * on all of them, a few frames later (5 or 6 in a game played alone; a game between computers adds its turns).`,
+    ` * \\\`const x = await sync(CurrentPlayer, local.camera.x + 400);\\\` Every computer runs the program and reaches the same`,
+    ` * sync(): only the named player's sends. A whole number from 0 to 1 048 574. A player who is not a person, or has`,
+    ` * left, gives 0 at once. Inside an async program, awaited where it is assigned.`,
+    ` */`,
+    `${kw}function sync(player: Player, value: Local<number>): Promise<number>;`,
+    `/**`,
+    ` * Several of one player's values, read on the same frame and sent together: a point stays one point while the mouse`,
+    ` * moves, and it takes one trip, not one a value. \\\`const [x, y] = await sync(P1, local.camera.x + local.mouse.x, local.camera.y + local.mouse.y);\\\``,
+    ` */`,
+    `${kw}function sync(player: Player, a: Local<number>, b: Local<number>): Promise<[number, number]>;`,
+    `${kw}function sync(player: Player, a: Local<number>, b: Local<number>, c: Local<number>): Promise<[number, number, number]>;`,
+    `${kw}function sync(player: Player, a: Local<number>, b: Local<number>, c: Local<number>, d: Local<number>): Promise<[number, number, number, number]>;`
+  );
+  return lines.join("\n");
+}
 function playerAliases(kw, names) {
   const lines = [];
   for (const e of names.players.entries) {
@@ -4539,14 +7370,17 @@ function tables(kw, names, compact) {
     }, "Switch1 \u2026 Switch256 exist; the first sixteen are listed. A switch given a name in the map is listed by that name."),
     `/** AI scripts, by StarEdit name ("Terran Custom Level") or four-character code. */
 ${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`,
-    ...[names.weapons, names.upgrades, names.techs].map((t) => tableDecl(kw, t, identifierKey))
+    ...[names.weapons, names.upgrades, names.techs, names.orders].map((t) => tableDecl(kw, t, identifierKey))
   ].join("\n");
 }
 function body(kw, typeKw, names, compact) {
   return [
-    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", statsTypes(typeKw)),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", `${statsTypes(typeKw)}
+${memoryTypes(typeKw)}`),
     choiceTypes(typeKw),
-    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
+    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE).replace("__TEXT_COLORS__", TEXT_COLOR_TABLE),
+    memoryNamespace(kw),
+    localNamespace(kw, typeKw),
     "// \u2500\u2500 Conditions \u2500\u2500",
     ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
     "",
@@ -4559,6 +7393,30 @@ function body(kw, typeKw, names, compact) {
   ].join("\n");
 }
 var ARRAYS = `
+/** JSX is a text the game shows: \`<line color="yellow">Score {score}</line>\` is a string. */
+declare namespace JSX {
+  type Element = string;
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    /** A line of its own, in its colour (white unless it says). The lines of a text are put one under another. */
+    line: { color?: TextColor; children?: unknown };
+    /** What is inside it in its colour; the colour around it comes back after it. */
+    span: { color?: TextColor; children?: unknown };
+    /** One square: filled in its colour, or empty (lavender) when it has none or 0. A board's cell. */
+    cell: { color?: TextColor };
+    /** \`width\` squares (10 unless it says), as many of them filled as value is of max. */
+    bar: { value: number; max: number; width?: number; color?: TextColor };
+  }
+}
+/** What a component's \`children\` is: the text between its tags (\`function Box(props: { title: string; children?: Children })\`). */
+type Children = string | number | boolean | null | undefined | Children[];
+declare function __jsx(tag: string, props: object | null, ...children: unknown[]): string;
+/** What the build adds after each class at the top of a file, for a program that makes an instance of it. Not for scripts. */
+declare function __class(cls: unknown, descriptor: unknown): void;
+declare function __listen(descriptor: unknown, at?: unknown): void;
+/** What the build adds after each function at the top of a file, for a program that calls it with its own values. Not for scripts. */
+declare function __fn(fn: unknown, descriptor: unknown): void;
+declare const __fragment: string;
 interface ArrayConstructor {
   new <T = number>(arrayLength: number): T[];
   <T = number>(arrayLength: number): T[];
@@ -4571,7 +7429,8 @@ var TESTING = `
 export interface SimUnit {
   readonly type: UnitType; readonly owner: Player; readonly x: number; readonly y: number;
   readonly hp: number; readonly maxHp: number; readonly shields: number; readonly maxShields: number; readonly energy: number;
-  readonly kills: number; readonly resources: number; readonly invincible: boolean; readonly burrowed: boolean; readonly cloaked: boolean; readonly hallucinated: boolean;
+  readonly kills: number; readonly orderId: Order; readonly resources: number; readonly invincible: boolean; readonly burrowed: boolean; readonly cloaked: boolean; readonly hallucinated: boolean;
+  readonly buildTime: number; readonly rank: number; readonly matrix: number; readonly speed: number; readonly speedUpgrade: boolean; readonly hasTarget: boolean; readonly inTransport: boolean;
   /** Still on the map. */
   readonly alive: boolean;
 }
@@ -4584,11 +7443,13 @@ export interface SimUnit {
 export interface Sim {
   /** Units for a player at a location's centre, as createUnit() makes them. They are given back. */
   place(player: Player, type: UnitType, at: Location, count?: number): SimUnit[];
-  /** A unit dies: what a fight is in a test. \`by\`: the player whose kill it is. */
+  /** A unit dies: what a fight is in a test. \`by\`: the player whose kill it is, and on.killed()'s killer. */
   kill(unit: SimUnit, by?: Player): this;
   /** A unit goes without dying. */
   remove(unit: SimUnit): this;
   give(unit: SimUnit, to: Player): this;
+  /** A unit turns into another type and stays the same unit, as a Siege Tank sieges: what on.morphed() hears. In the simulator only. */
+  morph(unit: SimUnit, type: UnitType): this;
   /** A unit to a location's centre, or to a point in pixels. */
   move(unit: SimUnit, to: Location | { x: number; y: number }): this;
 
@@ -4608,14 +7469,24 @@ export interface Sim {
   /** A line of chat, for the next frame: what chatted() finds. */
   type(line: string, player?: Player): this;
   moveMouse(x: number, y: number, player?: Player): this;
+  /** The player's screen to a place on the map, its top left corner in pixels: what local.camera reads. The mouse stays where it is on the map. */
+  moveCamera(x: number, y: number, player?: Player): this;
+  /** The player selects these units (up to twelve), as a drag would at their computer: what local.selected reads. */
+  selectUnits(units: readonly SimUnit[], player?: Player): this;
 
   count(player: Player, type: UnitType, at?: Location): number;
-  /** The units on the map, in the order of the game's unit table. */
+  /** The units on the map, oldest first, as a loop over them comes to them. */
   units(filter?: { owner?: Player; type?: UnitType; at?: Location }): SimUnit[];
   resources(player: Player): { ore: number; gas: number };
   deaths(player: Player, type: UnitType): number;
   kills(player: Player, type: UnitType): number;
   switch(n: Switch): boolean;
+  /**
+   * What \`player\` sees of the map's fog of war this frame, a text a row of tiles: "#" lit now, "+" seen before (fog),
+   * "." never seen. \`area\` takes a part of the map (tiles), the whole of it by default. Null where the world has no
+   * fog to read: the simulator does not draw it, the game does \u2014 run the tests in the game to check a picture.
+   */
+  fog(player: Player, area?: { x: number; y: number; width: number; height: number }): string[] | null;
   /** Where a location is now: a program may have moved it. */
   location(n: Location): { left: number; top: number; right: number; bottom: number } | undefined;
 
@@ -4660,6 +7531,13 @@ export function expect<T>(actual: T): Expectation<T> & { readonly not: Expectati
 export interface TestOptions {
   /** Without the map's player settings the world has one player: this one. */
   as?: Player;
+  /**
+   * In the game: these players, each at a computer of their own \u2014 a copy of the game for each, kept in step as a
+   * game between people is. What a player does (press, click, type, moveMouse) is done at their computer, and the
+   * test fails at the frame the copies stop agreeing, the lines that made them differ named. The simulator runs the
+   * test once, as without it.
+   */
+  players?: readonly Player[];
 }
 type TestBody<A extends readonly unknown[] = []> = (sim: Sim, ...args: A) => void;
 interface TestEach<F> { <T>(cases: readonly T[]): (name: string, fn: F extends "suite" ? (...args: T extends readonly unknown[] ? T : [T]) => void : TestBody<T extends readonly unknown[] ? T : [T]>) => void }
@@ -4674,6 +7552,27 @@ export const describe: SuiteCall & { only: SuiteCall; skip: SuiteCall };
 export function beforeEach(fn: (sim: Sim) => void): void;
 export function afterEach(fn: (sim: Sim) => void): void;
 `;
+var MEDIA_MODULES = `// \u2500\u2500 A video the script imports: import badApple from "./bad-apple.video"; \u2500\u2500
+declare module "*.video" {
+  const video: Video;
+  export default video;
+}
+// \u2500\u2500 An image the script imports: import logo from "./logo.image"; \u2500\u2500
+declare module "*.image" {
+  const image: Image;
+  export default image;
+}
+// \u2500\u2500 A sound the script imports: import boom from "./boom.sound"; \u2500\u2500
+declare module "*.sound" {
+  const sound: Clip;
+  export default sound;
+}
+// \u2500\u2500 Notes the script imports, from a MIDI file: import tune from "./tune.notes"; \u2500\u2500
+declare module "*.notes" {
+  const notes: Notes;
+  export default notes;
+}
+`;
 function generateDeclarations(names = defaultScriptNames(), options = {}) {
   const compact = options.compact === true;
   const globals = body("declare ", "", names, compact);
@@ -4687,10 +7586,13 @@ ${ARRAYS}
 declare module "${MODULE_NAME}" {
 ${module}
 }
-`;
+${MEDIA_MODULES}`;
 }
 
 // compiler/hoist.ts
+var ON_EVENTS = ["created", "died", "killed", "order", "morphed", "chat", "key"];
+var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "nextFrame", "until", "sync", "select", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
+var EVENT_NAMES = new Set(ON_EVENTS);
 var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
 
 // compiler/link.ts
@@ -4706,139 +7608,177 @@ function resolvePath(from, spec) {
 function resolveModule(files, from, spec) {
   if (!spec.startsWith("./") && !spec.startsWith("../")) return null;
   const path = resolvePath(from, spec);
-  for (const candidate of [path, `${path}.ts`, path.replace(/\.js$/, ".ts"), `${path}/index.ts`]) if (files.has(candidate)) return candidate;
+  for (const candidate of [path, `${path}.ts`, `${path}.tsx`, path.replace(/\.js$/, ".ts"), path.replace(/\.js$/, ".tsx"), `${path}/index.ts`, `${path}/index.tsx`]) if (files.has(candidate)) return candidate;
   return null;
 }
 
-// compiler/eud.ts
-function serializeIr(programs, strings, input = null, settings = {}) {
-  const resolve = (local) => {
-    if (local <= 0) return 0;
-    const s = strings[local - 1];
-    return !s ? 0 : "index" in s ? s.index : s.text;
-  };
-  const action = (r) => ({ ...r, text: resolve(r.text), wav: resolve(r.wav) });
-  const condition = (r) => ({ ...r });
-  const unit = (u) => u.kind === "call" ? { ...u, call: call(u.call) } : u.kind === "unitAt" ? { ...u, ptr: expr(u.ptr), epd: expr(u.epd), uid: expr(u.uid) } : u;
-  const any = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e);
-  const copies = { num: (e) => expr(e), bool: (e) => expr(e), call: (c2) => call(c2) };
-  const text = (t) => mapText(t, copies);
-  const expr = (e) => {
-    const ofTexts = mapTextOperands(e, copies);
-    if (ofTexts) return ofTexts;
-    switch (e.kind) {
-      case "unitField":
-      case "unitPart":
-      case "unitAlive":
-      case "unitFlag":
-        return { ...e, unit: unit(e.unit) };
-      case "unitSame":
-        return { ...e, left: unit(e.left), right: unit(e.right) };
-      case "unary":
-      case "cast":
-        return { ...e, expr: expr(e.expr) };
-      case "element":
-        return { ...e, index: expr(e.index) };
-      case "binary":
-      case "compare":
-        return { ...e, left: expr(e.left), right: expr(e.right) };
-      case "ternary":
-        return { ...e, cond: expr(e.cond), whenTrue: expr(e.whenTrue), whenFalse: expr(e.whenFalse) };
-      case "intrinsic":
-        return { ...e, args: e.args.map(expr) };
-      case "randomInt":
-        return { ...e, bound: expr(e.bound) };
-      case "call":
-        return { ...e, call: call(e.call) };
-      case "cond":
-        return { ...e, record: condition(e.record) };
-      case "test":
-        return { ...e, expr: expr(e.expr) };
-      case "and":
-      case "or":
-        return { ...e, items: e.items.map(expr) };
-      case "not":
-        return { ...e, expr: expr(e.expr) };
-      case "edge":
-        return { ...e, cond: expr(e.cond) };
-      default:
-        return e;
-    }
-  };
-  const call = (c2) => ({ ...c2, params: c2.params.map((p) => ({ ...p, init: any(p.init) })), body: c2.body.map(stmt) });
-  const stmt = (s) => {
-    switch (s.kind) {
-      case "declare":
-        return { ...s, init: any(s.init) };
-      case "assignUnit":
-        return { ...s, value: unit(s.value) };
-      case "unitLoop":
-        return { ...s, body: s.body.map(stmt) };
-      case "unitWrite":
-        return { ...s, unit: unit(s.unit), value: expr(s.value) };
-      case "unitDo":
-        return { ...s, unit: unit(s.unit), verb: s.verb.do === "damage" || s.verb.do === "heal" ? { ...s.verb, amount: expr(s.verb.amount) } : s.verb };
-      case "tableWrite":
-        return { ...s, value: any(s.value) };
-      case "assignText":
-        return { ...s, value: text(s.value) };
-      case "storeText":
-        return { ...s, index: expr(s.index), value: text(s.value) };
-      case "releaseText":
-        return { ...s, index: expr(s.index) };
-      case "textLoop":
-        return { ...s, of: text(s.of), body: s.body.map(stmt) };
-      case "assign":
-        return { ...s, value: expr(s.value) };
-      case "declareArray":
-        return { ...s, ...s.init ? { init: s.init.map(expr) } : {}, ...s.fill ? { fill: expr(s.fill) } : {} };
-      case "store":
-        return { ...s, index: expr(s.index), value: expr(s.value) };
-      case "push":
-        return { ...s, value: expr(s.value) };
-      case "setLength":
-        return { ...s, value: expr(s.value) };
-      case "assignBool":
-        return { ...s, value: expr(s.value) };
-      case "if":
-        return { ...s, cond: expr(s.cond), then: s.then.map(stmt), ...s.else ? { else: s.else.map(stmt) } : {} };
-      case "while":
-        return { ...s, ...s.cond ? { cond: expr(s.cond) } : {}, body: s.body.map(stmt) };
-      case "do":
-        return { ...s, body: s.body.map(stmt), cond: expr(s.cond) };
-      case "for":
-        return { ...s, ...s.cond ? { cond: expr(s.cond) } : {}, update: s.update.map(stmt), body: s.body.map(stmt) };
-      case "unrolled":
-        return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
-      case "switch":
-        return { ...s, value: expr(s.value), cases: s.cases.map((c2) => ({ ...c2, body: c2.body.map(stmt) })) };
-      case "return":
-        return s.value ? { ...s, value: any(s.value) } : s;
-      case "action":
-        return { ...s, record: action(s.record), ...s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}, ...s.text ? { text: text(s.text) } : {} };
-      case "centerLocation":
-        return { ...s, x: expr(s.x), y: expr(s.y) };
-      case "print":
-        return { ...s, parts: mapTextParts(s.parts, copies) };
-      case "call":
-        return { ...s, call: call(s.call) };
-      case "block":
-        return { ...s, body: s.body.map(stmt) };
-      default:
-        return s;
-    }
-  };
-  const heap = settings.heapCells !== void 0 && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a2) => a2.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
-  const stack = settings.stackDepth !== void 0 && settings.stackDepth !== STACK_DEPTH && programs.some((p) => p.functions?.some((f) => f.recursive)) ? { stack: stackDepth(settings.stackDepth) } : {};
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...stack, ...input ? { input } : {}, programs: programs.map((p) => ({ ...p, ...p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}, body: p.body.map(stmt) })) });
-}
+// compiler/generated/stdlib.ts
+var STDLIB_SOURCES = {
+  "cutscene": '/**\n * Scenes acted out in the game: the standard library\'s "trigscript/cutscene" (TrigScript 4).\n *\n *   import { Camera, walk, line, play, SECOND } from "trigscript/cutscene";\n *\n *   async function intro(raider: Unit) {\n *     const cam = new Camera(raider.x, raider.y);\n *     await line(units.JimRaynorMarine, "Something\'s moving out there.", 3 * SECOND);\n *     const there = start(walk(raider, 1200, 640));   // the walk goes on while the camera follows\n *     await cam.follow(raider, 2 * SECOND);\n *     await there;\n *     await cam.pan(1600, 400, 2 * SECOND);\n *     await cam.shake(12);\n *   }\n *\n *   program(async () => {\n *     const raider = first(unitsAt(locations.Base, { owner: P1, type: units.TerranMarine }));\n *     if (!raider) return;\n *     const skipped = await play(P1, start(intro(raider)));   // Escape skips the rest of it\n *     if (skipped) print("Skipped.");\n *   });\n *\n * Everything here is what a trigger can do, done a frame at a time: the camera is Center View on a location the library\n * keeps for itself, moved to where the camera should look; a unit walks by a Move order to another; a line is the\n * speaker\'s portrait talking and the words in the middle of the screen. Places are pixels (32 a tile), (0, 0) the map\'s\n * top left; time is frames of the game, 24 a second on Fastest (`SECOND`). The camera is the one of the player the\n * program runs as, as Center View\'s is.\n */\nimport { centerLocation, centerView, reserveLocation, talkingPortrait, print, sleep, frames, nextFrame, keyPressed, type Player, type Task, type Unit, type UnitType } from "trigscript";\nimport { easeInOutQuad, easeInQuad, easeOutQuad, easeOutBack } from "trigscript/math";\n\n/** Frames a second of game time on Fastest, the speed a map is played at. */\nexport const SECOND = 24;\n\nconst VIEW = reserveLocation("cutscene: where the camera looks");\nconst GOAL = reserveLocation("cutscene: where a unit is sent");\n\n/** How a glide speeds up and slows down: evenly, starting slow, ending slow, both, or ending past the mark and back. */\nexport type Ease = "linear" | "in" | "out" | "inOut" | "back";\n\n/** How far along a glide is at `t` (0 at its start, 1 at its end), as `ease` has it. */\nfunction eased(t: fixed, ease: Ease): fixed {\n  if (ease === "in") return easeInQuad(t);\n  if (ease === "out") return easeOutQuad(t);\n  if (ease === "inOut") return easeInOutQuad(t);\n  if (ease === "back") return easeOutBack(t);\n  return t;\n}\n\n/**\n * The camera of the player the program runs as: where it looks, and how it gets somewhere else. It looks at its first\n * place as soon as it is made.\n */\nexport class Camera {\n  /** The point the camera is centred on, in pixels. */\n  x: number;\n  y: number;\n\n  constructor(x: number, y: number) {\n    this.x = x;\n    this.y = y;\n    centerLocation(VIEW, x, y);\n    centerView(VIEW);\n  }\n\n  /** Look at a point, now. */\n  look(x: number, y: number) {\n    this.x = x;\n    this.y = y;\n    centerLocation(VIEW, x, y);\n    centerView(VIEW);\n  }\n\n  /**\n   * Glide to a point over `time` frames, looking at each place on the way a frame at a time.\n   * @param ease How it speeds up and slows down; "inOut" unless it says.\n   */\n  async pan(x: number, y: number, time: number, ease: Ease = "inOut") {\n    const fromX = this.x;\n    const fromY = this.y;\n    let i = 1;\n    while (i <= time) {\n      const k = eased(fixed(i) / time, ease);\n      this.look(fromX + Math.round((x - fromX) * k), fromY + Math.round((y - fromY) * k));\n      await nextFrame();\n      i++;\n    }\n    this.look(x, y);\n  }\n\n  /** Keep a unit in the middle of the screen for `time` frames, or until it is gone. */\n  async follow(u: Unit, time: number) {\n    let i = 0;\n    while (i < time && u) {\n      this.look(u.x, u.y);\n      await nextFrame();\n      i++;\n    }\n  }\n\n  /** Shake for `time` frames, `size` pixels each way (8 unless it says), and settle where it was. */\n  async shake(time: number, size: number = 8) {\n    const x = this.x;\n    const y = this.y;\n    let i = 0;\n    while (i < time) {\n      const left = (i % 4) < 2;\n      const up = (i % 2) === 0;\n      centerLocation(VIEW, left ? x - size : x + size, up ? y - size : y + size);\n      centerView(VIEW);\n      await nextFrame();\n      i++;\n    }\n    this.look(x, y);\n  }\n}\n\n/**\n * Send a unit to a point by a Move order, and wait until it is there \u2014 within `near` pixels (48 unless it says) \u2014 or\n * `limit` frames have passed (30 seconds unless it says), or it is gone.\n * @returns Whether it got there.\n */\nexport async function walk(u: Unit, x: number, y: number, near: number = 48, limit: number = 30 * SECOND): Promise<boolean> {\n  return go(u, x, y, "move", near, limit);\n}\n\n/** The same with an Attack order: the unit fights what it meets on the way. */\nexport async function charge(u: Unit, x: number, y: number, near: number = 48, limit: number = 30 * SECOND): Promise<boolean> {\n  return go(u, x, y, "attack", near, limit);\n}\n\nasync function go(u: Unit, x: number, y: number, how: "move" | "attack", near: number, limit: number): Promise<boolean> {\n  centerLocation(GOAL, x, y);\n  u.order(how, GOAL);\n  let waited = 0;\n  while (u && Math.abs(u.x - x) + Math.abs(u.y - y) > near && waited < limit) {\n    await nextFrame();\n    waited++;\n  }\n  return !!u && Math.abs(u.x - x) + Math.abs(u.y - y) <= near;\n}\n\n/**\n * Send every unit of a group to a point together, and wait until each is there, gone, or `limit` frames have passed.\n * @returns How many got there.\n */\nexport async function walkAll(group: Unit[], x: number, y: number, near: number = 64, limit: number = 30 * SECOND): Promise<number> {\n  centerLocation(GOAL, x, y);\n  for (const u of group) if (u) u.order("move", GOAL);\n  let waited = 0;\n  let there = 0;\n  while (waited < limit) {\n    there = 0;\n    let moving = 0;\n    for (const u of group) {\n      if (!u) continue;\n      if (Math.abs(u.x - x) + Math.abs(u.y - y) <= near) there++;\n      else moving++;\n    }\n    if (moving === 0) break;\n    await nextFrame();\n    waited++;\n  }\n  return there;\n}\n\n/**\n * A line of the scene: the speaker\'s portrait talks and the words show in the middle of the screen, for `time` frames\n * (3 seconds unless it says), and then the scene goes on.\n */\nexport async function line(speaker: UnitType, text: string, time: number = 3 * SECOND) {\n  talkingPortrait(speaker, Math.round((time * 1000) / SECOND));\n  print(text, { position: "center" });\n  await sleep(frames(time));\n}\n\n/**\n * Play a scene, started as a task (`start(intro())`), for a player who may skip it: when they press `key` (Escape unless\n * it says) the scene stops where it is. Put things where the scene would have left them when it gives true.\n * @returns Whether it was skipped.\n */\nexport async function play(player: Player, scene: Task, key: "Escape" | "Space" | "Enter" = "Escape"): Promise<boolean> {\n  while (scene.running) {\n    if (keyPressed(player, key)) {\n      scene.cancel();\n      return true;\n    }\n    await nextFrame();\n  }\n  return false;\n}\n',
+  "fog": '/**\n * Fog of war as a picture: the standard library\'s "trigscript/fog" (TrigScript 4).\n *\n *   import { fog } from "trigscript/fog";\n *\n *   const heart = fog.picture([".##.##.", "#######", ".#####.", "..###.."]);\n *\n *   program(async () => {\n *     fog.reveal(P1);                  // the whole map lit once: from now on dark is fog, not black\n *     while (true) {\n *       fog.light(P1, 30, 20, 5);       // a disc of size 5 around tile (30, 20), this frame only\n *       fog.light(P1, 60, 40, heart);   // a picture, its top left on tile (60, 40)\n *       await nextFrame();\n *     }\n *   });\n *\n * The fog is a canvas that starts every frame dark: what a program lights this frame is what shows this frame, and\n * nothing else needs doing. There is no dark brush \u2014 the game\'s sight only ever reveals \u2014 so dark is whatever is not\n * lit; to draw dark shapes, light around them (a picture with `{ ink: "dark" }`). Dark is also the sharper ink: a lit\n * part is at least a brush wide (3 tiles across, 4 down), while a dark line one tile wide stays exactly that. Nothing\n * else needs doing \u2014 the library writes the game\'s vision countdown after every frame (memory.vision.countdown), so\n * the next frame starts from a wiped board. Watch it on the minimap. With Classic graphics (Options > Graphics) a tile\n * of the map is a pixel there, sharp; Remastered graphics blurs it a few tiles wide.\n *\n * What the board is made of decides how far apart lit and fog look. Remastered draws a tile on the minimap as the\n * average of its art and fog as 0.64 of lit, whatever the tile, so the brightest art is the best board there: plain\n * Ice snow (lit 130 against fog 82, measured 2026-10-19). Classic draws a tile as one colour of its own; Badlands\n * tile 23778 is the widest apart there, and dim and textured in Remastered. Snow played the better of the two.\n *\n * How it draws, played in StarCraft: Remastered (2026-10-17): a brush is a unit made on a tile and taken away in the\n * same trigger pass; the tiles its sight revealed stay lit through the frame. A brush\'s size is the unit\'s sight\n * range, so each size is a unit type of its own \u2014 the flying heroes below, which no ordinary map places \u2014 whose sight\n * is set every frame (Remastered takes a sight write a frame late, so one type cannot change size within a frame).\n * Coordinates are tiles, (0, 0) the map\'s top left. About 800 brushes a frame is the most the game makes: it keeps a\n * removed unit\'s place until the next frame.\n */\nimport { game, program, sleep, frames, stats, units, createUnit, removeUnit, centerLocation, reserveLocation, memory, cover, nextFrame, type Player, type UnitType, type Video } from "trigscript";\n\n/**\n * Each brush\'s shape, sizes 1 to 11: the tiles a flying unit of that sight range reveals, read out of the game.\n * "@" is the tile the brush is centred on. The game\'s air sight leaves the centre\'s row one short below, so every\n * shape reaches a row further up than down.\n */\nexport const SHAPES: readonly (readonly string[])[] = [\n  // 1\n  ["###", "###", "#@#", "###"],\n  // 2\n  [".###.", "#####", "#####", "##@##", "#####", "#####"],\n  // 3\n  ["..###..", "#######", "#######", "#######", "###@###", "#######", "#######", "#######"],\n  // 4\n  ["..#####...", ".#######..", "#########.", "##########", "##########", "####@#####", "##########", "##########", "#########.", ".#######..", "......#..."],\n  // 5\n  ["...#####....", "..#######...", ".#########..", "###########.", "############", "############", "#####@######", "############", "############", "###########.", ".#########..", "..#######...", ".......#...."],\n  // 6\n  ["....#####.....", "..#########...", ".###########..", "#############.", "#############.", "##############", "##############", "######@#######", "##############", "##############", "#############.", "#############.", ".###########..", "..#########...", "........#....."],\n  // 7\n  [".....#####......", "...#########....", "..###########...", ".#############..", "###############.", "###############.", "################", "################", "#######@########", "################", "################", "###############.", "###############.", ".#############..", "..###########...", "...#########....", ".........#......"],\n  // 8\n  ["......#####.......", "....#########.....", "..#############...", ".###############..", ".###############..", "#################.", "#################.", "##################", "##################", "########@#########", "##################", "##################", "#################.", "#################.", ".###############..", ".###############..", "..#############...", "....#########.....", "..........#......."],\n  // 9\n  ["......#######.......", "....###########.....", "...#############....", "..###############...", ".#################..", "###################.", "###################.", "####################", "####################", "####################", "#########@##########", "####################", "####################", "####################", "###################.", "###################.", ".#################..", "..###############...", "...#############....", "....###########.....", "........#####......."],\n  // 10\n  [".......#######........", ".....###########......", "....#############.....", "..#################...", "..#################...", ".###################..", "#####################.", "#####################.", "######################", "######################", "######################", "##########@###########", "######################", "######################", "######################", "#####################.", "#####################.", ".###################..", "..#################...", "..#################...", "....#############.....", ".....###########......", ".........#####........"],\n  // 11\n  ["........#######.........", "......###########.......", "....###############.....", "...#################....", "..###################...", ".#####################..", ".#####################..", "#######################.", "#######################.", "########################", "########################", "########################", "###########@############", "########################", "########################", "########################", "#######################.", "#######################.", ".#####################..", ".#####################..", "..###################...", "...#################....", "....###############.....", "......###########.......", "..........#####........."],\n];\n\n/** Each size\'s unit, size 1 first: flying heroes without a sight upgrade. A map that places one gets odd sight from it. */\nconst BRUSHES: readonly UnitType[] = [\n  units.KukulzaMutalisk, units.KukulzaGuardian, units.YggdrasillOverlord, units.MagellanScienceVessel,\n  units.GantrithorCarrier, units.HyperionBattlecruiser, units.NoradIIBattlecruiser, units.TomKazanskyWraith,\n  units.DanimothArbiter, units.MojoScout, units.ArtanisScout,\n];\n\n/** Where each brush is made: a location the map does not use, taken when the script is built. */\nconst SPOT = reserveLocation("fog: where each brush is made");\n\n/**\n * One disc: the tiles a brush of `size` covers (SHAPES), centred on tile (x, y). What light() does with a size. A brush\n * is a unit made where SPOT is and taken away again at once; each branch makes its own size\'s, so that the unit type\n * of the action is known when the script is built (one given by the program costs writing it into the action).\n */\nconst disc = game((player: Player, x: number, y: number, size: number) => {\n  discPx(player, x * 32 + 16, y * 32 + 16, size);\n});\n\n/**\n * disc() in pixels, (px, py) the centre of the tile: what a caller with many brushes uses, its products by 32 worked\n * out once and the brushes\' offsets added (a product by 32 of a number the game holds is a test a bit, about 0.4 \xB5s).\n */\nconst discPx = game((player: Player, px: number, py: number, size: number) => {\n  centerLocation(SPOT, px, py, 32, 32);\n  switch (size) {\n    case 0: case 1: createUnit(player, BRUSHES[0], 1, SPOT); removeUnit(player, BRUSHES[0]); break;\n    case 2: createUnit(player, BRUSHES[1], 1, SPOT); removeUnit(player, BRUSHES[1]); break;\n    case 3: createUnit(player, BRUSHES[2], 1, SPOT); removeUnit(player, BRUSHES[2]); break;\n    case 4: createUnit(player, BRUSHES[3], 1, SPOT); removeUnit(player, BRUSHES[3]); break;\n    case 5: createUnit(player, BRUSHES[4], 1, SPOT); removeUnit(player, BRUSHES[4]); break;\n    case 6: createUnit(player, BRUSHES[5], 1, SPOT); removeUnit(player, BRUSHES[5]); break;\n    case 7: createUnit(player, BRUSHES[6], 1, SPOT); removeUnit(player, BRUSHES[6]); break;\n    case 8: createUnit(player, BRUSHES[7], 1, SPOT); removeUnit(player, BRUSHES[7]); break;\n    case 9: createUnit(player, BRUSHES[8], 1, SPOT); removeUnit(player, BRUSHES[8]); break;\n    case 10: createUnit(player, BRUSHES[9], 1, SPOT); removeUnit(player, BRUSHES[9]); break;\n    default: createUnit(player, BRUSHES[10], 1, SPOT); removeUnit(player, BRUSHES[10]);\n  }\n});\n\n/**\n * Light the whole map once, so that from now on a tile left dark shows as fog (grey) rather than as never seen\n * (black) \u2014 every picture then has the same two tones. Takes one frame.\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n */\nexport const reveal = game((player: Player) => {\n  const width = memory.map.width;\n  const height = memory.map.height;\n  // Size 11 is 23 tiles wide: a brush every 14 tiles leaves no gap, and one more past the end, kept inside, reaches the edge.\n  for (let y = 2; y < height + 12; y += 14) {\n    for (let x = 2; x < width + 12; x += 14) disc(player, Math.min(x, width - 3), Math.min(y, height - 3), 11);\n  }\n});\n\n/**\n * Light a rectangle of tiles for this frame, worked out while the game runs: its top left on tile (x, y), `width`\n * tiles across and `height` down. Every one of the five may change from frame to frame \u2014 the walls of a raycaster, a\n * bar of a chart. It is exact from 3 \xD7 4 up (the smallest brush); a thinner one is lit a brush wide, centred.\n *\n *   fog.rect(P1, 10, 20, 3, wall);        // a column 3 tiles wide, `wall` tall\n *\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n * @param x The column of its left edge.\n * @param y The row of its top edge.\n * @param width How many tiles across.\n * @param height How many tiles down.\n */\nexport const rect = game((player: Player, x: number, y: number, width: number, height: number) => {\n  if (width < 1 || height < 1) return;\n  // Size 1 is 3 tiles across and 4 down, its centre the middle column and the third row: a grid of them, the last\n  // column and row moved back to end on the edge (overlapping the one before), covers the rectangle exactly.\n  const right = Math.max(x + width - 2, x + 1);\n  const bottom = Math.max(y + height - 2, y + 2);\n  // (The brush made here, not through disc(): its unit type is then known when the script is built, which makes the\n  // action a constant \u2014 a size from the program costs a branch and a written field a brush.)\n  let cy = y + 2;\n  while (true) {\n    let cx = x + 1;\n    while (true) {\n      centerLocation(SPOT, cx * 32 + 16, cy * 32 + 16, 32, 32);\n      createUnit(player, BRUSHES[0], 1, SPOT);\n      removeUnit(player, BRUSHES[0]);\n      if (cx >= right) break;\n      cx = Math.min(cx + 3, right);\n    }\n    if (cy >= bottom) break;\n    cy = Math.min(cy + 4, bottom);\n  }\n});\n\n/** A picture for the fog, made when the script is built: its size in tiles and the brushes that draw it. */\nexport interface Picture {\n  readonly width: number;\n  readonly height: number;\n  readonly brushes: readonly { readonly x: number; readonly y: number; readonly size: number }[];\n}\n\n/**\n * A picture from rows of text, worked out when the script is built: `#` is the ink, anything else is not.\n *\n *   fog.picture(["..##..", ".####.", "######"])                     // light ink: the # tiles are lit\n *   fog.picture(["..##..", ".####.", "######"], { ink: "dark" })    // dark ink: the # tiles stay dark, the rest is lit\n *\n * With light ink a lit part thinner than a brush (3 tiles across, 4 down) is drawn a tile or two thicker. An image\'s\n * halftone (`fog.picture(photo.halftone(6))`) is drawn with the brushes it was made of, one a cell. With dark\n * ink every tile of the picture\'s rectangle that is not `#` is lit and the `#` tiles keep their shape exactly,\n * however thin \u2014 the ink for line art and silhouettes.\n */\nexport function picture(rows: readonly string[], options: { readonly ink?: "light" | "dark" } = {}): Picture {\n  const height = rows.length;\n  const width = Math.max(0, ...rows.map((r) => r.length));\n  // An image\'s halftone (image.halftone(6)) comes with the brushes that drew it: a brush a cell, as they are.\n  const drawn = (rows as { readonly brushes?: readonly { readonly x: number; readonly y: number; readonly shape: number }[] }).brushes;\n  if (drawn && options.ink !== "dark") return Object.freeze({ width, height, brushes: Object.freeze(drawn.map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }))) });\n  // Dark ink: the picture\'s rectangle lit but for the # tiles, so what is covered is the rest.\n  const ink = options.ink === "dark" ? Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => (rows[y][x] === "#" ? "." : "#")).join("")) : rows;\n  const brushes = cover(ink, SHAPES).map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }));\n  return Object.freeze({ width, height, brushes: Object.freeze(brushes) });\n}\n\n/**\n * A video\'s frames as brushes, worked out when the script is built: a word a brush (x | y << 8 | size << 16), the\n * frames one after another, and where each one starts \u2014 the tables the game reads a frame from. Once a build.\n */\ninterface Film { readonly words: readonly number[]; readonly starts: readonly number[] }\nconst films = new Map<Video, Film>();\nfunction film(video: Video): Film {\n  const had = films.get(video);\n  if (had) return had;\n  const words: number[] = [], starts: number[] = [0];\n  for (const brushes of cover(video, SHAPES)) {\n    for (const b of brushes) words.push(b.x | (b.y << 8) | ((b.shape + 1) << 16));\n    starts.push(words.length);\n  }\n  const made = { words, starts };\n  films.set(video, made);\n  return made;\n}\n\n/**\n * Light the fog for this frame: a disc, a picture or a frame of a video. Tiles count from the map\'s top left, (0, 0).\n *\n *   fog.light(P1, 30, 20, 5);              // a disc of size 5 centred on tile (30, 20)\n *   fog.light(P1, 60, 40, heart);          // a picture (fog.picture), its top left on tile (60, 40)\n *   fog.light(P1, 0, 0, badApple, f);      // frame f of a video the script imports, its top left on tile (0, 0)\n *\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n * @param x The tile\'s column: a disc\'s centre, a picture\'s left edge.\n * @param y The tile\'s row: a disc\'s centre, a picture\'s top edge.\n * @param shape A size, 1 (3 tiles wide) to 11 (23 wide) \u2014 it may change while the game runs \u2014 a picture, or a video.\n * @param frame Of a video, which frame, from 0: it may change while the game runs. Past the end, nothing is lit.\n */\nexport const light = game((player: Player, x: number, y: number, shape: number | Picture | Video, frame: number = 0) => {\n  if (typeof shape === "number") disc(player, x, y, shape);\n  else {\n    // The picture\'s corner in pixels once; each brush is its offset from there (a constant of a picture).\n    const px = x * 32 + 16, py = y * 32 + 16;\n    if ("brushes" in shape) for (const b of shape.brushes) discPx(player, px + b.x * 32, py + b.y * 32, b.size);\n    else {\n      const { words, starts } = film(shape);\n      const end = starts[frame + 1];\n      for (let i = starts[frame]; i < end; i++) {\n        const w = words[i];\n        // (A row\'s offset in pixels straight from its byte: the same as ((w >> 8) & 255) * 32, and the shift only has\n        // the byte\'s eight bits to look at.)\n        discPx(player, px + (w & 255) * 32, py + ((w & 0xff00) >> 3), w >> 16);\n      }\n    }\n  }\n});\n\n/**\n * Play a video in the fog, a frame of it every frame of the game, from its first to its last; resolves when it ends.\n * Inside an async program: `await fog.play(P1, badApple)`. On Fastest a game frame is 42 ms, which is what Import\n * Video makes a video\'s frames by default; the game runs a little slower when a frame is heavy, and so does the video.\n *\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n * @param video A video the script imports.\n * @param x The column of its left edge, 0 by default.\n * @param y The row of its top edge, 0 by default.\n */\nexport const play = game(async (player: Player, video: Video, x: number = 0, y: number = 0) => {\n  // (A while: a for over a length known when the script is built would be unrolled, a copy of the body a frame.)\n  let f = 0;\n  while (f < video.length) {\n    light(player, x, y, video, f);\n    await nextFrame();\n    f++;\n  }\n});\n\n/**\n * How fog.columns() lays its columns out, known when the script is built: `count` columns side by side, each `width`\n * tiles across (3, a brush\'s width, by default) and up to `height` tiles tall, centred on the middle row. `ink`:\n * "light" lights each column (the walls of a raycaster bright, on fog), "dark" lights all but the columns (dark walls\n * between a lit ceiling and floor); dark is cheaper when columns fill most of the board, light when they are short.\n */\nexport interface ColumnLayout {\n  readonly count: number;\n  readonly height: number;\n  readonly width?: number;\n  readonly ink?: "light" | "dark";\n  /**\n   * How the walls are told apart, with fog.columns()\'s `faces`. "outline", the default: every wall drawn as its edges \u2014\n   * its top and bottom, a brush deep, and a column lit whole wherever one face meets another (on the nearer of the\n   * two) \u2014 so that blocks read as boxes, the look of the raycasters of monochrome screens; with dark ink, the edges are\n   * lit lines through dark walls. A few brushes a column. Chosen over the rest when played (2026-10-17).\n   *\n   * The others shade the faces whose number is odd (a raycaster\'s other side) and leave the rest whole: "hollow" \u2014\n   * dark, lit only along its top and bottom edges; "ribbed" \u2014 hollow and lit across the middle of each half; "panelled"\n   * \u2014 hollow and lit across its quarters; "line" / "lines" \u2014 dark lines a tile thick across it at its middle or its\n   * quarters (the finest, and two dozen brushes a column near the eye: for a view with room to spare).\n   */\n  readonly shading?: "outline" | "lines" | "line" | "hollow" | "ribbed" | "panelled";\n}\n\n/**\n * What fog.columns() reads, worked out once a layout when the script is built: for each level of the drawing that is\n * wider than a column (all the columns, a group of them, the last group) and each depth from 0 to half the height, the\n * brushes that cover a rectangle that wide and that deep exactly \u2014 the encoder\'s covers (cover()), a few large brushes\n * in the middle and small ones at the edges. A brush is a word, dx | dy << 8 | size << 16 from the rectangle\'s top\n * left; `starts` says where each (level, depth) begins.\n */\ninterface ColumnPlan { readonly words: readonly number[]; readonly starts: readonly number[]; readonly group: number; readonly half: number }\nconst columnPlans = new Map<string, ColumnPlan>();\nconst COLUMN_GROUP = 6;\nfunction columnPlan(layout: ColumnLayout): ColumnPlan {\n  const width = layout.width ?? 3, half = layout.height >> 1, group = Math.min(COLUMN_GROUP, layout.count);\n  const key = `${layout.count}:${width}:${half}`;\n  const had = columnPlans.get(key);\n  if (had) return had;\n  const words: number[] = [], starts: number[] = [];\n  for (const columns of [layout.count, group, layout.count % group || group]) {\n    for (let depth = 0; depth <= half; depth++) {\n      starts.push(words.length);\n      if (depth === 0) continue;\n      // A rectangle shallower than a brush is drawn a brush deep, the rest of it on what the level before lit.\n      const rows = Array.from({ length: Math.max(depth, 4) }, () => "#".repeat(columns * width));\n      for (const b of cover(rows, SHAPES)) words.push(b.x | (b.y << 8) | ((b.shape + 1) << 16));\n    }\n  }\n  starts.push(words.length);\n  const made = { words, starts, group, half };\n  columnPlans.set(key, made);\n  return made;\n}\n\n/**\n * One rectangle of fog.columns() wider than a column: the cover at `at` (a level and a depth) drawn twice, the half\n * above the middle and the half below, its top rows `top` and `bottom`, from column `x`.\n */\nconst columnRect = game((player: Player, words: readonly number[], starts: readonly number[], at: number, x: number, top: number, bottom: number) => {\n  let i = starts[at];\n  const end = starts[at + 1];\n  // In pixels once; each brush is its offset (a few bits, a few tests) from there.\n  const px = x * 32 + 16, pt = top * 32 + 16, pb = bottom * 32 + 16;\n  while (i < end) {\n    const w = words[i];\n    const dx = (w & 255) * 32, dy = (w & 0xff00) >> 3, size = w >> 16;\n    discPx(player, px + dx, pt + dy, size);\n    discPx(player, px + dx, pb + dy, size);\n    i++;\n  }\n});\n\n/**\n * One column\'s part of fog.columns(), in pixels: brushes (3 \xD7 4) a column of 4 rows apart and the last moved back to\n * end on the edge, twice \u2014 from `pt` and from `pb`, the centres of the first brush of each \u2014 down a column `k32`\n * pixels deep (32 a row; under 4 rows, a brush deep), centred on `px`. What the smallest brush covers exactly, worked out\n * here rather than read: it is the most common rectangle by far. In pixels because the caller has them, stepped: a\n * product by 32 of a number the game holds is a test a bit, about 0.4 \xB5s, where a step is an add.\n */\nconst columnBarPx = game((player: Player, px: number, pt: number, pb: number, k32: number) => {\n  // How far down the last brush is from the first.\n  const end = Math.max(k32, 128) - 128;\n  let r = 0;\n  while (true) {\n    centerLocation(SPOT, px, pt, 32, 32);\n    createUnit(player, BRUSHES[0], 1, SPOT);\n    removeUnit(player, BRUSHES[0]);\n    centerLocation(SPOT, px, pb, 32, 32);\n    createUnit(player, BRUSHES[0], 1, SPOT);\n    removeUnit(player, BRUSHES[0]);\n    if (r >= end) break;\n    const step = Math.min(end - r, 128);\n    r += step;\n    pt += step;\n    pb += step;\n  }\n});\n\n/** columnBarPx() in tiles: `k` rows from row `top` down and from row `bottom` down, centred on column `x`. */\nconst columnBar = game((player: Player, x: number, top: number, bottom: number, k: number) => {\n  columnBarPx(player, x * 32 + 16, top * 32 + 80, bottom * 32 + 80, k * 32);\n});\n\n/**\n * A shaded column of fog.columns() (ColumnLayout\'s `shading`): `a` is half its height, `lines` how many lines across\n * each half \u2014 0 hollow, 1 at its middle, 3 at its quarters. A line is a dark row through a lit column (light ink), or\n * a lit band a brush deep through a dark one; a column too short for its lines is drawn plain.\n */\nconst columnShaded = game((player: Player, cx: number, mid: number, a: number, dark: boolean, lines: number) => {\n  if (lines <= 0) {\n    if (dark) { if (a >= 6) columnBar(player, cx, mid - 4, mid, 4); }\n    else if (a < 8) columnBar(player, cx, mid - a, mid, a);\n    else {\n      // Hollow: the edges. Ribbed (-1) and panelled (-3): bands across each half too, centred on its middle or\n      // quarters, where there is room for them between the edges.\n      columnBar(player, cx, mid - a, mid + a - 4, 4);\n      const ribs = -lines;\n      if (ribs > 0 && a >= 6 * (ribs + 1)) {\n        let k = 1;\n        while (k <= ribs) {\n          const at = (a * k) / (ribs + 1);\n          columnBar(player, cx, mid - at - 2, mid + at - 2, 4);\n          k++;\n        }\n      }\n    }\n  } else if (a < 5 * (lines + 1)) {\n    if (!dark) columnBar(player, cx, mid - a, mid, a);\n  } else {\n    // From the middle out: lit up to each line, the line\'s row dark (light ink); or a lit band on each line (dark ink).\n    let from = 0, k = 1;\n    while (k <= lines + 1) {\n      const to = k > lines ? a : (a * k) / (lines + 1);\n      if (dark) { if (k <= lines) columnBar(player, cx, mid - to - 2, mid + to - 2, 4); }\n      else columnBar(player, cx, mid - to, mid + from, to - from);\n      from = to + 1;\n      k++;\n    }\n  }\n});\n\n/**\n * Light columns for this frame \u2014 the walls of a raycaster, a bar chart \u2014 each as tall as the program says, centred on\n * the layout\'s middle row. The covers are worked out when the script is built (see ColumnLayout), so a frame costs a\n * brush for each part of the picture that differs from its neighbours, not one for every few tiles: a wall that fills\n * the board is a few large brushes.\n *\n *   const VIEW = { count: 42, height: 96, ink: "dark" } as const;\n *   fog.columns(P1, 1, 0, VIEW, heights);          // heights: one a column, in tiles, the program\'s\n *   fog.columns(P1, 1, 0, VIEW, heights, faces);   // faces: which face of which wall each column shows\n *\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n * @param x The column of the layout\'s left edge.\n * @param y The row of its top edge.\n * @param layout How the columns are laid out: known when the script is built.\n * @param heights Each column\'s height in tiles (0 to the layout\'s height), an array of the program\'s.\n * @param faces Which face of which wall each column shows, a number the same for every column of one face \u2014 in a\n *   raycaster, \\`(mapY * width + mapX) * 2 + side\\` \u2014 an array of the program\'s as long as `heights`: what the\n *   layout\'s `shading` tells walls apart by. Optional: without it, every column is lit whole (a bar chart).\n */\nexport const columns = game((player: Player, x: number, y: number, layout: ColumnLayout, heights: readonly number[], faces?: readonly number[]) => {\n  const { words, starts, half, group } = columnPlan(layout);\n  const count = layout.count, width = layout.width ?? 3, dark = layout.ink === "dark";\n  // (Dark lines through a lit column count up; lit bands through a dark one, ribbed and panelled, down.)\n  // (Without faces there is nothing to tell apart, and every column is whole.)\n  const outline = faces !== undefined && (layout.shading === undefined || layout.shading === "outline");\n  const lines = layout.shading === "lines" ? 3 : layout.shading === "line" ? 1 : layout.shading === "ribbed" ? -1 : layout.shading === "hollow" ? 0 : -3;\n  const span = half + 1;\n  // Each column\'s depth from where its lit part starts: the middle row for light ink, the top and bottom for dark.\n  // A shaded column of light ink is drawn on its own, after the rest: to the rest it is as if it were not there \u2014 and\n  // so is every column of a light outline, which is all edges.\n  const depth: number[] = new Array(count).fill(0);\n  // Half of each column\'s height, at most half the layout\'s: worked out once. (Clamped before the shift, the same\n  // number: the shift then has the few bits the clamp leaves, where a height from the program could have any.)\n  const halves: number[] = new Array(count).fill(0);\n  // And in pixels (32 a row), for the bars, which place their brushes in pixels: a small number times 32 is a few tests.\n  const halves32: number[] = new Array(count).fill(0);\n  let least = half, most = 0;\n  // (A light outline is all edges: every depth is 0, nothing to work out.)\n  const flat = !dark && outline;\n  if (flat) least = 0;\n  let i = 0;\n  while (i < count) {\n    const a = Math.min(Math.max(heights[i], 0), 2 * half + 1) >> 1;\n    halves[i] = a;\n    halves32[i] = a * 32;\n    if (!flat) {\n      let d = dark ? half - a : a;\n      if (faces !== undefined && !dark && !outline && (faces[i] & 1) != 0) d = 0;\n      depth[i] = d;\n      if (d < least) least = d;\n      if (d > most) most = d;\n    }\n    i++;\n  }\n  // A rectangle from depth p, k deep, starts on the rows above and below the middle (light) or below the top and above\n  // the bottom (dark); one shallower than 4 is drawn 4 deep, reaching back over what is lit already.\n  const mid = y + half;\n  // Every column, from depth 0 to the least.\n  if (least > 0) {\n    const k = Math.max(least, 4);\n    if (dark) columnRect(player, words, starts, least, x, y + least - k, y + 2 * half - least);\n    else columnRect(player, words, starts, least, x, mid - least, mid + least - k);\n  }\n  // Each group of columns, from the least to the group\'s least; then each column, from there to its own. (Nothing,\n  // when every column\'s depth is the least: a light outline\'s always.)\n  let g = most > least ? 0 : count;\n  while (g < count) {\n    const last = Math.min(g + group, count);\n    let gl = half;\n    let j = g;\n    while (j < last) { if (depth[j] < gl) gl = depth[j]; j++; }\n    const level = last - g === group ? 1 : 2;\n    if (gl > least) {\n      const k = gl - least, kk = Math.max(k, 4);\n      if (dark) columnRect(player, words, starts, level * span + k, x + g * width, y + gl - kk, y + 2 * half - gl);\n      else columnRect(player, words, starts, level * span + k, x + g * width, mid - gl, mid + gl - kk);\n    }\n    j = g;\n    while (j < last) {\n      const k = depth[j] - gl;\n      if (k > 0) {\n        const kk = Math.max(k, 4), cx = x + j * width + 1;\n        if (dark) columnBar(player, cx, y + depth[j] - kk, y + 2 * half - depth[j], k);\n        else columnBar(player, cx, mid - depth[j], mid + depth[j] - kk, k);\n      }\n      j++;\n    }\n    g = last;\n  }\n  if (outline) {\n    // Where one face meets another, the nearer (taller) of the two columns is an edge.\n    const edge: number[] = new Array(count).fill(0);\n    let face = faces[0], tall = heights[0];\n    i = 1;\n    while (i < count) {\n      const f = faces[i], h = heights[i];\n      if (f != face) { if (h >= tall) edge[i] = 1; else edge[i - 1] = 1; }\n      face = f;\n      tall = h;\n      i++;\n    }\n    // The bars in pixels: a column\'s centre stepped across, the middle row\'s worked out once.\n    const mid80 = mid * 32 + 80;\n    let px = (x + 1) * 32 + 16;\n    i = 0;\n    while (i < count) {\n      const a = halves[i], a32 = halves32[i];\n      if (dark) { if (edge[i] != 0 && a >= 2) columnBarPx(player, px, mid80 - a32, mid80, a32); }\n      else if (a > 0) {\n        if (edge[i] != 0 || a < 8) columnBarPx(player, px, mid80 - a32, mid80, a32);\n        else columnBarPx(player, px, mid80 - a32, mid80 + a32 - 128, 128);\n      }\n      px += width * 32;\n      i++;\n    }\n  } else if (faces !== undefined) {\n    i = 0;\n    while (i < count) {\n      if ((faces[i] & 1) != 0) columnShaded(player, x + i * width + 1, mid, halves[i], dark, lines);\n      i++;\n    }\n  }\n});\n\n/**\n * Keep what was lit this frame on the board for `n` frames, and wait them out: \\`await fog.show(2)\\` in place of\n * \\`await nextFrame()\\` draws every other frame at half the cost. StarCraft: Remastered redraws the fog on the minimap\n * every other frame (measured in two played recordings, 2026-10-17), so a picture drawn every other frame looks the\n * same there as one drawn every frame. The board is wiped at the start of the frame after them, ready for the next.\n *\n * @param n How many frames, 1 to 24, known when the script is built.\n */\nexport const show = game(async (n: number) => {\n  memory.vision.countdown = n;\n  await sleep(frames(n));\n});\n\n/** Everything above as one name: import { fog } from "trigscript/fog"; fog.light(P1, x, y, 3). */\nexport const fog = { light, rect, columns, show, play, reveal, picture, SHAPES };\n\n/** The longest fog.show() keeps a picture: the countdown the game sets itself after a wipe is longer than this. */\nconst SHOW_MOST = 24;\n\n// The canvas: every brush\'s sight set, every frame, and the board wiped on the next \u2014 for as long as the game runs \u2014\n// unless a program asked for the picture to stay (fog.show), when the countdown is that program\'s to run down.\nprogram(() => {\n  while (true) {\n    for (let s = 1; s <= 11; s++) stats(BRUSHES[s - 1]).sight = s;\n    const left = memory.vision.countdown;\n    if (left == 0 || left > SHOW_MOST) memory.vision.countdown = 1;\n    sleep(frames(1));\n  }\n});\n',
+  "math": '/**\n * Numbers for motion and play: the standard library\'s "trigscript/math" (TrigScript 4).\n *\n *   import { Vec, lerp, easeOutQuad, distance, angleTo, approach, wrap } from "trigscript/math";\n *\n *   const t = fixed(frame) / 48;                          // 0 to 1 over two seconds\n *   const x = lerp(fromX, toX, easeOutQuad(t));           // eased from one place to another\n *   const v = Vec.fromAngle(angleTo(x, y, tx, ty), fixed(4));\n *   pos = pos.add(v);\n *\n * Fractions are the language\'s fixed numbers (16.16: four decimal places or so, from about \u221232 768 to 32 767): a\n * number becomes one when a fraction is stored into it, or written `fixed(\u2026)`. Angles are radians, as JavaScript\'s are.\n * Whole numbers stay whole where they can \u2014 `distanceSq`, `manhattan`, `wrap`, `sign` \u2014 and cost less.\n */\n\n/** \u03C0, and a whole turn. */\nexport const PI = Math.PI;\nexport const TAU = Math.PI * 2;\n\n/** From a to b by t: a at 0, b at 1, between them in between (t outside 0 \u2026 1 goes past). */\nexport function lerp(a: fixed, b: fixed, t: fixed): fixed {\n  return a + (b - a) * t;\n}\n\n/** Where v is from a to b, as lerp\'s t: 0 at a, 1 at b. */\nexport function inverseLerp(a: fixed, b: fixed, v: fixed): fixed {\n  return b === a ? fixed(0) : (v - a) / (b - a);\n}\n\n/** v from the range a1 \u2026 b1 into a2 \u2026 b2. */\nexport function remap(v: fixed, a1: fixed, b1: fixed, a2: fixed, b2: fixed): fixed {\n  return lerp(a2, b2, inverseLerp(a1, b1, v));\n}\n\n/** t kept inside 0 \u2026 1. */\nexport function clamp01(t: fixed): fixed {\n  return t < 0 ? fixed(0) : t > 1 ? fixed(1) : t;\n}\n\n/** From `current` towards `target` by at most `step`, never past it: a value that follows another at a speed. */\nexport function approach(current: number, target: number, step: number): number {\n  if (current < target) return current + step > target ? target : current + step;\n  return current - step < target ? target : current - step;\n}\n\n/** n into 0 \u2026 size \u2212 1, going round: wrap(-1, 10) is 9, wrap(12, 10) is 2. */\nexport function wrap(n: number, size: number): number {\n  return ((n % size) + size) % size;\n}\n\n/** \u22121, 0 or 1, by whether n is below, at or above zero. */\nexport function sign(n: number): number {\n  return n > 0 ? 1 : n < 0 ? -1 : 0;\n}\n\n/** The distance from one point to another, as the crow flies. */\nexport function distance(x1: number, y1: number, x2: number, y2: number): fixed {\n  return Math.hypot(x2 - x1, y2 - y1);\n}\n\n/** The distance squared: whole, and cheaper \u2014 compare it with a range squared. */\nexport function distanceSq(x1: number, y1: number, x2: number, y2: number): number {\n  return (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);\n}\n\n/** The distance along the axes, |dx| + |dy|: what the game\'s own "nearest" goes by. */\nexport function manhattan(x1: number, y1: number, x2: number, y2: number): number {\n  return Math.abs(x2 - x1) + Math.abs(y2 - y1);\n}\n\n/** The angle from one point to another, in radians from \u2212\u03C0 to \u03C0: 0 is to the right (east), \u03C0 / 2 down (south, y grows down). */\nexport function angleTo(x1: number, y1: number, x2: number, y2: number): fixed {\n  return Math.atan2(y2 - y1, x2 - x1);\n}\n\n/** Degrees as radians. */\nexport function radians(degrees: fixed): fixed {\n  return (degrees * PI) / 180;\n}\n\n/** Radians as degrees. */\nexport function degrees(radians: fixed): fixed {\n  return (radians * 180) / PI;\n}\n\n/* Easing: t from 0 to 1, how far along a motion is at that point of its time \u2014 slow then fast, fast then slow, \u2026 */\n\n/** Slow at the start. */\nexport function easeInQuad(t: fixed): fixed {\n  return t * t;\n}\n\n/** Slow at the end. */\nexport function easeOutQuad(t: fixed): fixed {\n  return t * (2 - t);\n}\n\n/** Slow at both ends. */\nexport function easeInOutQuad(t: fixed): fixed {\n  return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;\n}\n\n/** Slower at the start than easeInQuad. */\nexport function easeInCubic(t: fixed): fixed {\n  return t * t * t;\n}\n\n/** Slower at the end than easeOutQuad. */\nexport function easeOutCubic(t: fixed): fixed {\n  const u = t - 1;\n  return u * u * u + 1;\n}\n\n/** Goes a little past the end and comes back. */\nexport function easeOutBack(t: fixed): fixed {\n  const u = t - 1;\n  return 1 + 2.70158 * u * u * u + 1.70158 * u * u;\n}\n\n/** Slow at both ends, smoothly (Hermite: 3t\xB2 \u2212 2t\xB3). */\nexport function smoothstep(t: fixed): fixed {\n  return t * t * (3 - 2 * t);\n}\n\n/**\n * A point, or a direction and a length: two fixed numbers. Each operation gives a new Vec.\n *\n *   let pos = new Vec(fixed(x), fixed(y));\n *   const toward = new Vec(fixed(tx), fixed(ty)).sub(pos).normalized().scale(fixed(3));\n *   pos = pos.add(toward);\n */\nexport class Vec {\n  x: fixed;\n  y: fixed;\n\n  constructor(x: fixed, y: fixed) {\n    this.x = x;\n    this.y = y;\n  }\n\n  /** A direction `length` long at `angle` radians (0 to the right, \u03C0 / 2 down). */\n  static fromAngle(angle: fixed, length: fixed): Vec {\n    return new Vec(Math.cos(angle) * length, Math.sin(angle) * length);\n  }\n\n  add(o: Vec): Vec {\n    return new Vec(this.x + o.x, this.y + o.y);\n  }\n\n  sub(o: Vec): Vec {\n    return new Vec(this.x - o.x, this.y - o.y);\n  }\n\n  scale(k: fixed): Vec {\n    return new Vec(this.x * k, this.y * k);\n  }\n\n  dot(o: Vec): fixed {\n    return this.x * o.x + this.y * o.y;\n  }\n\n  /** How long it is. */\n  length(): fixed {\n    return Math.sqrt(this.x * this.x + this.y * this.y);\n  }\n\n  /** The same direction, 1 long (or none, for none). */\n  normalized(): Vec {\n    const l = this.length();\n    const k: fixed = l === 0 ? fixed(0) : 1 / l;\n    return new Vec(this.x * k, this.y * k);\n  }\n\n  /** Its angle, in radians from \u2212\u03C0 to \u03C0. */\n  angle(): fixed {\n    return Math.atan2(this.y, this.x);\n  }\n\n  /** Turned by `angle` radians (clockwise on the map, where y grows down). */\n  rotate(angle: fixed): Vec {\n    const c = Math.cos(angle);\n    const s = Math.sin(angle);\n    return new Vec(this.x * c - this.y * s, this.x * s + this.y * c);\n  }\n\n  /** How far it is from another point. */\n  distanceTo(o: Vec): fixed {\n    return this.sub(o).length();\n  }\n\n  /** From this towards another by t (0 here, 1 there). */\n  lerp(o: Vec, t: fixed): Vec {\n    return new Vec(this.x + (o.x - this.x) * t, this.y + (o.y - this.y) * t);\n  }\n}\n',
+  "music": '/**\n * Music in a program: the standard library\'s "trigscript/music" (TrigScript 4).\n *\n *   import { music } from "trigscript/music";\n *   import pluck from "./pluck.sound";\n *\n *   const lead = music.synth({ wave: "square", volume: 0.2 });\n *   const bass = music.sampler(pluck, "A3");\n *   const drums = music.kit({ k: kick, s: snare, h: hat });\n *\n *   const song = music.song({ bpm: 120 },\n *     music.track(lead,  "C5 - E5 - G5 - - . | A5 - G5 - E5 - - ."),\n *     music.track(bass,  "C3 - - - - - - - | F3 - - - - - - -"),\n *     music.track(drums, "kh h sh h kh h sh h | kh h sh h kh kh sh h"),\n *   );\n *\n *   program(async () => {\n *     start(music.loop(song));          // the song again and again, beside the program\n *     playWav(lead.note("C6", 0.1));     // an instrument\'s note on its own, for a sound effect\n *   });\n *\n * A pattern is steps, a word each, a quarter of a beat each by default: a note\'s name starts it ("C4", "F#5", "Bb2"),\n * several with + sound together ("C4+E4+G4"), "-" holds what sounds a step longer, "." is a rest, "|" is only for the\n * eye; "@" after a step\'s notes says how loud ("C4@0.5"). A kit\'s step is its sounds\' letters ("kh": kick and hat).\n * Everything is worked out when the script is built: each note an instrument plays becomes a clip once (`trigscript`\'s\n * Clip, put in the map once however often it plays), and the song a table of which clip starts on which frame, which\n * `play` reads while the game runs.\n *\n * A longer song is written in sections \u2014 parts named once, each section saying what they play in it, a pattern played\n * again until the section is full \u2014 and chords by name, their notes drawn by a template:\n *\n *   const parts = { keys: music.part(music.presets.keys()), bass: music.part(music.presets.bass()), drums: music.part(music.drums()) };\n *   const verse = music.section(4, {\n *     keys: music.chords("Am F C G", "1+2+3 - . 1+2+3 . . 1+2+3 -", { octave: 4, lead: true }),\n *     bass: music.chords("Am F C G", "1 - . 1 . 1 3 -", { octave: 2 }),\n *     drums: music.beat({ k: [0, 3, 4], s: [2, 6], h: [0, 1, 2, 3, 4, 5, 6, 7] }, 8),\n *   });\n *   const song = music.arrange({ bpm: 120, steps: 2 }, parts, intro, verse, verse.with({ keys: null }), outro);\n *\n * Music that follows the game is a song of sections cut into bars and layers, a clip each, which the program steers\n * bar by bar \u2014 which section, which layers, a stinger on the next beat:\n *\n *   const cut = music.stems(song, { layers: { drums: ["drums"], rest: ["keys", "bass"] } });\n *   program(async () => {\n *     const band = new Band();                    // import { music, Band } from "trigscript/music"\n *     start(music.conduct(cut, band));\n *     if (danger) band.go(cut.section("chorus")); // at the next bar line\n *     if (cleared) band.sting(cut.stinger("crash")); // on the next beat\n *   });\n *\n * What the game does with it (the sound probe, 2026-10-19): a bar is a whole number of frames (42 ms on Fastest), so\n * the tempo is the nearest that fits \u2014 `song.bpm` says which; a sound starts within 21 ms of its frame; 32 sound at\n * once, and a song that would need more is refused; notes that overlap add, with no limiter, so keep the volumes down.\n * `render` mixes a song into one clip when the script is built instead: every note exactly in time, one sound playing,\n * nothing to change while it plays. A program plays to its own player; a program for each player plays to each.\n */\nimport { game, sleep, frames, playWav, tone, noise, fm, pluck, mixdown, together, memory, type Clip, type Notes } from "trigscript";\n\n/** Seconds a frame lasts on Fastest, the speed a map is played at. */\nconst FRAME = 0.042;\n/** Sounds the game plays at once. */\nconst VOICES = 32;\n\n/** What plays a pattern\'s notes: each note a clip, made when the script is built. */\nexport interface Instrument {\n  readonly kind: "notes";\n  /**\n   * Note `name` ("C4", "F#5") lasting `seconds`, release and all: a clip to play on its own, too. `rate`: samples a\n   * second, for an instrument that makes its notes (render asks for 44 100).\n   */\n  note(name: string, seconds: number, rate?: number): Clip;\n}\n\n/** What plays a pattern\'s letters: a clip a letter. */\nexport interface Kit {\n  readonly kind: "kit";\n  readonly hits: Readonly<Record<string, Clip>>;\n}\n\nconst SEMITONE: Readonly<Record<string, number>> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };\n\n/** A note\'s number, 69 for A4: "C4" is 60, "C#4" 61, "Db4" 61. */\nfunction noteNumber(name: string): number {\n  const m = /^([A-Ga-g])([#b]?)(-?\\d)$/.exec(name);\n  if (!m) throw new Error(`A note is a name with its octave \u2014 "C4", "F#5", "Bb2" \u2014 not ${JSON.stringify(name)}.`);\n  return 12 * (Number(m[3]) + 1) + SEMITONE[m[1].toLowerCase()] + (m[2] === "#" ? 1 : m[2] === "b" ? -1 : 0);\n}\n\n/** Notes kept as they are made, so a note played many times is the same clip (and the same file in the map). */\nfunction remembering(make: (name: string, seconds: number, rate?: number) => Clip): (name: string, seconds: number, rate?: number) => Clip {\n  const made = new Map<string, Clip>();\n  return (name, seconds, rate) => {\n    const key = `${name} ${seconds.toFixed(4)} ${rate ?? ""}`;\n    let c = made.get(key);\n    if (!c) { c = make(name, seconds, rate); made.set(key, c); }\n    return c;\n  };\n}\n\n/**\n * An instrument from a recording of one note, `root` ("A3"): every other note is it played faster or slower, as a\n * sampler does, cut to the note\'s length with a short release. Where the recording is shorter than a note, the note\n * is as long as the recording.\n */\nexport function sampler(clip: Clip, root: string = "C4", options: { readonly release?: number; readonly volume?: number } = {}): Instrument {\n  const base = noteNumber(root), release = options.release ?? 0.05, volume = options.volume ?? 1;\n  return Object.freeze({\n    kind: "notes" as const,\n    note: remembering((name, seconds) => {\n      const pitched = clip.pitch(noteNumber(name) - base).gain(volume);\n      return pitched.trim(0, Math.min(pitched.seconds, seconds)).fade(0, Math.min(release, seconds / 2));\n    }),\n  });\n}\n\n/** An attack, a decay to the sustain level, and a release after the note\'s length, in seconds (sustain 0 \u2026 1). */\nexport interface Shape { readonly attack?: number; readonly decay?: number; readonly sustain?: number; readonly release?: number }\n\n/** A shape\'s points for a note held `held` seconds, as levels 0 \u2026 1: the attack from 0, the release to 0. */\nfunction shapePoints(shape: Required<Shape>, held: number): [number, number][] {\n  const { attack, decay, sustain, release } = shape;\n  const h = Math.max(attack + decay, held);\n  return [[0, 0], [attack, 1], [attack + decay, sustain], [h, sustain], [h + release, 0]];\n}\nconst full = (s: Shape | undefined, d: Required<Shape>): Required<Shape> => ({ attack: s?.attack ?? d.attack, decay: s?.decay ?? d.decay, sustain: s?.sustain ?? d.sustain, release: s?.release ?? d.release });\n\n/** A synth\'s filter: its type, the cutoff it rests at, its resonance, and how many octaves above it a note\'s envelope opens it. */\nexport interface SynthFilter {\n  readonly type?: "lowpass" | "highpass" | "bandpass";\n  readonly cutoff: number;\n  readonly resonance?: number;\n  /** Octaves above the cutoff at the envelope\'s top (0: the filter does not move). */\n  readonly amount?: number;\n  /** The filter\'s own attack, decay, sustain and release, as a note\'s loudness has. */\n  readonly envelope?: Shape;\n}\n\nexport interface SynthOptions extends Shape {\n  readonly wave?: "sine" | "square" | "triangle" | "saw";\n  readonly volume?: number;\n  /** Copies of each note (1 to 16), `detune` cents apart from lowest to highest, `width` 0 \u2026 1 across left and right. */\n  readonly voices?: number;\n  readonly detune?: number;\n  readonly width?: number;\n  readonly filter?: SynthFilter;\n  /** Saturation after the filter, dB of push (`Clip.drive`). */\n  readonly drive?: number;\n  /** Semitones each note slides up from (a negative number: from below) over `glideTime` seconds. */\n  readonly glide?: number;\n  readonly glideTime?: number;\n}\n\n/**\n * An instrument made of tones: `wave` ("sine", "square", "triangle", "saw") shaped by an attack, a decay to the\n * sustain level, and a release after the note\'s length \u2014 a stack of detuned copies with `voices`, through a filter\n * that opens and closes with each note with `filter`, saturated with `drive`.\n */\nexport function synth(options: SynthOptions = {}): Instrument {\n  const wave = options.wave ?? "square", volume = options.volume ?? 0.2;\n  const amp = full(options, { attack: 0.005, decay: 0.08, sustain: 0.7, release: 0.06 });\n  const f = options.filter, fshape = full(f?.envelope, { attack: 0.005, decay: 0.25, sustain: 0.2, release: 0.2 });\n  const voices = options.voices ?? 1, detune = options.detune ?? (voices > 1 ? 20 : 0), width = options.width ?? 0;\n  return Object.freeze({\n    kind: "notes" as const,\n    note: remembering((name, seconds, rate) => {\n      const held = Math.max(amp.attack + amp.decay, seconds - amp.release), length = held + amp.release;\n      const r = rate === undefined ? {} : { rate };\n      const pitch = options.glide ? [[0, 440 * 2 ** ((noteNumber(name) + options.glide - 69) / 12)], [options.glideTime ?? 0.06, name]] as [number, number | string][] : name;\n      let c = tone(pitch, length, { wave, volume, voices, detune, width, ...r });\n      if (f) {\n        const amount = f.amount ?? 0, base = f.cutoff;\n        const cutoff = amount === 0 ? base : shapePoints(fshape, held).map(([t, level]) => [t, base * 2 ** (amount * level)] as [number, number]);\n        c = c.filter(f.type ?? "lowpass", cutoff, { resonance: f.resonance ?? 0.1 });\n      }\n      if (options.drive) c = c.drive(options.drive);\n      return c.envelope(...shapePoints(amp, held));\n    }),\n  });\n}\n\n/**\n * An FM instrument (`fm()`): `ratio` the modulator\'s pitch to the note\'s, `index` how bright a note starts, falling to\n * `index \xD7 brightness` over `bright` seconds \u2014 an electric piano (ratio 1), a bell (3.5), a bass (0.5).\n */\nexport function fmSynth(options: Shape & { readonly ratio?: number; readonly index?: number; readonly brightness?: number; readonly bright?: number; readonly feedback?: number; readonly volume?: number } = {}): Instrument {\n  const amp = full(options, { attack: 0.002, decay: 1.2, sustain: 0.35, release: 0.3 });\n  const ratio = options.ratio ?? 1, index = options.index ?? 3, after = index * (options.brightness ?? 0.2), bright = options.bright ?? 0.8, volume = options.volume ?? 0.25;\n  return Object.freeze({\n    kind: "notes" as const,\n    note: remembering((name, seconds, rate) => {\n      const held = Math.max(amp.attack + amp.decay, seconds - amp.release), length = held + amp.release;\n      return fm(name, length, { ratio, index: [[0, index], [bright, after]], feedback: options.feedback ?? 0, volume, ...(rate === undefined ? {} : { rate }) }).envelope(...shapePoints(amp, held));\n    }),\n  });\n}\n\n/** A plucked-string instrument (`pluck()`): `brightness` 0 \u2026 1, `decay` seconds; a note rings out its decay unless `cut`. */\nexport function strings(options: { readonly brightness?: number; readonly decay?: number; readonly volume?: number; readonly cut?: boolean } = {}): Instrument {\n  const brightness = options.brightness ?? 0.55, decay = options.decay ?? 1.5, volume = options.volume ?? 0.3;\n  return Object.freeze({\n    kind: "notes" as const,\n    note: remembering((name, seconds, rate) => {\n      const length = options.cut ? seconds + 0.05 : Math.max(seconds + 0.05, Math.min(decay, 4));\n      return pluck(name, length, { brightness, decay, volume, ...(rate === undefined ? {} : { rate }) }).fade(0, 0.05);\n    }),\n  });\n}\n\n/**\n * Instruments to start from, each a function that takes the same options as the instrument it is made with, over its\n * own: `music.presets.supersaw({ volume: 0.1 })`.\n */\nexport const presets = {\n  /** Seven detuned saws through a filter that opens on each note: a trance lead, big chords. */\n  supersaw: (o: SynthOptions = {}) => synth({ wave: "saw", voices: 7, detune: 28, width: 0.7, volume: 0.16, attack: 0.005, decay: 0.25, sustain: 0.8, release: 0.18, filter: { cutoff: 1800, amount: 2, resonance: 0.15, envelope: { decay: 0.35, sustain: 0.35 } }, ...o }),\n  /** A slow, wide pad: five saws, the filter low and slowly opening. Give its track a chorus and the reverb. */\n  pad: (o: SynthOptions = {}) => synth({ wave: "saw", voices: 5, detune: 18, width: 1, volume: 0.1, attack: 0.35, decay: 0.6, sustain: 0.85, release: 0.8, filter: { cutoff: 700, amount: 1.3, resonance: 0.1, envelope: { attack: 0.6, decay: 1.2, sustain: 0.5, release: 0.8 } }, ...o }),\n  /** A round, punchy bass: two saws, the filter snapping shut after each note, a little drive. */\n  bass: (o: SynthOptions = {}) => synth({ wave: "saw", voices: 2, detune: 8, volume: 0.32, attack: 0.002, decay: 0.12, sustain: 0.9, release: 0.04, filter: { cutoff: 180, amount: 2.6, resonance: 0.25, envelope: { decay: 0.18, sustain: 0.15, release: 0.05 } }, drive: 6, ...o }),\n  /** A squelchy, resonant line (a 303\'s): one saw, the filter wide open on each note and shutting fast. */\n  acid: (o: SynthOptions = {}) => synth({ wave: "saw", volume: 0.22, attack: 0.002, decay: 0.1, sustain: 0.8, release: 0.05, filter: { cutoff: 260, amount: 3.6, resonance: 0.82, envelope: { decay: 0.16, sustain: 0 } }, drive: 10, ...o }),\n  /** A warm lead: two square waves a little apart, softened by a filter. */\n  lead: (o: SynthOptions = {}) => synth({ wave: "square", voices: 2, detune: 12, width: 0.3, volume: 0.15, attack: 0.004, decay: 0.15, sustain: 0.7, release: 0.12, filter: { cutoff: 2200, amount: 1.2, resonance: 0.2, envelope: { decay: 0.25, sustain: 0.4 } }, ...o }),\n  /** The old consoles\' lead: a bare square wave. */\n  chip: (o: SynthOptions = {}) => synth({ wave: "square", volume: 0.14, attack: 0.002, decay: 0.05, sustain: 0.8, release: 0.03, ...o }),\n  /** An electric piano: FM at ratio 1, bright on the strike and mellowing. */\n  keys: (o: Parameters<typeof fmSynth>[0] = {}) => fmSynth({ ratio: 1, index: 2.6, brightness: 0.25, bright: 0.6, volume: 0.22, decay: 1.4, sustain: 0.3, release: 0.35, ...o }),\n  /** A bell: FM at ratio 3.5, long and shimmering. */\n  bell: (o: Parameters<typeof fmSynth>[0] = {}) => fmSynth({ ratio: 3.5, index: 5, brightness: 0.08, bright: 1.6, volume: 0.16, decay: 2.5, sustain: 0, release: 1.2, ...o }),\n  /** A plucked string, a little bright. */\n  pluck: (o: Parameters<typeof strings>[0] = {}) => strings({ brightness: 0.6, decay: 1.4, ...o }),\n};\n\n/**\n * A drum kit made from nothing, a letter a drum: k kick, s snare, c clap, h closed hat, o open hat, t tom, r rim, x crash. At\n * 44 100 Hz (`rate`), so the hats keep their top; `volume` 0 \u2026 1 over the whole kit (1).\n */\nexport function drums(options: { readonly rate?: number; readonly volume?: number } = {}): Kit {\n  const rate = options.rate ?? 44100, v = options.volume ?? 1;\n  const metal = (seconds: number) => [263, 400, 421, 474, 587, 845].map((hz) => tone(hz * 2.6, seconds, { wave: "square", volume: 0.16, rate })).reduce((a, b) => a.mix(b));\n  const kick = tone([[0, 170], [0.025, 85], [0.3, 46]], 0.42, { volume: 0.95, rate }).envelope([0, 1], [0.08, 0.85], [0.42, 0])\n    .mix(noise(0.006, { volume: 0.35, rate }).filter("highpass", 3000)).drive(5);\n  const snare = tone([[0, 260], [0.04, 185]], 0.18, { wave: "triangle", volume: 0.6, rate }).envelope([0, 1], [0.15, 0])\n    .mix(noise(0.28, { volume: 0.6, rate }).filter("highpass", 1400).filter("peak", 5000, { gain: 4 }).envelope([0, 1], [0.03, 0.55], [0.26, 0])).drive(4);\n  const burst = (at: number) => ({ clip: noise(0.012, { volume: 0.6, rate }).envelope([0, 1], [0.012, 0.2]), at });\n  const clap = mixdown([burst(0), burst(0.011), burst(0.023), { clip: noise(0.22, { volume: 0.5, rate }).envelope([0, 1], [0.22, 0]), at: 0.03 }], undefined, rate)\n    .filter("bandpass", 1300, { resonance: 0.35 }).gain(1.6);\n  const hat = (seconds: number) => metal(seconds).mix(noise(seconds, { volume: 0.4, rate })).filter("highpass", 7200).filter("highshelf", 10000, { gain: 3 }).envelope([0, 1], [seconds * 0.25, 0.4], [seconds, 0]);\n  const tom = tone([[0, 190], [0.2, 120]], 0.4, { volume: 0.8, rate }).envelope([0, 1], [0.4, 0]).mix(noise(0.01, { volume: 0.2, rate }).filter("bandpass", 2500));\n  const rim = tone(1700, 0.025, { wave: "triangle", volume: 0.5, rate }).mix(noise(0.012, { volume: 0.3, rate }).filter("highpass", 4000)).envelope([0, 1], [0.025, 0]);\n  const crash = metal(2).mix(noise(2, { volume: 0.5, rate })).filter("highpass", 4500).filter("peak", 7500, { gain: 3 }).envelope([0, 1], [0.08, 0.5], [2, 0]);\n  return kit({ k: kick.gain(v), s: snare.gain(v), c: clap.gain(v), h: hat(0.07).gain(0.55 * v), o: hat(0.4).gain(0.5 * v), t: tom.gain(v), r: rim.gain(v), x: crash.gain(0.45 * v) });\n}\n\n/** A kit: a clip a letter, played by a pattern\'s letters ("kh" plays k and h together). */\nexport function kit(hits: Readonly<Record<string, Clip>>): Kit {\n  for (const k of Object.keys(hits)) if (k.length !== 1 || k === "." || k === "-" || k === "|") throw new Error(`A kit\'s sounds are named by one letter each, not ${JSON.stringify(k)}.`);\n  return Object.freeze({ kind: "kit" as const, hits: Object.freeze({ ...hits }) });\n}\n\n/* \u2500\u2500 Patterns: what is written, and what writes it \u2500\u2500 */\n\n/** A pattern: steps a word each, as one text or a text a bar. */\nexport type Pattern = string | readonly string[];\n\n/** A pattern\'s steps, the "|" left out. */\nconst wordsOf = (p: Pattern): string[] => (typeof p === "string" ? p : p.join(" ")).split(/\\s+/).filter((w) => w !== "" && w !== "|");\n\n/** A step\'s sounds and how loud: "C4+E4@0.6" is C4 and E4 at 0.6; "kh" k and h at 1. */\nfunction velocityOf(word: string, step: number): { body: string; velocity: number } {\n  const at = word.indexOf("@");\n  if (at < 0) return { body: word, velocity: 1 };\n  const body = word.slice(0, at), v = Number(word.slice(at + 1));\n  if (body === "" || body === "-" || body === "." || !(v >= 0 && v <= 4)) throw new Error(`Step ${step + 1}: "@" follows a note, a chord or a kit\'s letters, with how loud they play, 0 to 4 (1 as written): "C4@0.6", "kh@1.3" \u2014 not ${JSON.stringify(word)}.`);\n  return { body, velocity: v };\n}\n\nconst NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];\n/** A note\'s name from its number: 60 is "C4". Sharps, not flats. */\nfunction nameOf(n: number): string {\n  const octave = Math.floor(n / 12) - 1;\n  if (octave < -1 || octave > 9) throw new Error(`A note goes from C-1 to B9: this one would be ${NAMES[((n % 12) + 12) % 12]}${octave}.`);\n  return NAMES[((n % 12) + 12) % 12] + octave;\n}\n\n/** Each note of a step moved by a function of its number; holds, rests, kit letters and "@" kept. */\nconst eachNote = (p: Pattern, move: (n: number) => number): string[] => wordsOf(p).map((w) => w.replace(/[A-Ga-g][#b]?-?\\d/g, (name) => nameOf(move(noteNumber(name)))));\n\n/** A pattern `semitones` up (or down: a negative number): `transpose(tune, 12)` is the tune an octave up. A text a bar stays a text a bar. */\nexport function transpose(p: Pattern, semitones: number): Pattern {\n  if (!Number.isInteger(semitones)) throw new Error(`transpose() moves by whole semitones, not ${semitones}.`);\n  if (semitones === 0) return p;\n  return typeof p === "string" ? eachNote(p, (n) => n + semitones).join(" ") : p.map((bar) => eachNote(bar, (n) => n + semitones).join(" "));\n}\n\n/** A pattern with each step `by` steps long \u2014 eighths written as sixteenths with `stretch(p, 2)`. A text a bar stays a text a bar. */\nexport function stretch(p: Pattern, by: number): Pattern {\n  if (!Number.isInteger(by) || by < 1) throw new Error(`stretch() makes each step a whole number of steps long, 1 or more \u2014 not ${by}.`);\n  const one = (text: string) => wordsOf(text).map((w) => [w, ...Array.from({ length: by - 1 }, () => (w.startsWith(".") ? "." : "-"))].join(" ")).join(" ");\n  return typeof p === "string" ? one(p) : p.map(one);\n}\n\n/** A pattern `n` times over, as one text. */\nexport function repeat(p: Pattern, n: number): string {\n  if (!Number.isInteger(n) || n < 1) throw new Error(`repeat() plays a pattern a whole number of times, 1 or more \u2014 not ${n}.`);\n  return Array.from({ length: n }, () => wordsOf(p).join(" ")).join(" ");\n}\n\n/** A kit\'s bar: the steps (from 0) each letter plays on, `steps` steps long \u2014 `beat({ k: [0, 8], s: [4, 12] })`. */\nexport function beat(hits: Readonly<Record<string, readonly number[]>>, steps: number = 16): string {\n  for (const [k, at] of Object.entries(hits)) for (const s of at) if (!Number.isInteger(s) || s < 0 || s >= steps) throw new Error(`beat(): ${k} on step ${s}, of steps 0 to ${steps - 1}.`);\n  return Array.from({ length: steps }, (_, i) => Object.keys(hits).filter((k) => hits[k].includes(i)).join("") || ".").join(" ");\n}\n\n/** A chord\'s notes above its root, by what follows the root\'s name. */\nconst QUALITIES: Readonly<Record<string, readonly number[]>> = {\n  "": [0, 4, 7], m: [0, 3, 7], dim: [0, 3, 6], aug: [0, 4, 8], "+": [0, 4, 8], sus2: [0, 2, 7], sus4: [0, 5, 7], sus: [0, 5, 7], "5": [0, 7],\n  "6": [0, 4, 7, 9], m6: [0, 3, 7, 9], "7": [0, 4, 7, 10], maj7: [0, 4, 7, 11], M7: [0, 4, 7, 11], m7: [0, 3, 7, 10], dim7: [0, 3, 6, 9],\n  m7b5: [0, 3, 6, 10], "7sus4": [0, 5, 7, 10], "9": [0, 4, 7, 10, 14], maj9: [0, 4, 7, 11, 14], m9: [0, 3, 7, 10, 14], add9: [0, 4, 7, 14], madd9: [0, 3, 7, 14],\n};\n\n/** A chord\'s notes as numbers, lowest first. */\nfunction chordNumbers(symbol: string, octave: number, inversion: number): number[] {\n  const m = /^([A-G][#b]?)([^/]*)(?:\\/([A-G][#b]?))?$/.exec(symbol);\n  const steps = m ? QUALITIES[m[2]] : undefined;\n  if (!m || !steps) throw new Error(`A chord is a root and what kind \u2014 "Am", "C", "G7", "Fmaj7", "Dm7", "Esus4", "Bdim", "C/E" \u2014 not ${JSON.stringify(symbol)}. The kinds: ${Object.keys(QUALITIES).map((q) => `"${q}"`).join(", ")}.`);\n  if (!Number.isInteger(inversion) || inversion < 0 || inversion >= steps.length) throw new Error(`${symbol} has ${steps.length} notes: its inversion is 0 to ${steps.length - 1}, not ${inversion}.`);\n  const root = noteNumber(m[1] + octave);\n  const notes = steps.map((s) => root + s);\n  for (let k = 0; k < inversion; k++) notes.push(notes.shift()! + 12);\n  if (m[3]) {\n    // Over another bass: that note, below the rest.\n    let bass = noteNumber(m[3] + octave);\n    while (bass >= notes[0]) bass -= 12;\n    notes.unshift(bass);\n  }\n  return notes;\n}\n\n/**\n * A chord\'s notes, as a step plays them: `chord("Am")` is "A4+C5+E5", its root in octave 4 (`octave`); `inversion`\n * moves its lowest notes up an octave, one each \u2014 `chord("E", 3, 1)` is "G#3+B3+E4". "C/E" is C over an E below it.\n */\nexport function chord(symbol: string, octave: number = 4, inversion: number = 0): string {\n  return chordNumbers(symbol, octave, inversion).map(nameOf).join("+");\n}\n\n/** Each chord\'s notes as numbers, lowest first: the ones written, or the symbol\'s at `octave`. */\nconst notesOf = (c: string, octave: number): number[] => (/\\d/.test(c) ? c.split("+").map(noteNumber).sort((a, b) => a - b) : chordNumbers(c, octave, 0));\n\n/**\n * A chord played as `template` says: its steps name the chord\'s notes by number, 1 the lowest \u2014 "1 3 2 3", "1+2+3 - - -"\n * \u2014 past the last, round again an octave up (in a three-note chord, 4 is 1 an octave up); each ^ after a number takes it\n * an octave higher, each _ an octave lower ("1__" the root two octaves down, for a bass). "-", "." and "@" as in any\n * pattern. `notes` is a chord\'s notes ("A3+C4+E4") or its name ("Am", with its root in octave `octave`).\n */\nexport function over(notes: string, template: Pattern, octave: number = 4): string {\n  const n = notesOf(notes, octave);\n  return wordsOf(template).map((w, s) => {\n    const { body, velocity } = velocityOf(w, s);\n    if (body === "-" || body === ".") return w;\n    const named = body.split("+").map((d) => {\n      const m = /^(\\d+)([\\^_]*)$/.exec(d);\n      if (!m || Number(m[1]) < 1) throw new Error(`Step ${s + 1} of a chord\'s template: its notes are numbers from 1, the lowest, with ^ or _ for an octave up or down \u2014 "1", "3^", "1__" \u2014 not ${JSON.stringify(d)}.`);\n      const k = Number(m[1]) - 1, up = Math.floor(k / n.length) + (m[2].match(/\\^/g)?.length ?? 0) - (m[2].match(/_/g)?.length ?? 0);\n      return nameOf(n[k % n.length] + 12 * up);\n    });\n    return named.join("+") + (velocity === 1 ? "" : `@${velocity}`);\n  }).join(" ");\n}\n\n/**\n * A progression played as `template` says, a template a chord: `chords("Am Am E Am Dm C E Am", "1_ 1 2 3")` \u2014 as\n * `over` plays one chord. Each chord\'s root in octave `octave` (4); `lead: true` turns each chord after the first to\n * the inversion nearest the one before (its notes move least), as a player\'s hands do. A text a chord.\n */\nexport function chords(progression: string | readonly string[], template: Pattern, options: { readonly octave?: number; readonly lead?: boolean } = {}): string[] {\n  const octave = options.octave ?? 4, list = wordsOf(progression);\n  let before: number[] | null = null;\n  return list.map((c) => {\n    let n = notesOf(c, octave);\n    if (options.lead && before && !/\\d/.test(c)) {\n      // Each inversion, an octave either side: the one whose notes are nearest those before.\n      const prev: number[] = before, mean = prev.reduce((a, b) => a + b, 0) / prev.length;\n      let best = n, cost = Infinity;\n      for (let inv = 0; inv < n.length; inv++) for (const shift of [-12, 0, 12]) {\n        const cand = chordNumbers(c, octave, inv).map((x) => x + shift);\n        const d = cand.length === prev.length ? cand.reduce((s, x, i) => s + Math.abs(x - prev[i]), 0) : Math.abs(cand.reduce((a, b) => a + b, 0) / cand.length - mean) * cand.length;\n        if (d < cost) { cost = d; best = cand; }\n      }\n      n = best;\n    }\n    before = n;\n    return over(n.map(nameOf).join("+"), template);\n  });\n}\n\n/** Seconds `n` bars last at `bpm` as a song plays it (its bar a whole number of frames): how long to make a riser. */\nexport function bars(bpm: number, n: number = 1, beats: number = 4): number {\n  return n * Math.max(1, Math.round((60 / bpm) * beats / FRAME)) * FRAME;\n}\n\n/**\n * What makes a part breathe with the beat, as a mix does under a kick: down to `1 \u2212 depth` on each beat (`beat`\n * seconds apart, from the clip\'s start) and back over `release` of a beat \u2014 a part\'s fx, or a section\'s:\n * `{ fx: music.pump(music.bars(143) / 4) }`.\n */\nexport function pump(beat: number, depth: number = 0.45, release: number = 0.55): (clip: Clip) => Clip {\n  if (!(beat > 0) || !(depth >= 0 && depth <= 1) || !(release > 0 && release <= 1)) throw new Error("pump() takes seconds a beat, how deep (0 \u2026 1) and how long it takes to come back, as a part of a beat (0 \u2026 1).");\n  return (c) => {\n    const points: [number, number][] = [];\n    for (let t = 0; t < c.seconds; t += beat) points.push([t, 1 - depth], [Math.min(c.seconds, t + release * beat), 1], [Math.min(c.seconds, t + beat - 0.004), 1]);\n    points.push([c.seconds, 1]);\n    return c.envelope(...points);\n  };\n}\n\n/* \u2500\u2500 Sounds between sections \u2500\u2500 */\n\n/** Noise rising for `seconds` through a filter opening, loudest at the end: what leads into a drop. */\nexport function riser(seconds: number, options: { readonly volume?: number; readonly rate?: number } = {}): Clip {\n  const rate = options.rate ?? 44100, v = options.volume ?? 0.5, s = seconds;\n  const swept = noise(s, { volume: v, rate }).filter("bandpass", [[0, 350], [s * 0.6, 1800], [s, 9000]], { resonance: 0.55 });\n  const lift = tone([[0, 220], [s, 880]], s, { wave: "saw", voices: 3, detune: 25, width: 0.8, volume: v * 0.25, rate }).filter("lowpass", [[0, 500], [s, 6000]]);\n  return swept.mix(lift).envelope([0, 0], [s * 0.5, 0.25], [s * 0.9, 0.85], [s, 1]).fade(0, 0.01);\n}\n\n/** A boom to land on: a falling sine under a burst of noise, ringing `seconds` (1.5). */\nexport function impact(options: { readonly seconds?: number; readonly volume?: number; readonly rate?: number } = {}): Clip {\n  const rate = options.rate ?? 44100, v = options.volume ?? 0.8, s = options.seconds ?? 1.5;\n  return tone([[0, 90], [0.4, 38], [s, 30]], s, { volume: v, rate }).envelope([0, 1], [0.15, 0.7], [s, 0])\n    .mix(noise(s, { volume: v * 0.5, rate }).filter("lowpass", [[0, 6000], [s, 300]]).envelope([0, 1], [0.05, 0.4], [s, 0])).drive(3);\n}\n\n/** How a track or a part is heard. */\nexport interface PartOptions {\n  /** Where it is heard, \u22121 left to 1 right; 0, the middle, when left out. */\n  readonly pan?: number;\n  /** How loud, 1 as the instrument plays. */\n  readonly volume?: number;\n  /** What it goes through: its whole part in `render`, each note on its own in `play`. */\n  readonly fx?: (clip: Clip) => Clip;\n  /** How much of it goes to the song\'s reverb in `render`, 0 \u2026 1 (0). */\n  readonly reverb?: number;\n}\n\n/** What an instrument plays, step by step. */\nexport interface Track {\n  readonly instrument: Instrument | Kit;\n  readonly steps: readonly string[];\n  /** Where it is heard, \u22121 left to 1 right; 0, the middle, when left out. */\n  readonly pan: number;\n  /** How loud, 1 as the instrument plays. */\n  readonly volume: number;\n  /** What the track goes through: its whole part in `render`, each note on its own in `play`. */\n  readonly fx?: (clip: Clip) => Clip;\n  /** How much of it goes to the song\'s reverb in `render`, 0 \u2026 1 (0). */\n  readonly reverb: number;\n}\n\n/** A part\'s options checked, and its defaults filled in. */\nfunction heard(options: PartOptions, what: string): { pan: number; volume: number; reverb: number; fx?: (clip: Clip) => Clip } {\n  const pan = options.pan ?? 0, volume = options.volume ?? 1, reverb = options.reverb ?? 0;\n  if (!(pan >= -1 && pan <= 1)) throw new Error(`A ${what}\'s pan is \u22121 (left) to 1 (right), not ${pan}.`);\n  if (!(volume >= 0)) throw new Error(`A ${what}\'s volume is 0 or more, not ${volume}.`);\n  if (!(reverb >= 0 && reverb <= 1)) throw new Error(`A ${what}\'s reverb is 0 to 1, not ${reverb}.`);\n  return { pan, volume, reverb, ...(options.fx ? { fx: options.fx } : {}) };\n}\n\n/**\n * A pattern for an instrument: steps a word each \u2014 a note or notes joined by +, "-" to hold, "." to rest, "|" for the\n * eye; "@" after a step\'s notes says how loud, "C4@0.6". `pan`: where it is heard, \u22121 left to 1 right (a panned track\'s\n * notes have two channels); `volume`: 1 as the instrument plays; `fx`: what the track goes through \u2014\n * `(c) => c.delay(0.21).chorus()` \u2014 its whole part when the song is rendered (as a mixer\'s insert), each note on its own\n * when it is played note by note; `reverb`: how much goes to the song\'s reverb when it is rendered, 0 \u2026 1.\n */\nexport function track(instrument: Instrument | Kit, pattern: Pattern, options: PartOptions = {}): Track {\n  return Object.freeze({ instrument, steps: Object.freeze(wordsOf(pattern)), ...heard(options, "track") });\n}\n\n/** An instrument and how it is heard, which a song\'s sections give its notes: `arrange`. */\nexport interface Part extends Omit<Track, "steps"> { readonly kind: "part" }\n\n/** An instrument as a part of a song made of sections (`arrange`), heard as `track` says. */\nexport function part(instrument: Instrument | Kit, options: PartOptions = {}): Part {\n  return Object.freeze({ kind: "part" as const, instrument, ...heard(options, "part") });\n}\n\n/** How long a section lasts, as its effects need it for their points: seconds, its bars, and seconds a bar. */\nexport interface SectionTime { readonly seconds: number; readonly bars: number; readonly bar: number }\n\n/** What a section is and does, besides its notes. */\nexport interface SectionOptions {\n  /** What `song.sections` calls it. */\n  readonly name?: string;\n  /**\n   * What a part goes through in this section only, given how long the section is \u2014 a filter opening over a build:\n   * `{ pad: (c, t) => c.filter("lowpass", [[0, 400], [t.seconds, 8000]]) }`. Its notes from this section, tails and\n   * all, before the part\'s own `fx`. Mixed by `render` only: a song with one is not played note by note.\n   */\n  readonly fx?: Readonly<Record<string, (clip: Clip, time: SectionTime) => Clip>>;\n  /** How loud a part is in this section only, 1 as it is. */\n  readonly volume?: Readonly<Record<string, number>>;\n}\n\n/** Bars of a song: what each part plays in them. */\nexport interface Section {\n  readonly kind: "section";\n  readonly name: string;\n  readonly bars: number;\n  readonly parts: Readonly<Record<string, Pattern>>;\n  readonly fx: Readonly<Record<string, (clip: Clip, time: SectionTime) => Clip>>;\n  readonly volume: Readonly<Record<string, number>>;\n  /** This section with some parts written again \u2014 null: that part rests \u2014 and these options over its own. */\n  with(parts: Readonly<Record<string, Pattern | null>>, options?: SectionOptions): Section;\n}\n\n/**\n * `bars` bars of a song (`arrange`), and what each part plays in them, by the part\'s name: `{ lead: tune, drums: beat }`.\n * A pattern shorter than the section plays again until it is filled, so a bar of drums fills eight; a part not named\n * rests. `options`: its name, a part\'s effects or volume for this section only.\n */\nexport function section(bars: number, parts: Readonly<Record<string, Pattern>>, options: SectionOptions = {}): Section {\n  if (!Number.isInteger(bars) || bars < 1) throw new Error(`A section is a whole number of bars, 1 or more \u2014 not ${bars}.`);\n  for (const [k, v] of Object.entries(options.volume ?? {})) if (!(v >= 0)) throw new Error(`A section\'s volume for ${k} is 0 or more, not ${v}.`);\n  const made: Section = Object.freeze({\n    kind: "section" as const, name: options.name ?? "", bars,\n    parts: Object.freeze({ ...parts }), fx: Object.freeze({ ...(options.fx ?? {}) }), volume: Object.freeze({ ...(options.volume ?? {}) }),\n    with(changes: Readonly<Record<string, Pattern | null>>, more: SectionOptions = {}): Section {\n      const next: Record<string, Pattern> = { ...parts };\n      for (const [k, p] of Object.entries(changes)) { if (p === null) delete next[k]; else next[k] = p; }\n      return section(bars, next, { name: more.name ?? made.name, fx: { ...made.fx, ...(more.fx ?? {}) }, volume: { ...made.volume, ...(more.volume ?? {}) } });\n    },\n  });\n  return made;\n}\n\n/** A song\'s tempo and grid. */\nexport interface SongOptions {\n  readonly bpm: number;\n  /** Steps a beat (4: sixteenths). */\n  readonly steps?: number;\n  /** Beats a bar (4). */\n  readonly beats?: number;\n  /** How late every second step starts, as a part of a step: 0 straight (as it is when left out), 1/3 a triplet\'s lilt. */\n  readonly swing?: number;\n}\n\n/** Where a song\'s section is: from bar `bar` (0 the first) for `bars`, from frame `frame`. */\nexport interface SongSection { readonly name: string; readonly bar: number; readonly bars: number; readonly frame: number }\n\n/** Steps of a track that belong to one section, and what that section does to them. */\ninterface Piece { readonly from: number; readonly to: number; readonly volume: number; readonly fx?: (clip: Clip, time: SectionTime) => Clip; readonly time: SectionTime }\nconst piecesOf = new WeakMap<Track, readonly Piece[]>();\n/** A song of sections\' parts, by name, and the track each became: what `stems` cuts. */\nconst partsOf = new WeakMap<Song, readonly { readonly name: string; readonly track: Track }[]>();\n\n/**\n * A song made of sections, one after another: `parts` names each instrument and how it is heard; each section says\n * what the parts play in it. A section can be written once and played again \u2014 `arrange(o, parts, intro, verse, verse,\n * chorus)` \u2014 or played again changed: `verse.with({ lead: transpose(tune, 12) })`.\n */\nexport function arrange(options: SongOptions, parts: Readonly<Record<string, Part>>, ...sections: readonly Section[]): Song {\n  const { perBar, barFrames } = grid(options);\n  if (sections.length === 0) throw new Error("arrange() takes the song\'s sections, one at least.");\n  const names = Object.keys(parts);\n  for (const s of sections) for (const k of [...Object.keys(s.parts), ...Object.keys(s.fx), ...Object.keys(s.volume)]) {\n    if (!(k in parts)) throw new Error(`A section${s.name ? ` (${s.name})` : ""} names ${JSON.stringify(k)}, which is no part of the song: its parts are ${names.join(", ")}.`);\n  }\n  const tracks = names.map((k) => {\n    const steps: string[] = [], pieces: Piece[] = [];\n    for (const s of sections) {\n      const length = s.bars * perBar, from = steps.length, p = s.parts[k];\n      if (p === undefined) for (let i = 0; i < length; i++) steps.push(".");\n      else {\n        const words = wordsOf(p);\n        if (words.length === 0 || length % words.length !== 0) throw new Error(`${k}${s.name ? ` in ${s.name}` : ""}: a pattern of ${words.length} steps does not fill ${s.bars} bar${s.bars === 1 ? "" : "s"} of ${perBar} steps evenly.`);\n        for (let i = 0; i < length; i++) steps.push(words[i % words.length]);\n      }\n      const fx = k in s.fx ? s.fx[k] : undefined, volume = s.volume[k] ?? 1;\n      if (fx || volume !== 1) pieces.push({ from, to: from + length, volume, ...(fx ? { fx } : {}), time: { seconds: s.bars * barFrames * FRAME, bars: s.bars, bar: barFrames * FRAME } });\n    }\n    const t = track(parts[k].instrument, steps, parts[k]);\n    if (pieces.length) piecesOf.set(t, pieces);\n    return t;\n  });\n  let bar = 0;\n  const placedSections = sections.map((s) => { const at = { name: s.name, bar, bars: s.bars, frame: bar * barFrames }; bar += s.bars; return Object.freeze(at); });\n  const made = compose(options, tracks, placedSections);\n  partsOf.set(made, names.map((k, i) => ({ name: k, track: tracks[i] })));\n  return made;\n}\n\n/** A clip as a track plays it note by note: through its fx, at its volume and its pan, made once a clip a track. */\nfunction placed(t: Track, made: Map<Clip, Clip>, c: Clip): Clip {\n  if (t.pan === 0 && t.volume === 1 && !t.fx) return c;\n  let p = made.get(c);\n  if (!p) {\n    p = t.fx ? t.fx(c) : c;\n    if (t.volume !== 1) p = p.gain(t.volume);\n    if (t.pan !== 0) p = p.pan(t.pan);\n    made.set(c, p);\n  }\n  return p;\n}\n\n/** What a song\'s notes are, kept for render, which makes them again at its own rate; `piece`, the section whose effects it goes through. */\ninterface Score { readonly at: number; readonly track: Track; readonly made: Map<Clip, Clip>; readonly velocity: number; readonly piece?: Piece; readonly name?: string; readonly seconds?: number; readonly hit?: Clip }\nconst scores = new WeakMap<object, readonly Score[]>();\n\n/** A song, when the script is built: the tables `play` reads, and what it takes. */\nexport interface Song {\n  /**\n   * Frames a step lasts: a bar is a whole number of frames, a step need not be (2.5 for sixteenths at 143 beats a\n   * minute). Played note by note, a note starts on the frame nearest its time \u2014 within the 21 ms the game\'s own\n   * mixer starts a sound in anyway; rendered, exactly on it.\n   */\n  readonly stepFrames: number;\n  /** Frames a bar lasts, a whole number. */\n  readonly barFrames: number;\n  /** Beats a bar. */\n  readonly beats: number;\n  /** The tempo it plays at: the nearest to the one asked for whose bar is a whole number of frames. */\n  readonly bpm: number;\n  /** Steps, the longest track\'s. */\n  readonly steps: number;\n  /** Its sections, made by `arrange`, in the order they play (none for a song of tracks). */\n  readonly sections: readonly SongSection[];\n  /** Frames it lasts, its last note\'s release included. */\n  readonly frames: number;\n  readonly seconds: number;\n  /** Each clip the song plays, once. */\n  readonly clips: readonly Clip[];\n  /** Each note in the order they start: the frame it starts on, from 0, and which of `clips` it is. */\n  readonly at: readonly number[];\n  readonly which: readonly number[];\n  /** The most notes sounding at once: `play` refuses a song of more than 32 (`render` has no limit). */\n  readonly voices: number;\n}\n\n/** A song\'s grid: steps a bar, and frames a bar and a step. */\nfunction grid(options: SongOptions): { perBar: number; barFrames: number; stepFrames: number } {\n  const perBeat = options.steps ?? 4, beats = options.beats ?? 4, swing = options.swing ?? 0;\n  if (!(options.bpm > 0) || !(perBeat > 0) || !(beats > 0)) throw new Error("A song takes a tempo, { bpm: 120 }, steps a beat (4 by default) and beats a bar (4).");\n  if (!(swing >= 0 && swing < 1)) throw new Error(`A song\'s swing is 0 (straight) to under 1 (a step late), not ${swing}.`);\n  const barFrames = Math.max(1, Math.round((60 / options.bpm) * beats / FRAME));\n  return { perBar: perBeat * beats, barFrames, stepFrames: barFrames / (beats * perBeat) };\n}\n\n/**\n * Tracks played together from their first step: `bpm` beats a minute, `steps` steps a beat (4 by default), `swing`\n * every second step late. Played note by note (`play`), a song is refused when more than 32 notes would sound at once;\n * rendered, it has no limit. A song of sections: `arrange`.\n */\nexport function song(options: SongOptions, ...tracks: readonly Track[]): Song {\n  return compose(options, tracks, []);\n}\n\nfunction compose(options: SongOptions, tracks: readonly Track[], sections: readonly SongSection[]): Song {\n  const { barFrames, stepFrames } = grid(options), beats = options.beats ?? 4, swing = options.swing ?? 0;\n  const stepSeconds = stepFrames * FRAME;\n  // Where step s starts, in frames: every second step `swing` of a step late.\n  const time = (s: number) => (s + (s % 2 === 1 ? swing : 0)) * stepFrames;\n  const score: Score[] = [];\n  let steps = 0, effects = false;\n  for (const t of tracks) {\n    const ws = t.steps, made = new Map<Clip, Clip>(), pieces = piecesOf.get(t) ?? [];\n    if (pieces.some((p) => p.fx)) effects = true;\n    steps = Math.max(steps, ws.length);\n    let k = 0;\n    ws.forEach((w, s) => {\n      while (k < pieces.length && pieces[k].to <= s) k++;\n      const piece = k < pieces.length && pieces[k].from <= s ? pieces[k] : undefined;\n      const { body, velocity: v } = velocityOf(w, s);\n      if (body === "-" || body === ".") return;\n      const velocity = v * (piece?.volume ?? 1), into = piece ? { piece } : {};\n      if (t.instrument.kind === "kit") {\n        for (const letter of body) {\n          const hit = t.instrument.hits[letter];\n          if (!hit) throw new Error(`Step ${s + 1}: the kit has no ${JSON.stringify(letter)} (it has ${Object.keys(t.instrument.hits).join(", ")}).`);\n          score.push({ at: time(s), track: t, made, velocity, ...into, hit });\n        }\n        return;\n      }\n      // A note lasts its step and every "-" after it.\n      let length = 1;\n      while (s + length < ws.length && ws[s + length] === "-") length++;\n      const seconds = swing === 0 ? length * stepSeconds : (time(s + length) - time(s)) * FRAME;\n      for (const name of body.split("+")) {\n        noteNumber(name);\n        score.push({ at: time(s), track: t, made, velocity, ...into, name, seconds });\n      }\n    });\n  }\n  score.sort((a, b) => a.at - b.at);\n  const base = (n: Score) => n.hit ?? (n.track.instrument as Instrument).note(n.name!, n.seconds!);\n  // The tables `play` reads, made when they are first read: a song only rendered never makes its notes for the game.\n  let table: { clips: readonly Clip[]; at: readonly number[]; which: readonly number[]; voices: number; peakStep: number; frames: number } | null = null;\n  const tables = () => {\n    if (table) return table;\n    const notes = score.map((n) => ({ at: Math.round(n.at), clip: placed(n.track, n.made, n.velocity === 1 ? base(n) : base(n).gain(n.velocity)) }));\n    // How many sound at once: at each note\'s start, those started before it and not yet over.\n    let voices = 0, peakStep = 0;\n    notes.forEach((n, k) => {\n      let sounding = 0;\n      for (let j = 0; j <= k; j++) if (notes[j].at + notes[j].clip.seconds / FRAME > n.at) sounding++;\n      if (sounding > voices) { voices = sounding; peakStep = Math.round(n.at / stepFrames) + 1; }\n    });\n    const clips: Clip[] = [];\n    const which = notes.map((n) => { let k = clips.indexOf(n.clip); if (k < 0) { clips.push(n.clip); k = clips.length - 1; } return k; });\n    const frames = Math.max(Math.round(steps * stepFrames), ...notes.map((n) => n.at + Math.ceil(n.clip.seconds / FRAME)));\n    table = { clips: Object.freeze(clips), at: Object.freeze(notes.map((n) => n.at)), which: Object.freeze(which), voices, peakStep, frames };\n    return table;\n  };\n  // What the game plays note by note: refused, when it is read, if more than 32 would sound at once (render has no limit).\n  const playable = () => {\n    if (effects) throw new Error("A section of this song puts a part through effects of its own, which only music.render mixes: render the song, or give the part those effects for the whole song.");\n    const t = tables();\n    if (t.voices > VOICES) throw new Error(`At step ${t.peakStep}, ${t.voices} notes would sound at once; the game plays ${VOICES} note by note. Shorten notes or thin the chords \u2014 or music.render the song, one sound however many it mixes.`);\n    return t;\n  };\n  const made: Song = Object.freeze({\n    stepFrames, barFrames, beats, bpm: (60 * beats) / (barFrames * FRAME), steps, sections: Object.freeze([...sections]),\n    get frames() { return tables().frames; },\n    get seconds() { return tables().frames * FRAME; },\n    get clips() { return playable().clips; },\n    get at() { return playable().at; },\n    get which() { return playable().which; },\n    get voices() { return tables().voices; },\n  });\n  scores.set(made, score);\n  return made;\n}\n\n/** The General MIDI drums, by number, as `drums()` has them: kicks k, snares s, the clap c, hats h and o, toms t, the rim r, crashes x. */\nconst GM_DRUMS: Readonly<Record<number, string>> = {\n  35: "k", 36: "k", 37: "r", 38: "s", 40: "s", 39: "c", 42: "h", 44: "h", 51: "h", 53: "h", 59: "h", 46: "o",\n  41: "t", 43: "t", 45: "t", 47: "t", 48: "t", 50: "t", 49: "x", 52: "x", 55: "x", 57: "x",\n};\n\n/** How imported notes are made a song: its grid, and which kit letter a drum\'s number plays. */\nexport interface MidiOptions extends Omit<SongOptions, "bpm"> {\n  /** Beats a minute: the file\'s own when left out. */\n  readonly bpm?: number;\n  /** A drum\'s MIDI number to a kit\'s letter, over General MIDI\'s (36 "k", 38 "s", 42 "h", 46 "o", 49 "x", \u2026). */\n  readonly drums?: Readonly<Record<number, string>>;\n}\n\n/**\n * A song of imported notes (`import tune from "./tune.notes"`): each track `parts` names \u2014 by its name, or its place\n * in `tune.tracks` from 0 \u2014 played by an instrument, a kit (the drums by their General MIDI numbers) or a `part`;\n * the tracks not named are left out. Each note starts on the step nearest its time and lasts the steps nearest its\n * length (`steps` a beat, 4: sixteenths); how hard it was struck is how loud it plays, 100 as written. A track whose\n * notes overlap becomes several, so the song can hold them. At the file\'s first tempo unless `bpm` says.\n */\nexport function midi(notes: Notes, parts: Readonly<Record<string, Instrument | Kit | Part>>, options: MidiOptions = {}): Song {\n  const perBeat = options.steps ?? 4, map = { ...GM_DRUMS, ...(options.drums ?? {}) };\n  const names = notes.tracks.map((t) => t.name);\n  const tracks: Track[] = [];\n  for (const [key, given] of Object.entries(parts)) {\n    const index = names.indexOf(key) >= 0 ? names.indexOf(key) : /^\\d+$/.test(key) ? Number(key) : -1;\n    const source = notes.tracks[index];\n    if (!source) throw new Error(`The notes have no track ${JSON.stringify(key)}: their tracks are ${names.map((n) => JSON.stringify(n)).join(", ")} (or 0 to ${names.length - 1}).`);\n    const instrument = given.kind === "part" ? given.instrument : given, how = given.kind === "part" ? given : {};\n    const kit = instrument.kind === "kit" ? instrument : null;\n    // Voices: steps that each hold one chord at a time; a note joins a chord struck with it, or the first voice free.\n    type Word = { sounds: string[]; velocity: number; length: number };\n    const voices: { words: Map<number, Word>; end: number; last: number }[] = [];\n    const placed = source.notes.map((n) => {\n      const from = Math.round(n.at * perBeat);\n      return { from, length: kit ? 1 : Math.max(1, Math.round((n.at + n.beats) * perBeat) - from), sound: kit ? map[n.pitch] : nameOf(n.pitch), velocity: Math.max(0.05, Math.round((n.velocity / 100) * 20) / 20) };\n    }).filter((n) => n.sound !== undefined && (!kit || n.sound in kit.hits)).sort((a, b) => a.from - b.from || b.length - a.length);\n    for (const n of placed) {\n      let voice = voices.find((v) => { const w = v.words.get(v.last); return v.last === n.from && w !== undefined && w.length === n.length && w.velocity === n.velocity; });\n      if (voice) { const w = voice.words.get(n.from)!; if (!w.sounds.includes(n.sound)) w.sounds.push(n.sound); continue; }\n      voice = voices.find((v) => v.end <= n.from);\n      if (!voice) { voice = { words: new Map(), end: 0, last: -1 }; voices.push(voice); }\n      voice.words.set(n.from, { sounds: [n.sound], velocity: n.velocity, length: n.length });\n      voice.end = n.from + n.length;\n      voice.last = n.from;\n    }\n    for (const v of voices) {\n      const steps: string[] = Array.from({ length: v.end }, () => ".");\n      for (const [at, w] of v.words) {\n        steps[at] = (kit ? w.sounds.join("") : w.sounds.join("+")) + (w.velocity === 1 ? "" : `@${w.velocity}`);\n        if (!kit) for (let k = 1; k < w.length; k++) steps[at + k] = "-";\n      }\n      tracks.push(track(instrument, steps, how));\n    }\n  }\n  return compose({ ...options, bpm: options.bpm ?? notes.bpm, beats: options.beats ?? notes.beats }, tracks, []);\n}\n\n/** The song\'s reverb in `render`, as `Clip.reverb` takes it, the dry part left out. */\nexport interface ReverbOptions { readonly decay?: number; readonly damping?: number; readonly predelay?: number; readonly width?: number }\n\n/**\n * A song mixed into one clip when the script is built: every note exactly in time, one sound playing. Mixed as a\n * mixing desk does: each track\'s notes made again at `rate` (44 100 when left out: what the ear hears up to 20 kHz; a\n * note played in the game note by note is made at 22 050, to keep the map small) into its own part, through a\n * section\'s effects where it has them, then its `fx`, at its volume, to its side; what each track sends (its `reverb`)\n * into one reverb shared by them all (`reverb`, its room); the whole through `master` \u2014\n * `(mix) => mix.compress({ threshold: -14, ratio: 2 })` \u2014 and last a limiter (`Clip.limit`) so it never goes over\n * \u22121.5 dB however the parts add, between the samples too: `limit: false` leaves it as mixed, `{ ceiling, release }` sets it. A long clip a\n * program plays goes in the map as Ogg Vorbis, two channels when it has two.\n */\nexport function render(s: Song, options: { readonly rate?: number; readonly limit?: boolean | { readonly ceiling?: number; readonly release?: number }; readonly reverb?: ReverbOptions; readonly master?: (mix: Clip) => Clip } = {}): Clip {\n  const rate = options.rate ?? 44100, score = scores.get(s), least = s.steps * s.stepFrames * FRAME;\n  let mixed: Clip;\n  if (!score) {\n    // (A song from elsewhere, without its score: its own clips, at their rate.)\n    mixed = mixdown(s.at.map((at, k) => ({ clip: s.clips[s.which[k]], at: at * FRAME })), s.seconds, rate);\n  } else {\n    const parts: { clip: Clip; at: number }[] = [], sends: { clip: Clip; at: number }[] = [];\n    const byTrack = new Map<Track, Score[]>();\n    for (const n of score) { const list = byTrack.get(n.track); if (list) list.push(n); else byTrack.set(n.track, [n]); }\n    for (const [t, notes] of byTrack) {\n      const clipOf = (n: Score) => { const c = n.hit ?? (t.instrument as Instrument).note(n.name!, n.seconds!, rate); return n.velocity === 1 ? c : c.gain(n.velocity); };\n      // The notes as they are, and each section\'s that has effects of its own mixed apart and through them.\n      const entries: { clip: Clip; at: number }[] = [], apart = new Map<Piece, Score[]>();\n      for (const n of notes) {\n        if (n.piece?.fx) { const list = apart.get(n.piece); if (list) list.push(n); else apart.set(n.piece, [n]); }\n        else entries.push({ clip: clipOf(n), at: n.at * FRAME });\n      }\n      for (const [p, list] of apart) {\n        const from = p.from * s.stepFrames;\n        const sub = mixdown(list.map((n) => ({ clip: clipOf(n), at: (n.at - from) * FRAME })), p.time.seconds, rate);\n        entries.push({ clip: p.fx!(sub, p.time), at: from * FRAME });\n      }\n      let part = mixdown(entries, least, rate);\n      if (t.fx) part = t.fx(part);\n      if (t.volume !== 1) part = part.gain(t.volume);\n      if (t.pan !== 0) part = part.pan(t.pan);\n      parts.push({ clip: part, at: 0 });\n      if (t.reverb > 0) sends.push({ clip: part.gain(t.reverb), at: 0 });\n    }\n    if (sends.length) {\n      const r = options.reverb ?? {};\n      parts.push({ clip: mixdown(sends, least, rate).reverb({ decay: r.decay ?? 0.7, damping: r.damping ?? 0.45, predelay: r.predelay ?? 0.02, width: r.width ?? 1, mix: 1, dry: 0 }), at: 0 });\n    }\n    mixed = mixdown(parts, least, rate);\n  }\n  if (options.master) mixed = options.master(mixed);\n  const limit = options.limit ?? true;\n  return limit === false ? mixed : mixed.limit(limit === true ? {} : limit);\n}\n\n/* \u2500\u2500 Music that follows the game: a song cut into pieces, played piece by piece \u2500\u2500 */\n\n/** How a song of sections is cut for the game to play piece by piece (`stems`). */\nexport interface StemsOptions {\n  /**\n   * Which parts each layer holds, by name \u2014 `{ drums: ["kit", "hats"], bass: ["bass"], melody: ["lead", "saw"] }` \u2014 a\n   * layer the game can turn on and off where a piece begins. A part in no layer is left out.\n   */\n  readonly layers: Readonly<Record<string, readonly string[]>>;\n  /**\n   * Beats a piece: where the game can go to another section or turn a layer on or off (a bar\'s beats when left out).\n   * Two in a bar of four halves the wait for a change, for about half as much map again and more sounds at once.\n   */\n  readonly every?: number;\n  /** Samples a second (44 100). */\n  readonly rate?: number;\n  /** The reverb\'s room, as `render` takes it. */\n  readonly reverb?: ReverbOptions;\n  /** What each piece\'s clip goes through last \u2014 an EQ, not a compressor: each is on its own, the game adds them up. */\n  readonly master?: (clip: Clip) => Clip;\n  /** The loudest the pieces may add up to as the song plays through, every layer on (0.84, \u22121.5 dB). */\n  readonly peak?: number;\n  /**\n   * Seconds a piece\'s clip rings on after its notes end (2), its echoes and reverb faded out over the last of them: the\n   * pieces after it cover the rest, and a shorter clip is a smaller map. A layer\'s last piece keeps all of its tail.\n   */\n  readonly tail?: number;\n  /** The Ogg Vorbis quality of the pieces\' clips (4: a little smaller than a song\'s 5, as many play at once). */\n  readonly quality?: number;\n  /**\n   * Sounds to play on the next beat when the game asks (`band.sting`): a crash for a cleared line, a hit for a boss.\n   * Turned down with the pieces, which leave room for one on any beat.\n   */\n  readonly stingers?: Readonly<Record<string, Clip>>;\n}\n\n/** A song cut into pieces for the game to play piece by piece, with `conduct` and a `Band`: made when the script is built. */\nexport interface Stems {\n  readonly kind: "stems";\n  /** Frames a bar lasts. */\n  readonly barFrames: number;\n  readonly bpm: number;\n  /** Beats a bar, and beats a piece. */\n  readonly beats: number;\n  readonly every: number;\n  /** Frames each beat of a piece lasts, whole frames (beats of a bar not a whole number of frames take turns). */\n  readonly waits: readonly number[];\n  /** The layers\' names, in the order `band.on` has them. */\n  readonly layers: readonly string[];\n  /** The sections, in the order the song plays them: their names and how many bars. */\n  readonly sections: readonly SongSection[];\n  /**\n   * Section `s`\'s piece `p` in layer `l`: its notes, their tails and echoes and reverb with them, or null where it plays\n   * none. A section of `bars` bars has bars \xD7 beats / every pieces.\n   */\n  readonly pieces: readonly (readonly (readonly (Clip | null)[])[])[];\n  readonly stingers: readonly Clip[];\n  /** A section\'s place in `sections`, by its name: `band.go(stems.section("drop"))`. */\n  section(name: string): number;\n  /** A layer\'s place in `layers`, by its name: `band.mute(stems.layer("drums"))`. */\n  layer(name: string): number;\n  /** A stinger\'s place, by its name: `band.sting(stems.stinger("crash"))`. */\n  stinger(name: string): number;\n  /** The most clips sounding at once as the song plays through, every layer on: of the game\'s 32, what is left for the rest. */\n  readonly voices: number;\n  /** The pieces added up as the game plays the song through, every layer on, each on its frame: to hear it, or compare. */\n  readonly playthrough: Clip;\n}\n\n/**\n * A song of sections (`arrange`) cut into pieces \u2014 a bar each, or `every` beats \u2014 a clip each piece of each layer, for\n * music that follows the game: where each piece begins the program says which section plays and which layers (`Band`,\n * `conduct`), and a stinger plays on the next beat. A piece\'s clip holds the notes that start in it, with their tails,\n * echoes and reverb, so it overlaps the next and nothing is cut off, whichever comes after it; a piece the same as\n * another is the same clip, one file in the map. Each layer is mixed as `render` mixes the song, but with no master\n * and no limiter between the parts \u2014 the game adds the clips up \u2014 so all of them are turned down together until the\n * song played through stays under `peak`.\n */\nexport function stems(s: Song, options: StemsOptions): Stems {\n  const parts = partsOf.get(s), score = scores.get(s);\n  if (!parts || !score) throw new Error("stems() cuts a song made of sections, by music.arrange.");\n  const rate = options.rate ?? 44100, layers = Object.keys(options.layers), r = options.reverb ?? {}, tail = options.tail ?? 2;\n  if (!(tail > 0)) throw new Error(`stems()\' tail is seconds after a piece, more than 0, not ${tail}.`);\n  if (layers.length === 0 || layers.length > 8) throw new Error(`stems() takes one to eight layers, not ${layers.length}.`);\n  const beats = s.beats, every = options.every ?? beats, piece = (s.barFrames * every) / beats;\n  if (!Number.isInteger(every) || every < 1 || every > beats || beats % every !== 0) throw new Error(`stems() cuts every few beats of a bar\'s ${beats}, a number that divides it \u2014 not every ${every}.`);\n  if (!Number.isInteger(piece)) throw new Error(`A piece of ${every} beats would be ${piece.toFixed(2)} frames: the game plays a sound on a frame. Make it a bar (every: ${beats}), or a tempo whose bar divides into whole frames.`);\n  const perBar = beats / every;\n  const layerOf = new Map<Track, number>();\n  layers.forEach((name, l) => {\n    for (const p of options.layers[name]) {\n      const found = parts.find((x) => x.name === p);\n      if (!found) throw new Error(`The layer ${name} names ${JSON.stringify(p)}, which is no part of the song: its parts are ${parts.map((x) => x.name).join(", ")}.`);\n      if (layerOf.has(found.track)) throw new Error(`${p} is in two layers: a part is in one at most.`);\n      layerOf.set(found.track, l);\n    }\n  });\n  const pieceSeconds = piece * FRAME, total = s.sections.reduce((n, x) => n + x.bars, 0) * perBar;\n  // The notes of each piece of each layer, by part.\n  const cells: Map<Track, Score[]>[][] = Array.from({ length: total }, () => layers.map(() => new Map()));\n  for (const n of score) {\n    const l = layerOf.get(n.track);\n    if (l === undefined) continue;\n    const g = Math.min(total - 1, Math.floor((n.at + 1e-6) / piece));\n    const m = cells[g][l], list = m.get(n.track);\n    if (list) list.push(n); else m.set(n.track, [n]);\n  }\n  const clipOf = (t: Track, n: Score) => { const c = n.hit ?? (t.instrument as Instrument).note(n.name!, n.seconds!, rate); return n.velocity === 1 ? c : c.gain(n.velocity); };\n  // Each layer\'s last piece with notes: it rings out whole, as the song ends.\n  const last = layers.map((_, l) => { let g = total - 1; while (g > 0 && cells[g][l].size === 0) g--; return g; });\n  // A piece of a layer, mixed: each part\'s notes from where it begins, through what the part goes through, and the reverb.\n  const raw: (Clip | null)[][] = cells.map((byLayer, g) => byLayer.map((m, l) => {\n    const out: { clip: Clip; at: number }[] = [], sends: { clip: Clip; at: number }[] = [];\n    // Where the piece\'s last note ends, its release and all: a riser four bars long is kept whole.\n    let end = pieceSeconds;\n    for (const [t, notes] of m) for (const n of notes) end = Math.max(end, (n.at - g * piece) * FRAME + clipOf(t, n).seconds);\n    for (const [t, notes] of m) {\n      const plain = notes.filter((n) => !n.piece?.fx), apart = notes.filter((n) => n.piece?.fx);\n      const entries: { clip: Clip; at: number }[] = plain.map((n) => ({ clip: clipOf(t, n), at: (n.at - g * piece) * FRAME }));\n      if (apart.length) {\n        // A section\'s effects take the whole section: this piece\'s notes where they fall in it, then the piece cut out.\n        const p = apart[0].piece!, from = p.from * s.stepFrames, into = (g * piece - from) * FRAME;\n        const whole = p.fx!(mixdown(apart.map((n) => ({ clip: clipOf(t, n), at: (n.at - from) * FRAME })), undefined, rate), p.time);\n        entries.push({ clip: whole.trim(into, whole.seconds), at: 0 });\n      }\n      let part = mixdown(entries, undefined, rate);\n      if (t.fx) part = t.fx(part);\n      if (t.volume !== 1) part = part.gain(t.volume);\n      if (t.pan !== 0) part = part.pan(t.pan);\n      out.push({ clip: part, at: 0 });\n      if (t.reverb > 0) sends.push({ clip: part.gain(t.reverb), at: 0 });\n    }\n    if (out.length === 0) return null;\n    if (sends.length) out.push({ clip: mixdown(sends, undefined, rate).reverb({ decay: r.decay ?? 0.7, damping: r.damping ?? 0.45, predelay: r.predelay ?? 0.02, width: r.width ?? 1, mix: 1, dry: 0 }), at: 0 });\n    let mixed = mixdown(out, undefined, rate);\n    if (options.master) mixed = options.master(mixed);\n    // What rings on after the piece\'s notes, kept for `tail` seconds and faded over the last of them \u2014 the pieces\n    // after cover the rest \u2014 but all of it after the layer\'s last piece.\n    const keep = end + tail;\n    return g < last[l] && mixed.seconds > keep ? mixed.trim(0, keep).fade(0, Math.min(1, tail / 2)) : mixed;\n  }));\n  // All of them turned down together, as the song plays through.\n  const placed: { clip: Clip; at: number; g: number; l: number }[] = [];\n  raw.forEach((byLayer, g) => byLayer.forEach((c, l) => { if (c) placed.push({ clip: c, at: g * pieceSeconds, g, l }); }));\n  if (placed.length === 0) throw new Error("stems(): the layers play no notes.");\n  // The stingers may play on any beat: turned down with the pieces, and room left for them over the loudest.\n  const waits = Array.from({ length: every }, (_, j) => Math.round(((j + 1) * piece) / every) - Math.round((j * piece) / every));\n  const stingerNames = Object.keys(options.stingers ?? {});\n  const lines: number[] = [];\n  for (let g = 0; g < total; g++) { let at = g * piece; for (const w of waits) { lines.push(at * FRAME); at += w; } }\n  const fitted = together(placed, { peak: options.peak ?? 0.84, over: stingerNames.map((k) => ({ clip: options.stingers![k], at: lines })) });\n  const grid: (Clip | null)[][] = raw.map((byLayer) => byLayer.map(() => null));\n  const quality = options.quality ?? 4;\n  placed.forEach((p, k) => { grid[p.g][p.l] = fitted[k].ogg(quality); });\n  const stingers = stingerNames.map((_, k) => fitted[placed.length + k]);\n  let start = 0;\n  const pieces = s.sections.map((sec) => { const n = sec.bars * perBar, rows = grid.slice(start, start + n).map((row) => Object.freeze(row)); start += n; return Object.freeze(rows); });\n  const lookup = (what: string, list: readonly string[], name: string) => {\n    const k = list.indexOf(name);\n    if (k < 0) throw new Error(`There is no ${what} ${JSON.stringify(name)}: there are ${list.map((x) => JSON.stringify(x)).join(", ") || "none"}.`);\n    return k;\n  };\n  let voices = -1;\n  return Object.freeze({\n    kind: "stems" as const, barFrames: s.barFrames, bpm: s.bpm, beats, every, waits: Object.freeze(waits),\n    layers: Object.freeze(layers), sections: s.sections, pieces: Object.freeze(pieces), stingers: Object.freeze(stingers),\n    section: (name: string) => lookup("section", s.sections.map((x) => x.name), name),\n    layer: (name: string) => lookup("layer", layers, name),\n    stinger: (name: string) => lookup("stinger", stingerNames, name),\n    get playthrough() {\n      return mixdown(placed.map((p) => ({ clip: grid[p.g][p.l]!, at: p.at })));\n    },\n    get voices() {\n      if (voices < 0) {\n        voices = 0;\n        for (const p of placed) { let n = 0; for (const q of placed) if (q.at <= p.at && q.at + q.clip.seconds > p.at) n++; voices = Math.max(voices, n); }\n      }\n      return voices;\n    },\n  });\n}\n\n/**\n * The music as the game steers it: which section plays, which piece of it, which layers. Make one inside the program\n * that steers the music and hand it to `conduct`, which plays a piece where each begins as it says:\n *\n *   import { music, Band } from "trigscript/music";\n *   const band = new Band();\n *   start(music.conduct(stems, band));\n *   band.go(stems.section("drop"));        // where the next piece begins\n *   band.mute(stems.layer("drums"));\n *   band.sting(stems.stinger("crash"));    // on the next beat\n *\n * With nothing said, the song plays through its sections in order and starts again.\n */\nexport class Band {\n  /** The section playing, its place in `stems.sections`; the piece of it (a bar, unless `stems.every` says), from 0; the beat of the piece. */\n  section = 0;\n  piece = 0;\n  beat = 0;\n  /** Pieces played since it started. */\n  count = 0;\n  /** The game\'s frame the beat playing began on: how far into the beat it is, for what moves with the music. */\n  at = 0;\n  /** The section to go to, and whether where the next piece begins (`go`) or when this section ends (`queue`); \u22121 for none. */\n  next = -1;\n  now = false;\n  /** Whether a section plays again when it ends, instead of going on to the next. */\n  loop = false;\n  /** Which layers play, by their place in `stems.layers`. */\n  on = [true, true, true, true, true, true, true, true];\n  /** A stinger to play on the next beat, by its place; \u22121 for none. */\n  stung = -1;\n  /** Whether it plays: false stops it where the next piece would begin (what sounds rings out). */\n  playing = true;\n\n  /** Go to a section where the next piece begins, from its first piece. */\n  go(section: number) {\n    this.next = section;\n    this.now = true;\n  }\n  /** Go to a section when the one playing ends. */\n  queue(section: number) {\n    this.next = section;\n    this.now = false;\n  }\n  /** Turn a layer off, or on, from where the next piece begins. */\n  mute(layer: number) {\n    this.on[layer] = false;\n  }\n  unmute(layer: number) {\n    this.on[layer] = true;\n  }\n  /** Play a stinger on the next beat. */\n  sting(stinger: number) {\n    this.stung = stinger;\n  }\n  /** Stop where the next piece would begin. */\n  stop() {\n    this.playing = false;\n  }\n}\n\n/** Play `stems` as `band` says, beat by beat, until it stops: `start(music.conduct(stems, band))` beside the program. */\nexport const conduct = game(async (s: Stems, band: Band) => {\n  band.playing = true;\n  band.beat = 0;\n  while (band.playing || band.beat > 0) {\n    band.at = memory.game.frame;\n    if (band.beat === 0) {\n      // Where a piece begins: where to be, then the piece\'s clip of each layer that is on. (Which clip, by test: a\n      // clip is no value a program holds.)\n      if (band.next >= 0 && (band.now || band.piece === 0)) {\n        band.section = band.next;\n        band.piece = 0;\n        band.next = -1;\n      }\n      for (let k = 0; k < s.sections.length; k++) if (band.section === k) {\n        for (let p = 0; p < s.pieces[k].length; p++) if (band.piece === p) {\n          for (let l = 0; l < s.layers.length; l++) if (s.pieces[k][p][l]) if (band.on[l]) playWav(s.pieces[k][p][l]!, 0);\n        }\n      }\n    }\n    for (let j = 0; j < s.stingers.length; j++) if (band.stung === j) playWav(s.stingers[j], 0);\n    band.stung = -1;\n    for (let j = 0; j < s.every; j++) if (band.beat === j) await sleep(frames(s.waits[j]));\n    band.beat++;\n    if (band.beat >= s.every) {\n      band.beat = 0;\n      band.count++;\n      band.piece++;\n      // A section ended: again, or on to the next (after the last, the first).\n      for (let k = 0; k < s.sections.length; k++) if (band.section === k) if (band.piece >= s.pieces[k].length) {\n        band.piece = 0;\n        if (!band.loop) band.section = k + 1 < s.sections.length ? k + 1 : 0;\n      }\n      if (!band.playing) band.beat = 0;\n    }\n  }\n});\n\n/**\n * Play a song, note by note, inside an async program: \\`await music.play(song)\\` resolves at its end, or\n * \\`start(music.play(song))\\` plays it beside the program.\n */\nexport const play = game(async (s: Song) => {\n  const at = s.at;\n  const which = s.which;\n  let i = 0;\n  let now = 0;\n  while (i < at.length) {\n    if (at[i] > now) {\n      await sleep(frames(at[i] - now));\n      now = at[i];\n    }\n    const k = which[i];\n    // Which clip, by its number: a test a clip (a loop over a length known when the script is built is unrolled, and\n    // the clips stay the song\'s, known when it is built \u2014 a clip is no value a program holds).\n    for (let j = 0; j < s.clips.length; j++) if (k === j) playWav(s.clips[j], 0);\n    i++;\n  }\n  if (s.frames > now) await sleep(frames(s.frames - now));\n});\n\n/** Play a song again and again; start it beside a program: \\`start(music.loop(song))\\`. */\nexport const loop = game(async (s: Song) => {\n  // (\\`play\\` written out again, so that the wait at the end of each turn is where the loop shows it \u2014 at least a frame,\n  // so that a song with nothing left at its end does not turn round within one frame for ever.)\n  const at = s.at;\n  const which = s.which;\n  while (true) {\n    let i = 0;\n    let now = 0;\n    while (i < at.length) {\n      if (at[i] > now) {\n        await sleep(frames(at[i] - now));\n        now = at[i];\n      }\n      const k = which[i];\n      for (let j = 0; j < s.clips.length; j++) if (k === j) playWav(s.clips[j], 0);\n      i++;\n    }\n    await sleep(frames(Math.max(s.frames - now, 1)));\n  }\n});\n\n/** Everything above as one name: import { music } from "trigscript/music"; music.play(song). */\nexport const music = {\n  sampler, synth, fmSynth, strings, presets, drums, kit, track, song, render, play, loop,\n  part, section, arrange, transpose, stretch, repeat, beat, chord, over, chords, bars, pump, riser, impact, midi, stems, conduct,\n};\n',
+  "random": '/**\n * Chance: the standard library\'s "trigscript/random" (TrigScript 4).\n *\n *   import { chance, range, pick, shuffle, weighted, Random } from "trigscript/random";\n *\n *   if (chance(25)) dropLoot();                       // one time in four\n *   const lane = range(1, 3);                         // 1, 2 or 3\n *   const boss = pick(BOSSES);                        // any one of a list\n *   shuffle(order);                                   // an array of the program, in place\n *   const tier = weighted([70, 25, 5]);               // 0 most of the time, 2 rarely\n *\n *   const rng = new Random(seed);                     // the same numbers every time for the same seed\n *   const x = rng.range(0, 63);\n *\n * The functions use the game\'s own random numbers, which every player\'s game draws alike, so nothing goes out of step\n * in a game of several players. `Random` is a generator of your own (xorshift), seeded: the same seed gives the same\n * numbers, game after game \u2014 a level made from a seed, a save code that holds one.\n */\nimport { random } from "trigscript";\n\n/** True `percent` times in a hundred (25: one time in four). */\nexport function chance(percent: number): boolean {\n  return random(100) < percent;\n}\n\n/** A whole number from `min` to `max`, both included. */\nexport function range(min: number, max: number): number {\n  return min + random(max - min + 1);\n}\n\n/** The total of `count` dice of `sides` sides each (3, 6: from 3 to 18). */\nexport function dice(count: number, sides: number): number {\n  let total = 0;\n  let i = 0;\n  while (i < count) { total += 1 + random(sides); i++; }\n  return total;\n}\n\n/** One of a list, any one alike; a list the script has, or an array of the program (the first\'s 0 when it is empty). */\nexport function pick<T>(items: readonly T[]): T {\n  return items[random(items.length)];\n}\n\n/** The place of one of the weights, each as likely as its share of their total: [70, 25, 5] gives 0 most of the time. */\nexport function weighted(weights: readonly number[]): number {\n  let total = 0;\n  for (const w of weights) total += w;\n  let roll = random(total);\n  let i = 0;\n  while (i < weights.length) {\n    if (roll < weights[i]) return i;\n    roll -= weights[i];\n    i++;\n  }\n  return weights.length - 1;\n}\n\n/** An array of the program in a random order, in place (Fisher\u2013Yates: every order alike). */\nexport function shuffle<T>(items: T[]) {\n  let i = items.length - 1;\n  while (i > 0) {\n    const j = random(i + 1);\n    const held = items[i];\n    items[i] = items[j];\n    items[j] = held;\n    i--;\n  }\n}\n\n/**\n * A generator of random numbers of your own, seeded: the same seed gives the same numbers, in the game and when the\n * script is tested. Make it in the program (`const rng = new Random(1234)`).\n */\nexport class Random {\n  state: number;\n\n  /** Seeded with any whole number (0 is taken as 1). */\n  constructor(seed: number) {\n    this.state = seed === 0 ? 1 : seed;\n  }\n\n  /** The next number, from 0 to 2 147 483 647. */\n  next(): number {\n    let x = this.state;\n    x ^= x << 13;\n    x ^= x >>> 17;\n    x ^= x << 5;\n    this.state = x;\n    return x & 0x7fffffff;\n  }\n\n  /** A whole number from 0 to n \u2212 1. */\n  int(n: number): number {\n    return this.next() % n;\n  }\n\n  /** A whole number from `min` to `max`, both included. */\n  range(min: number, max: number): number {\n    return min + this.int(max - min + 1);\n  }\n\n  /** True `percent` times in a hundred. */\n  chance(percent: number): boolean {\n    return this.int(100) < percent;\n  }\n\n  /** One of a list, any one alike. */\n  pick<T>(items: readonly T[]): T {\n    return items[this.int(items.length)];\n  }\n\n  /** An array of the program in a random order, in place. */\n  shuffle<T>(items: T[]) {\n    let i = items.length - 1;\n    while (i > 0) {\n      const j = this.int(i + 1);\n      const held = items[i];\n      items[i] = items[j];\n      items[j] = held;\n      i--;\n    }\n  }\n}\n',
+  "screen": '/**\n * Pixel screens: the standard library\'s "trigscript/screen" (TrigScript 4).\n *\n *   import { Screen, ScreenView, sprite } from "trigscript/screen";\n *\n *   const SHIP = sprite([".1.", "111", "1.1"]);\n *\n *   program(async () => {\n *     const screen = new Screen(4, 4, 24, 16);   // 24 \xD7 16 pixels, its corner on tile (4, 4)\n *     let x = 10;\n *     while (true) {\n *       screen.clear();\n *       screen.rect(0, 15, 24, 1, 5);           // the ground, in colour 5\n *       screen.blit(SHIP, x, 12);\n *       screen.number(score, 1, 1, 2);          // digits 3 \xD7 5 pixels, in colour 2\n *       screen.present();                       // on the map, and so on the minimap (screen.reveal(P1) once first)\n *       await nextFrame();\n *     }\n *   });\n *\n * A screen is a grid of pixels, each 0 (empty) or a colour from 1 to 7; drawing changes the grid, and `present()`\n * shows it: a pixel is a unit on the map, owned by the player whose colour it is, so the minimap shows the picture \u2014\n * neighbouring pixels of one colour join into a solid block there. Only the pixels that changed since the last\n * `present()` are made or taken away, and only the pixels drawn since are looked at, so a still picture costs nothing to\n * show. Draw through the methods (`set`, `clear`, `rect`, \u2026): a pixel written into `pixels` directly is not seen. The same grid can be shown in a\n * player\'s text lines too, as squares (`ScreenView` in a `ui.lines` view): one game, two screens, as the Tetris probe has it.\n *\n * A player sees the pixels only where they have vision: `screen.reveal(P1)` once gives them Map Revealers over it.\n *\n * Two looks (the constructor\'s last argument): "dots", Overlords, which fly \u2014 the minimap draws each as a dot with a gap\n * round it, the screen may be over Space; and "solid", Pylons, which the minimap draws as their whole two-tile\n * footprint, so pixels side by side are one block \u2014 on buildable ground (probes/lib/screen-map.mts --ground).\n *\n * What the map needs, found playing the unit-pixel probe in StarCraft: Remastered (2026-10-16): the owners of the\n * pixels (P3, P4, P5, P1, P6, P7, P8 below; their colours are theirs on the map, so give them the colours of TEXT_COLORS) must not\n * be computers \u2014 a computer moves its own units \u2014 and Remastered will not start a game without a computer, so one slot\n * (P2 here) is a computer that owns no pixel. A pixel is an Overlord, which sits on any ground and on nothing else; keep\n * the screen\'s tiles clear of buildings. A Pylon needs buildable ground, and none of the map\'s own units in the way. About 80 pixels made and taken away in a frame did not slow the game.\n */\nimport { centerLocation, createUnit, removeUnitAt, reserveLocation, textColors, units, P1, P3, P4, P5, P6, P7, P8, type Player } from "trigscript";\n\n/**\n * Whose units show colours 1 to 7 on the map, in the order of TEXT_COLORS: give each player that colour in the map\n * (cyan, yellow, purple, green, red, blue, orange). Green is P1\'s \u2014 your own units are green on the minimap anyway.\n * Not computers.\n */\nexport const OWNERS: readonly Player[] = [P3, P4, P5, P1, P6, P7, P8];\n/** The same colours in the text lines (`ScreenView`), 0 an empty square: cyan, yellow, purple, green, red, blue, orange. */\nexport const TEXT_COLORS: readonly number[] = [0, textColors.cyan, textColors.yellow, textColors.purple, textColors.green, textColors.red, textColors.blue, textColors.orange];\n\n/** Where each pixel\'s unit is made: a location the map does not use, taken when the script is built. */\nconst SPOT = reserveLocation("screen: where each pixel is made");\n\n/** A picture known when the script is built, to `blit` onto a screen: its size, and its pixels a row at a time (0 is see-through). */\nexport interface Sprite { readonly width: number; readonly height: number; readonly cells: readonly number[] }\n\n/**\n * A sprite from rows of text, when the script is built: "1" \u2026 "7" a pixel of that colour, anything else see-through.\n *\n *   const SHIP = sprite([".1.", "111", "1.1"]);\n */\nexport function sprite(rows: readonly string[]): Sprite {\n  const width = Math.max(0, ...rows.map((r) => r.length));\n  const cells: number[] = [];\n  for (const row of rows) for (let x = 0; x < width; x++) { const c = Number(row[x]); cells.push(c >= 1 && c <= 7 ? c : 0); }\n  return { width, height: rows.length, cells };\n}\n\n/** The digits 0 to 9, three pixels wide and five high, for `number()`: each fifteen pixels, a row at a time. */\nconst DIGITS: readonly number[] = [\n  "111101101101111", "010110010010111", "111001111100111", "111001111001111", "101101111001001",\n  "111100111001111", "111100111101111", "111001001010010", "111101111101111", "111101111001111",\n].flatMap((d) => d.split("").map(Number));\n\n/** The most pixels a screen has: 32 \xD7 32 at two tiles a pixel covers a 64 \xD7 64 map, 64 \xD7 32 half of a 128 \xD7 128 one. */\nexport const MAX_PIXELS = 2048;\n\nexport class Screen {\n  /** The picture being drawn: a colour a pixel, a row at a time (the first width \xD7 height of them). */\n  pixels: number[] = new Array(MAX_PIXELS).fill(0);\n  /** What the map shows now: the picture as it was at the last `present()`. */\n  shown: number[] = new Array(MAX_PIXELS).fill(0);\n  /** The pixels drawn a colour they were not since the last `present()`, in order: each one\'s place and its x and y. */\n  drawnAt: number[] = new Array(MAX_PIXELS).fill(0);\n  drawnX: number[] = new Array(MAX_PIXELS).fill(0);\n  drawnY: number[] = new Array(MAX_PIXELS).fill(0);\n  drawn = 0;\n  /** More drawn than the list holds: `present()` looks at every pixel instead. */\n  overflow = false;\n  x: number;\n  y: number;\n  width: number;\n  height: number;\n  cell: number;\n  /** The unit a pixel is: an Overlord ("dots"), or a Pylon ("solid"). */\n  unit = 0;\n\n  /**\n   * A screen `width` \xD7 `height` pixels (MAX_PIXELS at most), its top left corner on tile (x, y) of the map, a pixel two\n   * tiles across.\n   * @param look "dots" (the default): a pixel is an Overlord, which the minimap draws as a dot, a gap round it \u2014 it flies,\n   *   so the screen may be over anything, Space too. "solid": a pixel is a Pylon, which the minimap draws as its whole\n   *   footprint, two tiles square, so pixels side by side are one block \u2014 it needs buildable ground under the screen,\n   *   and gives its owner Protoss supply. (Overlords a tile apart do not fit: the game will not place most of them.)\n   */\n  constructor(x: number, y: number, width: number, height: number, look: "dots" | "solid" = "dots") {\n    this.x = x;\n    this.y = y;\n    this.width = width;\n    this.height = height;\n    this.cell = 64;\n    this.unit = look === "solid" ? units.ProtossPylon : units.ZergOverlord;\n  }\n\n  /** Every pixel the colour (0, empty, unless it says). */\n  clear(color: number = 0) {\n    let i = 0;\n    let y = 0;\n    while (y < this.height) {\n      let x = 0;\n      while (x < this.width) { this.put(i, x, y, color); i++; x++; }\n      y++;\n    }\n  }\n\n  /** One pixel; nothing happens outside the screen. */\n  set(x: number, y: number, color: number) {\n    if (x >= 0 && y >= 0 && x < this.width && y < this.height) this.put(y * this.width + x, x, y, color);\n  }\n\n  /** A pixel written, and listed for `present()` when its colour changed. */\n  private put(i: number, x: number, y: number, color: number) {\n    if (this.pixels[i] === color) return;\n    this.pixels[i] = color;\n    if (this.drawn < MAX_PIXELS) {\n      this.drawnAt[this.drawn] = i;\n      this.drawnX[this.drawn] = x;\n      this.drawnY[this.drawn] = y;\n      this.drawn++;\n    } else this.overflow = true;\n  }\n\n  /** The colour of a pixel; 0 outside the screen. */\n  get(x: number, y: number): number {\n    if (x >= 0 && y >= 0 && x < this.width && y < this.height) return this.pixels[y * this.width + x];\n    return 0;\n  }\n\n  /** A filled rectangle, its top left at (x, y); what is outside the screen is left out. */\n  rect(x: number, y: number, width: number, height: number, color: number) {\n    let j = 0;\n    while (j < height) {\n      let i = 0;\n      while (i < width) { this.set(x + i, y + j, color); i++; }\n      j++;\n    }\n  }\n\n  /** A line from (x0, y0) to (x1, y1), both ends drawn. */\n  line(x0: number, y0: number, x1: number, y1: number, color: number) {\n    const dx = Math.abs(x1 - x0);\n    const dy = -Math.abs(y1 - y0);\n    const sx = x0 < x1 ? 1 : -1;\n    const sy = y0 < y1 ? 1 : -1;\n    let err = dx + dy;\n    let x = x0;\n    let y = y0;\n    while (true) {\n      this.set(x, y, color);\n      if (x === x1 && y === y1) break;\n      const e2 = 2 * err;\n      if (e2 >= dy) { err += dy; x += sx; }\n      if (e2 <= dx) { err += dx; y += sy; }\n    }\n  }\n\n  /** A sprite with its top left at (x, y): its see-through pixels leave what is under them. */\n  blit(s: Sprite, x: number, y: number) {\n    let k = 0;\n    let j = 0;\n    while (j < s.height) {\n      let i = 0;\n      while (i < s.width) {\n        const c = s.cells[k];\n        if (c !== 0) this.set(x + i, y + j, c);\n        k++;\n        i++;\n      }\n      j++;\n    }\n  }\n\n  /** A whole number\'s digits, 3 \xD7 5 pixels each with a pixel between, its top left at (x, y): a score on the minimap. */\n  number(n: number, x: number, y: number, color: number) {\n    let rest = n < 0 ? -n : n;\n    let count = 1;\n    let probe = rest;\n    while (probe >= 10) { probe = Math.floor(probe / 10); count++; }\n    let place = x + (count - 1) * 4;\n    while (true) {\n      const d = rest % 10;\n      let k = 0;\n      while (k < 15) {\n        if (DIGITS[d * 15 + k] === 1) this.set(place + (k % 3), y + Math.floor(k / 3), color);\n        k++;\n      }\n      rest = Math.floor(rest / 10);\n      place -= 4;\n      if (rest === 0) break;\n    }\n  }\n\n  /**\n   * Let a player see the screen: Map Revealers of theirs over it, for the rest of the game. Without them its pixels,\n   * owned by other players, are hidden by the fog of war \u2014 on the map and on the minimap. Once, before the first\n   * `present()`.\n   * @param player Who sees it: P1 \u2026 P8, known when the script is built.\n   */\n  reveal(player: Player) {\n    // A Map Revealer sees ten tiles round; one every six tiles leaves no gap.\n    const right = this.x * 32 + this.width * this.cell;\n    const bottom = this.y * 32 + this.height * this.cell;\n    let py = this.y * 32 + 96;\n    while (py < bottom + 96) {\n      let px = this.x * 32 + 96;\n      while (px < right + 96) {\n        centerLocation(SPOT, px, py, 32, 32);\n        createUnit(player, units.MapRevealer, 1, SPOT);\n        px += 192;\n      }\n      py += 192;\n    }\n  }\n\n  /**\n   * The picture on the map: each pixel that changed since the last time taken away and made again in its colour. Only\n   * the pixels drawn since are looked at (one drawn and drawn back is passed over), unless more were drawn than the list\n   * holds.\n   */\n  present() {\n    if (this.overflow) {\n      let i = 0;\n      let y = 0;\n      while (y < this.height) {\n        let x = 0;\n        while (x < this.width) { this.show(i, x, y); i++; x++; }\n        y++;\n      }\n      this.overflow = false;\n    } else {\n      for (let k = 0; k < this.drawn; k++) this.show(this.drawnAt[k], this.drawnX[k], this.drawnY[k]);\n    }\n    this.drawn = 0;\n  }\n\n  /** One pixel on the map as it is in the picture, when it is not already. */\n  private show(i: number, x: number, y: number) {\n    const now = this.pixels[i];\n    const was = this.shown[i];\n    if (now === was) return;\n    const half = this.cell >> 1;\n    centerLocation(SPOT, this.x * 32 + x * this.cell + half, this.y * 32 + y * this.cell + half, 32, 32);\n    OWNERS.forEach((owner, k) => { if (was === k + 1) removeUnitAt(owner, this.unit, 1, SPOT); });\n    OWNERS.forEach((owner, k) => { if (now === k + 1) createUnit(owner, this.unit, 1, SPOT); });\n    this.shown[i] = now;\n  }\n}\n\n/**\n * A screen in the text lines, a square a pixel \u2014 filled in its colour, or empty \u2014 a line a row. For a `ui.lines` view:\n * `<ScreenView screen={screen} width={10} height={8} />`, the screen\'s size known when the script is built. Eleven lines\n * show at once, sixty squares across.\n */\nexport function ScreenView({ screen, width, height }: { screen: Screen; width: number; height: number }) {\n  return <>{UP_TO_60.map((y) => y < height && <line>{UP_TO_60.map((x) => x < width && <cell color={TEXT_COLORS[screen.pixels[y * width + x]]} />)}</line>)}</>;\n}\n\n/** 0 \u2026 59: the places a view\'s rows and columns are counted over, the ones past its size left out when the script is built. */\nconst UP_TO_60: readonly number[] = Array.from({ length: 60 }, (_, i) => i);\n',
+  "signals": '/**\n * Events of your own: the standard library\'s "trigscript/signals" (TrigScript 4).\n *\n *   import { Signal } from "trigscript/signals";\n *\n *   const waveCleared = new Signal<number>();\n *\n *   program(async () => {\n *     waveCleared.on((wave) => setResources(P1, "add", 100 * wave, "ore"));\n *     waveCleared.once((wave) => print(`First wave down!`));\n *     const id = waveCleared.on((wave) => print(`Wave ${wave} cleared`));\n *     \u2026\n *     waveCleared.emit(3);       // every handler, in the order they were added\n *     waveCleared.off(id);\n *   });\n *\n * A signal lets one part of a map say that something happened without knowing who listens: the shop, the score and the\n * music each add a handler, and the wave code only emits. What it carries is one value of the type it is made with \u2014\n * a number, a boolean, a text or a unit (`new Signal<Unit>()`). Its handlers are functions kept as values: they may use\n * what the block they were written in has, and they run to their end, one after another, within the frame.\n *\n * Make a signal inside the program that uses it (`const s = new Signal<number>()` at its top): a signal is variables\n * of a program, as anything a program writes is.\n */\n\nexport class Signal<T> {\n  /** The handlers, by the number `on` gave; one taken off is undefined, and its place is given to the next one added. */\n  handlers: (((value: T) => void) | undefined)[] = [];\n  /** Which handlers go once they have run once. */\n  onceOnly: boolean[] = [];\n\n  /**\n   * Add a handler: it runs at every `emit`, handed the value.\n   * @returns Its number, for `off`.\n   */\n  on(handler: (value: T) => void): number {\n    return this.add(handler, false);\n  }\n\n  /** Add a handler that runs at the next `emit` only. @returns Its number, for `off` before then. */\n  once(handler: (value: T) => void): number {\n    return this.add(handler, true);\n  }\n\n  /** Take a handler off, by the number `on` or `once` gave. */\n  off(id: number) {\n    if (id >= 0 && id < this.handlers.length) this.handlers[id] = undefined;\n  }\n\n  /** Run every handler, in the order they were added, each handed `value`. */\n  emit(value: T) {\n    let i = 0;\n    while (i < this.handlers.length) {\n      const h = this.handlers[i];\n      if (h) {\n        if (this.onceOnly[i]) this.handlers[i] = undefined;\n        h(value);\n      }\n      i++;\n    }\n  }\n\n  /** How many handlers it has. */\n  count(): number {\n    let n = 0;\n    for (const h of this.handlers) if (h) n++;\n    return n;\n  }\n\n  /** Take every handler off. */\n  clear() {\n    let i = 0;\n    while (i < this.handlers.length) { this.handlers[i] = undefined; i++; }\n  }\n\n  private add(handler: (value: T) => void, once: boolean): number {\n    // A place one was taken off from, or a new one at the end.\n    let i = 0;\n    while (i < this.handlers.length) {\n      if (!this.handlers[i]) {\n        this.handlers[i] = handler;\n        this.onceOnly[i] = once;\n        return i;\n      }\n      i++;\n    }\n    this.handlers.push(handler);\n    this.onceOnly.push(once);\n    return this.handlers.length - 1;\n  }\n}\n',
+  "timers": "/**\n * Time in a program: the standard library's \"trigscript/timers\" (TrigScript 4).\n *\n *   import { every, after, Cooldown, Countdown, SECOND } from \"trigscript/timers\";\n *\n *   program(async () => {\n *     const spawner = every(10 * SECOND, (n) => spawnWave(n));   // every ten seconds, the wave's number handed over\n *     after(3 * SECOND, () => print(\"Go!\"));\n *     const shot = new Cooldown(12);\n *     while (true) {\n *       if (keyPressed(P1, \"Space\") && shot.use()) fire();\n *       if (boss.hp <= 0) spawner.cancel();\n *       await nextFrame();\n *     }\n *   });\n *\n *   for await (const b of over(bullets, { per: 50 })) b.x += b.dx;   // fifty a frame, on to the next frame after each fifty\n *\n * Time is counted in frames of the game, 24 a second on Fastest (`SECOND`). `every` and `after` run their function in a\n * task beside the program, so the program goes on at once; the Task they give back stops it (`cancel()`) and says\n * whether it still runs (`running`). Their function is kept for the task, with what it uses of the block it was written\n * in \u2014 written in a loop, each turn's is its own, as JavaScript has it \u2014 and it runs to its end within the frame (it\n * does not wait). Sixteen of one `every` or `after` written once can run at a time. `Cooldown`, `Countdown` and\n * `Stopwatch` read the game's frame counter: no task, nothing to stop.\n */\nimport { game, start, sleep, frames, nextFrame, memory, type Task } from \"trigscript\";\n\n/** Frames a second of game time on Fastest, the speed a map is played at. */\nexport const SECOND = 24;\n\n/** The frames of game time since the game began. */\nexport function now(): number {\n  return memory.game.frame;\n}\n\nconst repeating = game(async (period: number, fn: (count: number) => void, times: number) => {\n  let count = 0;\n  while (times <= 0 || count < times) {\n    await sleep(frames(period < 1 ? 1 : period));\n    count++;\n    fn(count);\n  }\n});\n\nconst later = game(async (delay: number, fn: () => void) => {\n  await sleep(frames(delay < 1 ? 1 : delay));\n  fn();\n});\n\n/**\n * Run `fn` every `period` frames, from `period` frames from now: forever, or `times` times. It is handed how many times\n * it has run, 1 the first time.\n * @param period Frames between one run and the next (24 a second).\n * @param fn What to run; it runs to its end within the frame.\n * @param times How many times, or 0 (the default) for as long as the game lasts.\n * @returns The task: `cancel()` stops it.\n */\nexport const every = game((period: number, fn: (count: number) => void, times: number = 0): Task => start(repeating(period, fn, times)));\n\n/**\n * Run `fn` once, `delay` frames from now.\n * @param delay Frames from now (24 a second).\n * @param fn What to run; it runs to its end within the frame.\n * @returns The task: `cancel()` before then and it never runs.\n */\nexport const after = game((delay: number, fn: () => void): Task => start(later(delay, fn)));\n\n/**\n * The elements of `list`, `per` of them a frame: a loop spread over frames, for work that need not be done in one \u2014\n * a thousand bullets moved, a map's cells looked at. What a frame costs stays what `per` turns cost.\n *\n *   for await (const b of over(bullets, { per: 50 })) b.x += b.dx;\n *\n * It reads the list's length as it goes, as `for\u2026of` does: what is pushed meanwhile is reached too, and an element\n * removed before it is reached moves the rest up, so one is passed over, as with an index. Each element is the list's\n * own: what is written to it stays. The loop goes on to the next frame only between elements, never after the last.\n * @param list The array to walk.\n * @param options `per`: how many elements a frame (1 at least).\n */\nexport async function* over<T>(list: T[], options: { per: number }) {\n  const per = options.per < 1 ? 1 : options.per;\n  let n = 0;\n  for (let i = 0; i < list.length; i++) {\n    yield list[i];\n    n++;\n    if (n >= per && i + 1 < list.length) {\n      n = 0;\n      await nextFrame();\n    }\n  }\n}\n\n/**\n * 0, 1, \u2026 `count` \u2212 1, `per` of them a frame: `over` for a count rather than an array.\n *\n *   for await (const y of spread(96, { per: 8 })) drawRow(y);   // twelve frames for 96 rows\n * @param count How many numbers, from 0.\n * @param options `per`: how many a frame (1 at least).\n */\nexport async function* spread(count: number, options: { per: number }) {\n  const per = options.per < 1 ? 1 : options.per;\n  let n = 0;\n  for (let i = 0; i < count; i++) {\n    yield i;\n    n++;\n    if (n >= per && i + 1 < count) {\n      n = 0;\n      await nextFrame();\n    }\n  }\n}\n\n/**\n * Something that can be done once every so many frames: a weapon's reload, a spell's cooldown.\n *\n *   const blink = new Cooldown(5 * SECOND);\n *   if (keyPressed(P1, \"B\") && blink.use()) teleport();\n */\nexport class Cooldown {\n  period: number;\n  until = 0;\n\n  /** Ready at once, then once every `period` frames. */\n  constructor(period: number) {\n    this.period = period;\n  }\n\n  /** Whether it is ready now. */\n  ready(): boolean {\n    return now() >= this.until;\n  }\n\n  /** If it is ready, use it \u2014 it is ready again `period` frames from now \u2014 and say true; else false. */\n  use(): boolean {\n    if (now() < this.until) return false;\n    this.until = now() + this.period;\n    return true;\n  }\n\n  /** Frames until it is ready again: 0 when it is. */\n  left(): number {\n    return this.until > now() ? this.until - now() : 0;\n  }\n\n  /** Ready again at once. */\n  reset() {\n    this.until = 0;\n  }\n}\n\n/**\n * A length of time that runs down while the game runs: a round's clock, a bomb's fuse.\n *\n *   const round = new Countdown(90 * SECOND);\n *   ui.lines(P1, () => <line>{clock(round.left())}</line>);\n *   await until(() => round.done());\n */\nexport class Countdown {\n  end = 0;\n\n  /** Running, done `length` frames from now (0: done already). */\n  constructor(length: number = 0) {\n    this.end = now() + length;\n  }\n\n  /** Start again, done `length` frames from now. */\n  restart(length: number) {\n    this.end = now() + length;\n  }\n\n  /** Frames left: 0 once it is done. */\n  left(): number {\n    return this.end > now() ? this.end - now() : 0;\n  }\n\n  /** Whether it has run out. */\n  done(): boolean {\n    return now() >= this.end;\n  }\n\n  /** More time, or less (a number below zero). */\n  add(frames: number) {\n    this.end += frames;\n  }\n}\n\n/** How long since it was made, or last reset: a lap's time, a survival score. */\nexport class Stopwatch {\n  from = 0;\n\n  constructor() {\n    this.from = now();\n  }\n\n  /** Frames since it started. */\n  elapsed(): number {\n    return now() - this.from;\n  }\n\n  /** From 0 again. */\n  reset() {\n    this.from = now();\n  }\n}\n",
+  "ui": '/**\n * A kit for the game\'s text lines: the standard library\'s "trigscript/ui" (TrigScript 4).\n *\n *   import { Meter, Panel, MenuList, DialogBox, choose, say, clock } from "trigscript/ui";\n *\n *   const ITEMS = ["Marine (50)", "Medic (75)", "Leave"];\n *   const shop = { selected: 0, open: false };\n *   const talk = { speaker: "", text: "", open: false };\n *\n *   program(async () => {\n *     ui.lines(P1, () => (\n *       <>\n *         <Panel title={`Wave ${wave}  ${clock(elapsed)}`}>\n *           <Meter label="Base" value={baseHp} max={1500} />\n *         </Panel>\n *         {shop.open && <MenuList items={ITEMS} selected={shop.selected} />}\n *         <DialogBox box={talk} />\n *       </>\n *     ));\n *     await say(P1, talk, "Raynor", "Hold the bridge until dawn.");\n *     const pick = await choose(P1, ITEMS.length, shop);\n *   });\n *\n * The text lines are one player\'s: a view is shown to that player only, rebuilt when what it reads changes (a function\n * it calls included) and shown again once a second as it was, so a menu, a dialog and a meter cost nothing while nothing\n * changes. Give a player one `ui.lines` and\n * put everything in it, as the example does: the components are pieces of one view, and the state they show is a\n * record of yours (`shop`, `talk`) that the functions here change.\n *\n * What the text lines can show, played in StarCraft: Remastered (the UI spike, 2026-10-16): eleven lines; colour codes\n * take no width; \u25A0 \u25A1 \u25CF are one width; after grey on a line every later colour code is ignored, so grey goes last.\n */\nimport { keyPressed, nextFrame, sleep, frames, game, textColors, type Player, type TextColor } from "trigscript";\n\n/** Frames a second of game time on Fastest, the speed a map is played at. */\nconst PER_SECOND = 24;\n\n/** "1:05": frames of game time as minutes and seconds (24 frames a second, on Fastest). */\nexport function clock(frames: number): string {\n  const seconds = Math.floor(frames / PER_SECOND);\n  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;\n}\n\n/** "12,345": a whole number with its thousands marked. */\nexport function thousands(n: number): string {\n  let rest = n < 0 ? -n : n;\n  let out = "";\n  while (rest >= 1000) {\n    out = `,${String(rest % 1000).padStart(3, "0")}${out}`;\n    rest = Math.floor(rest / 1000);\n  }\n  return `${n < 0 ? "-" : ""}${rest}${out}`;\n}\n\n/**\n * A labelled bar on a line of its own \u2014 "Base \u25A0\u25A0\u25A0\u25A0\u25A0\u25A0\u25A1\u25A1\u25A1\u25A1 900/1500" \u2014 green above half, yellow above a quarter, red below.\n * @param label What the bar is of.\n * @param value How much there is.\n * @param max How much there can be.\n * @param width How many squares the bar is (10 unless it says).\n */\nexport function Meter({ label, value, max, width }: { label: string; value: number; max: number; width?: number }) {\n  return (\n    <line>\n      {label} <bar value={value} max={max} width={width ?? 10} color={value * 2 > max ? textColors.green : value * 4 > max ? textColors.yellow : textColors.red} /> {value}/{max}\n    </line>\n  );\n}\n\n/**\n * A title over what is inside it: "-- Wave 3 --" in its colour (yellow unless it says), then the lines inside.\n * @param title The title.\n * @param color The title\'s colour.\n */\nexport function Panel({ title, children, color }: { title: string; children?: Children; color?: TextColor }) {\n  return (\n    <>\n      <line color={color ?? "yellow"}>-- {title} --</line>\n      <line>{children}</line>\n    </>\n  );\n}\n\n/**\n * A menu\'s lines: each item on a line of its own, the one at `selected` marked "> " and in its colour (cyan unless it\n * says). `items` is a list the script has, or an array of texts of the program.\n */\nexport function MenuList({ items, selected, color }: { items: readonly string[]; selected: number; color?: TextColor }) {\n  return (\n    <>\n      {items.map((item, i) => (\n        <line color={i === selected ? (color ?? "cyan") : "white"}>\n          {i === selected ? "> " : "  "}\n          {item}\n        </line>\n      ))}\n    </>\n  );\n}\n\n/**\n * Let a player choose one of `count` things: the menu opens (`menu.open`), W and S (or Up and Down) move\n * `menu.selected` (round from the last to the first), and Space chooses \u2014 the place chosen, once it is. (Not Enter:\n * in a game of several players Enter opens the chat.) Show it with `MenuList`, in the\n * player\'s `ui.lines`: `{shop.open && <MenuList items={ITEMS} selected={shop.selected} />}`.\n * @param player Who chooses: P1 \u2026 P8, known when the script is built.\n * @param count How many things there are to choose from.\n * @param menu The record a view shows: which is marked, and whether the menu is open.\n */\nexport const choose = game(async (player: Player, count: number, menu: { selected: number; open: boolean }): Promise<number> => {\n  menu.open = true;\n  while (true) {\n    if (keyPressed(player, "W") || keyPressed(player, "Up")) menu.selected = (menu.selected + count - 1) % count;\n    if (keyPressed(player, "S") || keyPressed(player, "Down")) menu.selected = (menu.selected + 1) % count;\n    if (keyPressed(player, "Space")) break;\n    await nextFrame();\n  }\n  menu.open = false;\n  return menu.selected;\n});\n\n/**\n * A text put into `into.text` a character at a time, one every `every` frames (2 unless it says): a view that shows\n * `into.text` shows it being typed. Done when the whole text is there.\n */\nexport const typewriter = game(async (into: { text: string }, text: string, every: number = 2) => {\n  let n = 0;\n  while (n < text.length) {\n    n++;\n    into.text = text.slice(0, n);\n    await sleep(frames(every));\n  }\n});\n\n/**\n * Someone says something to a player: the dialog opens (`box.open`), the speaker\'s name and the words typed in, and it\n * closes when the player presses Space. Show it with `DialogBox`.\n * @param player Who reads it: P1 \u2026 P8, known when the script is built.\n * @param box The record a view shows.\n * @param speaker Who speaks.\n * @param text What they say.\n */\nexport const say = game(async (player: Player, box: { speaker: string; text: string; open: boolean }, speaker: string, text: string) => {\n  box.open = true;\n  box.speaker = speaker;\n  box.text = "";\n  await typewriter(box, text);\n  while (!keyPressed(player, "Space")) await nextFrame();\n  box.open = false;\n});\n\n/** A dialog\'s lines while it is open: the speaker in yellow, the words, and what to press (Space). Nothing while it is closed. */\nexport function DialogBox({ box }: { box: { speaker: string; text: string; open: boolean } }) {\n  return box.open ? (\n    <>\n      <line color="yellow">{box.speaker}</line>\n      <line>{box.text}</line>\n      <line color="grey">(Space)</line>\n    </>\n  ) : null;\n}\n\n/** A line at the end of a log that keeps the last `keep` (6 unless it says), the oldest taken off the front. */\nexport const log = game((lines: string[], text: string, keep: number = 6) => {\n  lines.push(text);\n  while (lines.length > keep) lines.shift();\n});\n\n/** A log\'s lines, oldest first, each in its colour (white unless it says). */\nexport function LogLines({ lines, color }: { lines: readonly string[]; color?: TextColor }) {\n  return <>{lines.map((text) => <line color={color ?? "white"}>{text}</line>)}</>;\n}\n'
+};
+var STDLIB_EXTENSIONS = { "cutscene": ".ts", "fog": ".ts", "math": ".ts", "music": ".ts", "random": ".ts", "screen": ".tsx", "signals": ".ts", "timers": ".ts", "ui": ".tsx" };
+
+// compiler/stdlib.ts
+var STDLIB = STDLIB_SOURCES;
+var STDLIB_EXT = STDLIB_EXTENSIONS;
+
+// compiler/local.ts
+var SHOWN = /* @__PURE__ */ new Set([ActionType.PlayWav, ActionType.DisplayText, ActionType.CenterView, ActionType.MinimapPing, ActionType.SetMissionObjectives]);
 
 // compiler/numbers.ts
+var FIXED_ONE = 65536;
+var SIN_STEPS = 4096;
+var SIN_SCALE = fixedRaw(SIN_STEPS / (2 * Math.PI));
+function fixedRaw(value) {
+  return Math.round(value * FIXED_ONE) | 0;
+}
 var FLAGS = new Set(UNIT_FLAGS);
+
+// compiler/ranges.ts
+var FLAGS2 = new Set(UNIT_FLAGS);
+
+// compiler/backend/emit.ts
+var U323 = 2 ** 32;
+var SIGN = 2 ** 31;
+var MAX = U323 - 1;
+var CENTRE_LINE = 6556512 + 218 * 12;
+var UNIT_TABLE_ADDRESS = 5885096;
+var UNIT_TABLE_EPD = (UNIT_TABLE_ADDRESS - 5808996) / 4;
+var ANY_PLAYERS = { slots: [0, 1, 2, 3, 4, 5, 6, 7], forces: [0, 0, 0, 0, 0, 0, 0, 0] };
+var MINIMAP_COLOR_OFFSET2 = 5774806 - 5774710;
+
+// compiler/backend/heap.ts
+var HEAP_TOP = "@heap.top";
+var HEAP_SAID = "@heap.said";
+var HEAP_GLOBALS = [HEAP_TOP, HEAP_SAID].map((id) => ({ id, name: "(heap)", kind: "number", shared: true, routed: true, global: true, at: { file: "", line: 0, column: 0 } }));
+
+// compiler/backend/input.ts
+var SYNC_MOST = 2 ** 20 - 2;
+var DEATHS = 5808996;
+var epd = (address) => (address - DEATHS) / 4;
+var UNIT_TABLE = 5885096;
+var UNIT_TABLE_EPD2 = epd(UNIT_TABLE);
+var LOCAL = epd(5318276);
+var CURRENT = epd(6621616);
+var SELECTION = epd(6456504);
+var QUEUE = epd(6637696);
+var QUEUED = epd(6638240);
+var QUEUE_MOST = epd(5763288);
+var FIRST_UNIT = epd(6456312);
+var MRGN = epd(5823584);
+var TYPING = epd(6865220);
+var BUTTONS = epd(7134656);
+var MOUSE_X = epd(7134660);
+var MOUSE_Y = epd(7134664);
+var SCREEN_X = epd(6456460);
+var SCREEN_Y = epd(6456488);
+var TEXT_RING = epd(6556504);
+var TEXT_LINES = epd(6556512);
+var PLAYERS = epd(5762784);
+var NEXT_UNIT = 108 >> 2;
+var ORDER_TARGET = 88 >> 2;
+var OWNER_DWORD = 76 >> 2;
+var STATUS = 220 >> 2;
+var UID_DWORD = 164 >> 2;
+var AT0 = { file: "", line: 0, column: 0 };
+var RING = "@in.ring";
+var NAME_LENGTH = "@in.nlen";
+var LINE_LENGTH = "@in.llen";
+var TYPED = "@in.typed";
+var MADE = "@in.made";
+var global = (id) => ({ id, name: "(input)", kind: "number", shared: true, routed: true, global: true, at: AT0 });
+var INPUT_GLOBALS = [global(MADE), global(RING), global(NAME_LENGTH), global(LINE_LENGTH), global(TYPED)];
+
+// compiler/backend/units.ts
+var DEATHS2 = 5808996;
+var epd2 = (address) => (address - DEATHS2) / 4;
+var UNIT_TABLE2 = epd2(5885096);
+var STRIDE = 336 / 4;
+var CURRENT2 = epd2(6621616);
+var MRGN2 = epd2(5823584);
+var MAX_HP = epd2(6693712);
+var MAX_SHIELDS = epd2(6688256);
+var GROUPS = epd2(6698912);
+var word = (byte, bytes2) => {
+  const dword = byte >> 2, shift = 8 * (byte & 3);
+  return { dword, mask: bytes2 === 4 ? 4294967295 : (2 ** (8 * bytes2) - 1) * 2 ** shift >>> 0, shift };
+};
+var SPRITE = 12 >> 2;
+var POSITION = 40 >> 2;
+var UID = word(165, 1);
+var OWNER = word(76, 1);
+var ORDER = word(77, 1);
+var TYPE = word(100, 2);
+var X = word(40, 2);
+var Y = word(42, 2);
+var FIELDS = {
+  owner: OWNER,
+  type: TYPE,
+  x: X,
+  y: Y,
+  kills: word(143, 1),
+  orderId: ORDER,
+  cooldown: word(85, 1),
+  resources: word(208, 2),
+  stim: word(277, 1),
+  ensnare: word(278, 1),
+  lockdown: word(279, 1),
+  irradiate: word(280, 1),
+  stasis: word(281, 1),
+  plague: word(282, 1),
+  maelstrom: word(292, 1),
+  buildTime: word(172, 2),
+  rank: word(142, 1),
+  matrix: word(276, 1),
+  speed: word(56, 4)
+};
+var HP = 8 >> 2;
+var SHIELDS = 96 >> 2;
+var ENERGY = word(162, 2);
+var STATUS2 = 220 >> 2;
+var USER_ACTION = word(147, 1);
+var ATTACKED = word(135, 1);
+var ORDER_TARGET2 = 92 >> 2;
+var MATRIX_HP = word(274, 2);
+var MATRIX_POINTS = 250 * 256;
+var MADE_N = "@ev.madeN";
+var GONE_N = "@ev.goneN";
+var TURNED_N = "@ev.turnedN";
+var CHANGED_N = "@ev.changedN";
+var EV_RECORD = "@ev.e";
+var EV_FIELDS = "@ev.wf";
+var EV_BOUNDARY = "@ev.be";
+var EV_TOUCHED = "@ev.touch";
+var EV_OWNERS = "@ev.own";
+var AT02 = { file: "", line: 0, column: 0 };
+var EVENT_GLOBALS = [MADE_N, GONE_N, TURNED_N, CHANGED_N, EV_RECORD, EV_BOUNDARY, EV_FIELDS, EV_TOUCHED, EV_OWNERS].map((id) => ({ id, name: "(events)", kind: "number", shared: true, ...id === EV_FIELDS ? {} : { routed: true }, global: true, at: AT02 }));
+var HP_DWORD = 8 >> 2;
+var LAST_ATTACKER = word(144, 1);
+var FIRST_UNIT2 = epd2(6456312);
+var PREV_UNIT = 104 >> 2;
+var NEXT_UNIT2 = 108 >> 2;
+var IN_TABLE = 5885096 / 4;
+var LOCAL2 = epd2(5318276);
+var SELECTION2 = epd2(6456504);
+var PANEL = epd2(5861948);
+var QUEUE2 = epd2(6637696);
+var QUEUED2 = epd2(6638240);
+var QUEUE_MOST2 = epd2(5763288);
+
+// compiler/backend/own.ts
+var ANY_MAP = { humans: ANY_PLAYERS.slots, width: 128 * 32, height: 128 * 32, cuwp: 64 };
 
 // compiler/recursion.ts
 var cellsOf = (d) => d.kind === "unit" || d.kind === "text" && d.text !== "id" ? 3 : 1;
-var FLAGS2 = new Set(UNIT_FLAGS);
+var FLAGS3 = new Set(UNIT_FLAGS);
 var HANDLE_CELLS = 4;
 function frameCells(program, saves, cells) {
   const k = cells ?? kindsOf(program);
@@ -4862,9 +7802,15 @@ function largestFrame(programs) {
   return most;
 }
 
+// compiler/closures.ts
+var FN_BASE = 1 << 20;
+var QUEUED3 = 1 << 24;
+
 // compiler/structured.ts
+var OBJECT_TAG = 1 << 22;
 var MADE_TEXT_ACTIONS = /* @__PURE__ */ new Set([ActionType.SetMissionObjectives, ActionType.Transmission, ActionType.LeaderboardControl, ActionType.LeaderboardControlAt, ActionType.LeaderboardResources, ActionType.LeaderboardKills, ActionType.LeaderboardPoints, ActionType.LeaderboardGoalControl, ActionType.LeaderboardGoalControlAt, ActionType.LeaderboardGoalResources, ActionType.LeaderboardGoalKills, ActionType.LeaderboardGoalPoints, ActionType.LeaderboardGreed]);
 var COUNT_ACTIONS = /* @__PURE__ */ new Set([ActionType.CreateUnit, ActionType.CreateUnitWithProperties, ActionType.KillUnitAt, ActionType.RemoveUnitAt, ActionType.GiveUnits]);
+var MAX_TABLE = 1 << 20;
 
 // i18n.ts
 var msg = (text) => text;
@@ -4883,10 +7829,10 @@ function branches(s) {
     while (i < s.length && /\s/.test(s[i])) i++;
     const open = s.indexOf("{", i);
     if (open < 0) break;
-    const key = s.slice(i, open).trim();
+    const key2 = s.slice(i, open).trim();
     const end = closing(s, open);
     if (end < 0) break;
-    out.set(key, s.slice(open + 1, end));
+    out.set(key2, s.slice(open + 1, end));
     i = end + 1;
   }
   return out;
@@ -4931,11 +7877,19 @@ function describeVariable(v, t = english) {
   if (v.kind === "text") return t("a text \u2014 `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes");
   if (v.bits) return t("a u{bits} number (0 \u2026 {max}, stopping at either end)", { bits: v.bits, max: 2 ** v.bits - 1 });
   if (v.unsigned) return t("a u32 number (0 \u2026 4 294 967 295, wrapping at either end as `x >>> 0` does)");
+  if (v.fixed) return t("a fixed number (\u221232 768 \u2026 32 767.99998, in steps of 1/65 536): a number with a fraction");
   return t("a number (\u22122 147 483 648 \u2026 2 147 483 647, whole, wrapping at either end as `x | 0` does)");
 }
 function normalizePath(path) {
   return path.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
 }
+
+// compiler/backend/chk.ts
+var latin1 = new TextDecoder("latin1");
+var utf8 = new TextEncoder();
+
+// compiler/backend/build.ts
+var isRefused = (o) => "refused" in o;
 
 // compiler/entry.ts
 var ENTRY_URL = import.meta.url;
@@ -5124,7 +8078,10 @@ function loadMonaco(base = DEFAULT_DIST) {
   return loading;
 }
 function setDeclarations(monaco, content) {
-  tsLanguage(monaco).typescriptDefaults.setExtraLibs([{ content, filePath: `file:///${DECLARATIONS_FILE}` }]);
+  tsLanguage(monaco).typescriptDefaults.setExtraLibs([
+    { content, filePath: `file:///${DECLARATIONS_FILE}` },
+    ...Object.entries(STDLIB).map(([name, source]) => ({ content: source, filePath: `file:///node_modules/${MODULE_NAME}/${name}${STDLIB_EXT[name] ?? ".ts"}` }))
+  ]);
 }
 var fileUri = (monaco, path) => monaco.Uri.parse(`file:///${normalizePath(path)}`);
 var pathOfUri = (uri) => normalizePath(uri.path.replace(/^\/+/, ""));
@@ -5142,8 +8099,8 @@ function setHoverVariables(monaco, variables) {
   monaco.languages.registerHoverProvider("typescript", {
     async provideHover(model, position) {
       if (model.uri.scheme !== "file") return null;
-      const word = model.getWordAtPosition(position);
-      if (!word) return null;
+      const word2 = model.getWordAtPosition(position);
+      if (!word2) return null;
       const client = await (await tsLanguage(monaco).getTypeScriptWorker())(model.uri);
       const defs = await client.getDefinitionAtPosition(model.uri.toString(), model.getOffsetAt(position));
       for (const d of defs ?? []) {
@@ -5154,7 +8111,7 @@ function setHoverVariables(monaco, variables) {
         const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
         if (!v) continue;
         return {
-          range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+          range: new monaco.Range(position.lineNumber, word2.startColumn, position.lineNumber, word2.endColumn),
           contents: [{ value: v.shared ? tr("**{name}** is a variable of the program: {what}, one value shared by every player the program runs for. It lives in the game while the map is played.", { name: v.name, what: describeVariable(v, tr) }) : tr("**{name}** is a variable of the program: {what}. It lives in the game while the map is played.", { name: v.name, what: describeVariable(v, tr) }) }]
         };
       }
@@ -5227,14 +8184,14 @@ function setMapRefs(monaco, refs) {
     provideHover(model, position) {
       const r = mapRefs();
       if (!r || model.uri.scheme !== "file") return null;
-      const word = model.getWordAtPosition(position);
-      if (!word) return null;
-      const before = model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1);
+      const word2 = model.getWordAtPosition(position);
+      if (!word2) return null;
+      const before = model.getLineContent(position.lineNumber).slice(0, word2.startColumn - 1);
       if (!before.endsWith(`${r.object}.`)) return null;
-      const ref2 = r.byKey.get(word.word);
+      const ref2 = r.byKey.get(word2.word);
       if (!ref2) return null;
       return {
-        range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+        range: new monaco.Range(position.lineNumber, word2.startColumn, position.lineNumber, word2.endColumn),
         contents: [{ value: tr("**{name}** \u2014 location {n}: {w} \xD7 {h} tiles at {x}, {y}. Ctrl+click to show it on the map.", { name: ref2.name, n: ref2.index + 1, w: ref2.w, h: ref2.h, x: ref2.x, y: ref2.y }) }]
       };
     }
@@ -5277,12 +8234,13 @@ function releaseScriptEditor(monaco) {
   const defaults = tsLanguage(monaco).typescriptDefaults;
   defaults.setCompilerOptions(defaults.getCompilerOptions());
 }
-function createScriptEditor(monaco, host, files, active, onChange, onMark) {
+function createScriptEditor(monaco, host, files, active, onChange, onMark, onBreakpoint) {
   disposeModels(monaco);
   const models = /* @__PURE__ */ new Map();
   const subs = /* @__PURE__ */ new Map();
   const decorations = /* @__PURE__ */ new Map();
   const testDecorations = /* @__PURE__ */ new Map();
+  const debugDecorations = /* @__PURE__ */ new Map();
   let testMarks = [];
   const views = /* @__PURE__ */ new Map();
   const make = (path, text) => {
@@ -5291,7 +8249,11 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
     subs.set(path, model.onDidChangeContent(() => onChange(path, model.getValue())));
     return model;
   };
-  for (const [path, text] of Object.entries(files)) make(normalizePath(path), text);
+  const media = /* @__PURE__ */ new Map();
+  for (const [path, text] of Object.entries(files)) {
+    if (isMediaFile(path)) media.set(normalizePath(path), text);
+    else make(normalizePath(path), text);
+  }
   let current2 = normalizePath(active);
   if (!models.has(current2)) current2 = [...models.keys()][0];
   const editor = monaco.editor.create(host, {
@@ -5304,6 +8266,8 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
     minimap: { enabled: false },
     // Where a test's mark goes; it stays narrow for a script without any.
     glyphMargin: true,
+    // (Room for the debugger's arrow beside the line numbers.)
+    lineDecorationsWidth: 16,
     scrollBeyondLastLine: false,
     renderLineHighlight: "line",
     tabSize: 2,
@@ -5319,8 +8283,9 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
     const line = e.target.position?.lineNumber;
     const mark = testMarks.find((m) => normalizePath(m.file) === current2 && m.line === line);
     if (mark) onMark?.(mark.id);
+    else if (line) onBreakpoint?.(current2, line);
   });
-  const show = (path) => {
+  const show2 = (path) => {
     const p = normalizePath(path);
     const model = models.get(p);
     if (!model || p === current2) return;
@@ -5333,22 +8298,28 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
   return {
     editor,
     active: () => current2,
-    show,
-    files: () => Object.fromEntries([...models].map(([p, m]) => [p, m.getValue()])),
+    show: show2,
+    files: () => ({ ...Object.fromEntries(media), ...Object.fromEntries([...models].map(([p, m]) => [p, m.getValue()])) }),
     add(path, text) {
       const p = normalizePath(path);
-      if (models.has(p)) return;
+      if (models.has(p) || media.has(p)) return;
+      if (isMediaFile(p)) {
+        media.set(p, text);
+        onChange(p, text);
+        return;
+      }
       make(p, text);
       onChange(p, text);
-      show(p);
+      show2(p);
     },
     remove(path) {
       const p = normalizePath(path);
+      if (media.delete(p)) return;
       const model = models.get(p);
       if (!model) return;
       if (p === current2) {
         const other = [...models.keys()].find((k) => k !== p);
-        if (other) show(other);
+        if (other) show2(other);
       }
       subs.get(p)?.dispose();
       subs.delete(p);
@@ -5356,11 +8327,20 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
       views.delete(p);
       decorations.delete(p);
       testDecorations.delete(p);
+      debugDecorations.delete(p);
       model.dispose();
     },
     rename(from, to) {
       const a2 = normalizePath(from);
       const b = normalizePath(to);
+      const moving = media.get(a2);
+      if (moving !== void 0) {
+        if (!media.has(b) && !models.has(b)) {
+          media.delete(a2);
+          media.set(b, moving);
+        }
+        return;
+      }
       const model = models.get(a2);
       if (!model || models.has(b)) return;
       const text = model.getValue();
@@ -5372,6 +8352,7 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
       views.delete(a2);
       decorations.delete(a2);
       testDecorations.delete(a2);
+      debugDecorations.delete(a2);
       if (wasCurrent) editor.setModel(null);
       model.dispose();
       const next = make(b, text);
@@ -5383,6 +8364,10 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
       }
     },
     set(path, text) {
+      if (media.has(normalizePath(path))) {
+        media.set(normalizePath(path), text);
+        return;
+      }
       const model = models.get(normalizePath(path));
       if (model && model.getValue() !== text) model.setValue(text);
     },
@@ -5421,6 +8406,19 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
         decorations.set(p, model.deltaDecorations(decorations.get(p) ?? [], next));
       }
     },
+    setDebug(d) {
+      const here = (p, path, lines) => p && normalizePath(p.file) === path && p.line >= 1 && p.line <= lines;
+      for (const [p, model] of models) {
+        const lines = model.getLineCount();
+        const next = d.breakpoints.filter((b) => here(b, p, lines)).map((b) => ({
+          range: new monaco.Range(b.line, 1, b.line, 1),
+          options: { glyphMarginClassName: "trigscript-bp", glyphMarginHoverMessage: { value: tr("Breakpoint: the debugger's Continue stops before this line runs (a test's line: at the end of the frame it asks for). Click to take it away.") }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges }
+        }));
+        if (d.test && here(d.test, p, d.test.line) && d.test.line <= lines && !(d.at && normalizePath(d.at.file) === p && d.at.line === d.test.line)) next.push({ range: new monaco.Range(d.test.line, 1, d.test.line, 1), options: { isWholeLine: true, className: "trigscript-debug-test", linesDecorationsClassName: "trigscript-debug-test-arrow" } });
+        if (d.at && here(d.at, p, lines)) next.push({ range: new monaco.Range(d.at.line, 1, d.at.line, 1), options: { isWholeLine: true, className: "trigscript-debug-line", linesDecorationsClassName: "trigscript-debug-arrow" } });
+        debugDecorations.set(p, model.deltaDecorations(debugDecorations.get(p) ?? [], next));
+      }
+    },
     dispose() {
       for (const s of subs.values()) s.dispose();
       editor.dispose();
@@ -5429,32 +8427,49 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
 }
 
 // version.ts
-var VERSION = "3.12.0";
+var VERSION5 = "4.0.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
 var libUrl = (dist = DEFAULT_DIST) => `${dist.replace(/\/+$/, "")}/lib.d.ts`;
-var compilerUrl = (dist = DEFAULT_DIST) => dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/compiler.js` : `${dist.replace(/\/+$/, "")}/compiler.js`;
+var compilerUrl = (dist = DEFAULT_DIST) => dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION5}/dist/compiler.js` : `${dist.replace(/\/+$/, "")}/compiler.js`;
+var gametestUrl = (dist = DEFAULT_DIST) => dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION5}/dist/gametest.js` : `${dist.replace(/\/+$/, "")}/gametest.js`;
+var allowlistUrl = (dist = DEFAULT_DIST) => dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION5}/dist/allowlist.json` : `${dist.replace(/\/+$/, "")}/allowlist.json`;
+var vorbisUrl = (dist = DEFAULT_DIST) => dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION5}/dist/vorbis.wasm` : `${dist.replace(/\/+$/, "")}/vorbis.wasm`;
 var workerModuleUrl = (dist = DEFAULT_DIST) => ENTRY_URL.startsWith("blob:") && !blobRefused ? ENTRY_URL : compilerUrl(dist);
 var COMPILE_TIMEOUT_MS = 15e3;
+var BUILD_TIMEOUT_MS = 6e4;
 var WORKER_SOURCE = `
 importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, libUrl, files, names, tests } = e.data;
+  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests, own, entries, build } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
     try { mod = await loading; } catch (err) { loading = null; postMessage({ id, error: String((err && err.message) || err), fatal: true }); return; }
     // The plugin fetched as one bundle is a blob too, but one that exports the plugin and not the compiler.
     if (typeof mod.compileScript !== "function") { loading = null; postMessage({ id, error: "the module has no compiler in it", fatal: true }); return; }
+    // A build of a map of our own: the compile's programs into the scenario's bytes, no TypeScript needed.
+    if (build) {
+      if (typeof mod.buildOwnMap !== "function") throw new Error("This compiler bundle cannot build a map of its own: update the plugin.");
+      postMessage({ id, result: mod.buildOwnMap(build) });
+      return;
+    }
     if (lib === null) {
       const r = await fetch(libUrl);
       if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
       lib = await r.text();
     }
-    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib, tests }) });
+    // A check names the script's clips and makes none of them; a build makes them, the long ones encoded below.
+    const result = mod.compileScript(self.ts, files, names, { lib, tests, sounds: Boolean(vorbisUrl), own, entries });
+    // A build's long clips encoded as Ogg Vorbis; a check's left as names, their samples not sent.
+    if (typeof mod.finishSounds === "function") {
+      const encoder = vorbisUrl && result.sounds.some((s) => s.vorbis) ? await mod.loadVorbis(vorbisUrl) : null;
+      mod.finishSounds(result.sounds, encoder);
+    }
+    postMessage({ id, result });
   } catch (err) {
     postMessage({ id, error: String((err && err.message) || err) });
   }
@@ -5524,14 +8539,14 @@ function breakWorker(reason) {
     p.reject(new CompilerUnavailable(reason));
   }
 }
-function timeOut(id) {
+function timeOut(id, ms) {
   const p = pending.get(id);
   if (!p) return;
   pending.delete(id);
   worker?.terminate();
   worker = null;
   rejectAll("The compile was stopped.");
-  p.reject(new Error(`The script did not finish in ${COMPILE_TIMEOUT_MS / 1e3} seconds. Is there an endless loop outside program()?`));
+  p.reject(new Error(p.build ? `The build did not finish in ${ms / 1e3} seconds.` : `The script did not finish in ${ms / 1e3} seconds. Is there an endless loop outside program()?`));
 }
 function getWorker() {
   if (unavailable) {
@@ -5579,18 +8594,311 @@ function compileInBackground(input, dist = DEFAULT_DIST) {
   }
   const id = ++seq;
   for (const [old, p] of pending) {
+    if (p.build) continue;
     pending.delete(old);
     clearTimeout(p.timer);
     p.reject(new CompileSuperseded());
   }
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
-    const req = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...input.tests ? { tests: input.tests } : {} };
+    const ms = input.sounds ? BUILD_TIMEOUT_MS : COMPILE_TIMEOUT_MS;
+    pending.set(id, { resolve: (r) => resolve(r), reject, timer: setTimeout(() => timeOut(id, ms), ms), build: false });
+    const req = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...input.tests ? { tests: input.tests } : {}, ...input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}, ...input.own ? { own: input.own } : {}, ...input.entries ? { entries: input.entries } : {} };
     w.postMessage(req);
   }).catch((err) => {
     if (err.message === RETRY) return compileInBackground(input, dist);
     throw err;
   });
+}
+function buildInBackground(input, dist = DEFAULT_DIST) {
+  let w;
+  try {
+    w = getWorker();
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    const ms = BUILD_TIMEOUT_MS;
+    pending.set(id, { resolve: (r) => resolve(r), reject, timer: setTimeout(() => timeOut(id, ms), ms), build: true });
+    const req = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), build: input };
+    w.postMessage(req);
+  }).catch((err) => {
+    if (err.message === RETRY) return buildInBackground(input, dist);
+    throw err;
+  });
+}
+
+// compiler/allowlist.ts
+var TABLES = [
+  { name: "unit table", base: 5885096, stride: 336, count: 1700 },
+  { name: "deaths table", base: 5808996, stride: 4, count: 12 * 228 }
+];
+function covers2(e, byte) {
+  const off = byte - e.base;
+  if (off < 0) return false;
+  if (!e.stride) return off < e.width;
+  return off % e.stride < e.width && Math.floor(off / e.stride) < (e.count ?? 1);
+}
+var BLOCK = 8;
+var indexes = /* @__PURE__ */ new WeakMap();
+function indexOf(list) {
+  let index = indexes.get(list);
+  if (index) return index;
+  index = /* @__PURE__ */ new Map();
+  for (const e of list.entries) {
+    const end = e.base + (e.stride ? e.stride * ((e.count ?? 1) - 1) : 0) + e.width;
+    for (let b = e.base >>> BLOCK; b <= end - 1 >>> BLOCK; b++) {
+      const at = index.get(b);
+      if (at) at.push(e);
+      else index.set(b, [e]);
+    }
+  }
+  indexes.set(list, index);
+  return index;
+}
+var WEIGHT = { ends: 3, ignored: 2, allowed: 1, unknown: 0 };
+function verdictOf(list, byte, write) {
+  let played = { verdict: "unknown", entry: null };
+  let dumped = { verdict: "unknown", entry: null };
+  for (const e of indexOf(list).get(byte >>> BLOCK) ?? []) {
+    if (!covers2(e, byte)) continue;
+    const v = write ? e.write : e.read;
+    const best = e.from === "dump" ? dumped : played;
+    if (best.entry === null || WEIGHT[v] > WEIGHT[best.verdict]) {
+      best.verdict = v;
+      best.entry = e;
+    }
+  }
+  if (played.entry && played.verdict !== "unknown") return played;
+  if (dumped.entry) return dumped;
+  if (played.entry) return played;
+  return { verdict: list.outside?.verdict ?? "unknown", entry: null };
+}
+
+// compiler/eudError.ts
+function addressOfEudError(text) {
+  const m = /EUD\s*ERROR\s*:?\s*(?:0x)?([0-9a-f]{1,8})\b/i.exec(text) ?? /^\s*(?:0x)?([0-9a-f]{1,8})\s*$/i.exec(text);
+  return m ? ~parseInt(m[1], 16) >>> 0 : null;
+}
+function eudErrorOf(address) {
+  return `0x${(~address >>> 0).toString(16).toUpperCase().padStart(8, "0")}`;
+}
+var hex = (n) => `0x${n.toString(16)}`;
+var UNIT_TABLE3 = { base: 5885096, stride: 336, count: 1700 };
+var UNIT_FIELDS = [
+  [0, 4, "previous unit"],
+  [4, 4, "next unit"],
+  [8, 4, "hit points"],
+  [12, 4, "sprite"],
+  [16, 4, "move target position"],
+  [20, 4, "move target unit"],
+  [24, 4, "next waypoint"],
+  [28, 4, "next target waypoint"],
+  [32, 1, "movement flags"],
+  [33, 1, "facing direction"],
+  [34, 1, "turn radius"],
+  [35, 1, "velocity direction"],
+  [36, 2, "flingy"],
+  [38, 1, "unknown 0x26"],
+  [39, 1, "movement type"],
+  [40, 2, "x"],
+  [42, 2, "y"],
+  [44, 4, "halt x"],
+  [48, 4, "halt y"],
+  [52, 4, "top speed"],
+  [56, 4, "speed 1"],
+  [60, 4, "speed 2"],
+  [64, 4, "current speed"],
+  [68, 2, "acceleration"],
+  [70, 1, "direction 2"],
+  [71, 1, "velocity direction 2"],
+  [72, 4, "unknown 0x48"],
+  [76, 1, "owner"],
+  [77, 1, "order"],
+  [78, 1, "order state"],
+  [79, 1, "order signal"],
+  [80, 2, "order unit type"],
+  [82, 2, "unknown 0x52"],
+  [84, 1, "order timer"],
+  [85, 1, "ground weapon cooldown"],
+  [86, 1, "air weapon cooldown"],
+  [87, 1, "spell cooldown"],
+  [88, 4, "order target position"],
+  [92, 4, "order target unit"],
+  [96, 4, "shields"],
+  [100, 2, "unit type"],
+  [102, 2, "unknown 0x66"],
+  [104, 4, "previous unit of its player"],
+  [108, 4, "next unit of its player"],
+  [112, 4, "subunit"],
+  [116, 4, "order queue head"],
+  [120, 4, "order queue tail"],
+  [124, 4, "auto target unit"],
+  [128, 4, "connected unit"],
+  [132, 1, "order queue count"],
+  [133, 1, "order queue timer"],
+  [134, 1, "unknown 0x86"],
+  [135, 1, "attack notify timer"],
+  [136, 2, "previous unit type"],
+  [138, 1, "last event timer"],
+  [139, 1, "last event colour"],
+  [140, 2, "unused 0x8c"],
+  [142, 1, "rank increase"],
+  [143, 1, "kills"],
+  [144, 1, "last attacking player"],
+  [145, 1, "secondary order timer"],
+  [146, 1, "AI action flag"],
+  [147, 1, "user action flags"],
+  [148, 2, "button set"],
+  [150, 1, "cloaked"],
+  [151, 1, "movement state"],
+  [152, 10, "build queue"],
+  [162, 2, "energy"],
+  [164, 1, "build queue slot"],
+  [165, 1, "unique id"],
+  [166, 1, "secondary order"],
+  [167, 1, "building overlay state"],
+  [168, 2, "hit point gain"],
+  [170, 2, "shield gain"],
+  [172, 2, "remaining build time"],
+  [174, 2, "previous hit points"],
+  [176, 16, "loaded units"],
+  [192, 16, "what its type keeps (mines, interceptors, nuke\u2026)"],
+  [208, 12, "what a building keeps (resources, \u2026)"],
+  [220, 4, "status flags"],
+  [224, 1, "resource type"],
+  [225, 1, "wireframe randomiser"],
+  [226, 1, "secondary order state"],
+  [227, 1, "recent order timer"],
+  [228, 4, "visibility"],
+  [232, 4, "secondary order position"],
+  [236, 4, "unit being built"],
+  [240, 4, "previous burrowed unit"],
+  [244, 4, "next burrowed unit"],
+  [248, 8, "rally point"],
+  [256, 4, "path"],
+  [260, 1, "pathing collision interval"],
+  [261, 1, "pathing flags"],
+  [262, 1, "unused 0x106"],
+  [263, 1, "being healed"],
+  [264, 8, "contour bounds"],
+  [272, 2, "remove timer"],
+  [274, 2, "defensive matrix hit points"],
+  [276, 1, "defensive matrix timer"],
+  [277, 1, "stim timer"],
+  [278, 1, "ensnare timer"],
+  [279, 1, "lockdown timer"],
+  [280, 1, "irradiate timer"],
+  [281, 1, "stasis timer"],
+  [282, 1, "plague timer"],
+  [283, 1, "storm timer"],
+  [284, 4, "irradiated by"],
+  [288, 1, "irradiating player"],
+  [289, 1, "parasites"],
+  [290, 1, "cycle counter"],
+  [291, 1, "blind"],
+  [292, 1, "maelstrom timer"],
+  [293, 1, "unused 0x125"],
+  [294, 1, "acid spore count"],
+  [295, 9, "acid spore timers"],
+  [304, 2, "3\xD73 attack sequence"],
+  [306, 2, "unused 0x132"],
+  [308, 4, "computer player's data"],
+  [312, 2, "air strength"],
+  [314, 2, "ground strength"],
+  [316, 16, "unit finder bounds"],
+  [332, 4, "repulse"]
+];
+function unitFieldAt(offset) {
+  const f = UNIT_FIELDS.find(([at, n]) => offset >= at && offset < at + n);
+  return f ? offset === f[0] ? f[2] : `${f[2]} (+${offset - f[0]})` : `+${hex(offset)}`;
+}
+var TABLES2 = [
+  { name: "deaths", base: 5808996, stride: 4, count: 12 * 228, row: (i) => `of unit type ${Math.floor(i / 12)} for P${i % 12 + 1}` },
+  { name: "kills", base: 5798052, stride: 4, count: 12 * 228, row: (i) => `of unit type ${Math.floor(i / 12)} for P${i % 12 + 1}` },
+  { name: "minerals", base: 5763312, stride: 4, count: 12, row: (i) => `of P${i + 1}` },
+  { name: "gas", base: 5763360, stride: 4, count: 12, row: (i) => `of P${i + 1}` },
+  { name: "switches", base: 5823552, stride: 4, count: 8, row: (i) => `${32 * i + 1} to ${32 * i + 32}` },
+  { name: "locations", base: 5823584, stride: 20, count: 255, row: (i) => `location ${i + 1}` },
+  { name: "text lines", base: 6556512, stride: 218, count: 13, row: (i) => `line ${i + 1}` },
+  { name: "keys of the local machine", base: 5859864, stride: 1, count: 256 },
+  { name: "mouse buttons of the local machine", base: 7134656, stride: 4, count: 1 },
+  { name: "mouse position of the local machine", base: 7134660, stride: 8, count: 1 },
+  { name: "current player", base: 6621616, stride: 4, count: 1 }
+];
+function placeOfAddress(address, list) {
+  const u = address - UNIT_TABLE3.base;
+  if (u >= 0 && u < UNIT_TABLE3.stride * UNIT_TABLE3.count) {
+    const at = u % UNIT_TABLE3.stride;
+    return `the unit table: slot ${Math.floor(u / UNIT_TABLE3.stride)} of ${UNIT_TABLE3.count.toLocaleString("en")}, ${unitFieldAt(at)} (+${hex(at)})`;
+  }
+  for (const t of TABLES2) {
+    const off = address - t.base;
+    if (off < 0 || off >= t.stride * t.count) continue;
+    const i = Math.floor(off / t.stride), within = off % t.stride;
+    return `${t.name}${t.row ? `, ${t.row(i)}` : ""}${t.stride > 4 && within ? ` (+${within})` : ""}`;
+  }
+  const cell = MEMORY_FIELDS.find((f) => address >= f.base && address < f.base + f.width);
+  if (cell) return `memory.${cell.path.join(".")}`;
+  for (const [kind, fields] of Object.entries(TABLE_FIELDS)) {
+    for (const f of fields) {
+      const width = f.width === "bit" ? 4 : f.width, off = address - f.base;
+      if (off < 0 || off % f.stride >= width) continue;
+      const i = Math.floor(off / f.stride);
+      if (i < (f.keyed ? 12 : TABLE_SIZE_OF[kind])) return `stats(): the ${kind} table's ${f.name}, entry ${i}`;
+    }
+  }
+  const named = list?.entries.find((e) => !/^0x[0-9a-f]+$/i.test(e.name) && covers3(e, address));
+  return named ? named.name : "no table TrigScript knows";
+}
+var TABLE_SIZE_OF = { unit: 228, weapon: 130, upgrade: 61, tech: 44, player: 12 };
+function covers3(e, byte) {
+  const off = byte - e.base;
+  if (off < 0) return false;
+  if (!e.stride) return off < e.width;
+  return off % e.stride < e.width && Math.floor(off / e.stride) < (e.count ?? 1);
+}
+function findEudError(address, rows, list) {
+  const dword = address & ~3;
+  const u = address - UNIT_TABLE3.base;
+  const field = u >= 0 && u < UNIT_TABLE3.stride * UNIT_TABLE3.count ? u % UNIT_TABLE3.stride & ~3 : null;
+  const byLine = /* @__PURE__ */ new Map();
+  const unlined = { exact: 0, field: 0 };
+  for (const r of rows) {
+    let match = null;
+    if (r.address === dword) match = "exact";
+    else if (field !== null) {
+      const o = r.address - UNIT_TABLE3.base;
+      if (o >= 0 && o < UNIT_TABLE3.stride * UNIT_TABLE3.count && o % UNIT_TABLE3.stride === field) match = "field";
+    }
+    if (!match) continue;
+    if (r.file === null || r.line === null) {
+      unlined[match] += r.times;
+      continue;
+    }
+    const key2 = `${r.file}:${r.line}`, had = byLine.get(key2);
+    if (!had) byLine.set(key2, { file: r.file, line: r.line, match, read: !r.write, write: r.write, times: r.times });
+    else {
+      had.times += r.times;
+      if (match === "exact") had.match = "exact";
+      if (r.write) had.write = true;
+      else had.read = true;
+    }
+  }
+  const lines = [...byLine.values()].sort((a2, b) => (a2.match === b.match ? 0 : a2.match === "exact" ? -1 : 1) || b.times - a2.times || a2.file.localeCompare(b.file) || a2.line - b.line);
+  const read = list ? verdictOf(list, address, false) : null, write = list ? verdictOf(list, address, true) : null;
+  const evidence = [.../* @__PURE__ */ new Set([...read?.entry?.evidence ?? [], ...write?.entry?.evidence ?? []])];
+  if (list && !read?.entry && !write?.entry && list.outside) evidence.push(...list.outside.evidence);
+  return {
+    code: eudErrorOf(address),
+    address,
+    place: placeOfAddress(address, list),
+    read: read?.verdict ?? "unknown",
+    write: write?.verdict ?? "unknown",
+    evidence,
+    lines,
+    unlined
+  };
 }
 
 // compiler/print.ts
@@ -5635,8 +8943,8 @@ function formatValue(kind, value, ctx) {
     case "slot":
       return String(value);
     default: {
-      const word = choiceWord(kind, value);
-      return word ? JSON.stringify(word) : String(value);
+      const word2 = choiceWord(kind, value);
+      return word2 ? JSON.stringify(word2) : String(value);
     }
   }
 }
@@ -5734,24 +9042,36 @@ var memberKey = (name) => name.replace(/\//g, "\\").toLowerCase();
 function isScriptMember(name) {
   return memberKey(name).startsWith(memberKey(SCRIPT_FOLDER));
 }
+var isBuiltSound = (name) => /^staredit\\wav\\trigscript-(?:[0-9a-f]{8}|[0-9a-f]{16})\.(wav|ogg)$/.test(memberKey(name));
+function withSounds(extras, sounds) {
+  const next = /* @__PURE__ */ new Map();
+  for (const [name, bytes2] of extras) if (!isBuiltSound(name)) next.set(name, bytes2);
+  for (const s of sounds) {
+    const bytes2 = [...extras].find(([name]) => memberKey(name) === memberKey(s.path))?.[1] ?? s.bytes;
+    if (!bytes2) throw new Error(`The sound ${s.path} was not encoded: compile it as a build (with its sounds) before installing it.`);
+    next.set(s.path, bytes2);
+  }
+  return next;
+}
 function memberOf(path) {
   return `${SCRIPT_FOLDER}${normalizePath(path).replace(/\//g, "\\")}`;
 }
 function pathOf(member2) {
   if (!isScriptMember(member2)) return null;
   const rest = member2.replace(/\//g, "\\").slice(SCRIPT_FOLDER.length);
-  return /\.ts$/i.test(rest) ? rest.replace(/\\/g, "/") : null;
+  return SCRIPT_FILE.test(rest) ? rest.replace(/\\/g, "/") : null;
 }
-var FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.ts$/;
+var SCRIPT_FILE = /\.(?:tsx?|video|image|sound|notes)$/i;
+var FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video|image|sound|notes)$/;
 function member(extras, name) {
-  const key = memberKey(name);
-  for (const [k, v] of extras) if (memberKey(k) === key) return v;
+  const key2 = memberKey(name);
+  for (const [k, v] of extras) if (memberKey(k) === key2) return v;
   return void 0;
 }
 function withMember(extras, name, data) {
   const next = new Map(extras);
-  const key = memberKey(name);
-  for (const k of next.keys()) if (memberKey(k) === key) next.delete(k);
+  const key2 = memberKey(name);
+  for (const k of next.keys()) if (memberKey(k) === key2) next.delete(k);
   if (data) next.set(name, data);
   return next;
 }
@@ -5843,20 +9163,20 @@ function relocateManifest(triggers, extras) {
   if (!block2 || block2.start === manifest.start) return null;
   return withManifest(extras, { ...manifest, start: block2.start });
 }
-function stringResolver(compiled, intern) {
+function stringResolver(compiled, intern2) {
   const cache = /* @__PURE__ */ new Map();
   return (local) => {
     if (local === 0) return 0;
     const hit = cache.get(local);
     if (hit !== void 0) return hit;
     const s = compiled.strings[local - 1];
-    const index = !s ? 0 : "index" in s ? s.index : intern(s.text);
+    const index = !s ? 0 : "index" in s ? s.index : intern2(s.text);
     cache.set(local, index);
     return index;
   };
 }
-function resolveStrings(compiled, intern) {
-  const resolve = stringResolver(compiled, intern);
+function resolveStrings(compiled, intern2) {
+  const resolve = stringResolver(compiled, intern2);
   return compiled.triggers.map((t) => {
     const next = cloneTrigger(t);
     for (const a2 of next.actions) {
@@ -5866,8 +9186,8 @@ function resolveStrings(compiled, intern) {
     return next;
   });
 }
-function buildScript(triggers, extras, files, compiled, intern, options = {}) {
-  const records2 = resolveStrings(compiled, intern);
+function buildScript(triggers, extras, files, compiled, intern2, options = {}) {
+  const records2 = resolveStrings(compiled, intern2);
   const state = scriptState(triggers, extras);
   let start;
   let before;
@@ -5894,7 +9214,7 @@ function buildScript(triggers, extras, files, compiled, intern, options = {}) {
     after = [];
   }
   const manifest = { version: 2, programs: compiled.ir.length, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records2.map(hashRecord) };
-  return { list: [...before, ...records2, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records2.length, sources: manifest.sources }, ...replaced ? { replaced } : {} };
+  return { list: [...before, ...records2, ...after], extras: withSounds(withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), compiled.sounds ?? []), block: { start, count: records2.length, sources: manifest.sources }, ...replaced ? { replaced } : {} };
 }
 function triggerAtLine(block2, file, line) {
   let hit = null;
@@ -5904,6 +9224,203 @@ function triggerAtLine(block2, file, line) {
   });
   return hit;
 }
+
+// compiler/gameVariables.ts
+var DEATHS3 = 5808996;
+var HEAD = "TRIGSCRIPT-VARS ";
+var PROGRAM = "TRIGSCRIPT-PROGRAM ";
+var isMachineLine = (line) => /^TRIGSCRIPT-[A-Z]+ /.test(line);
+function readVariableMap(lines) {
+  let head = null;
+  const programs = [];
+  for (const line of lines) {
+    if (line.startsWith(HEAD)) head = JSON.parse(line.slice(HEAD.length));
+    else if (line.startsWith(PROGRAM)) programs.push(JSON.parse(line.slice(PROGRAM.length)));
+  }
+  if (!head || programs.length !== head.programs) return null;
+  return { heap: head.heap, ...head.cells != null ? { cells: head.cells } : {}, strings: head.strings, programs: programs.sort((a2, b) => a2.index - b.index) };
+}
+function listCellAt(map, ptr, i) {
+  if (map.cells != null) return map.cells + 72 * (ptr + i);
+  return map.heap == null ? null : map.heap + 4 * (ptr + i);
+}
+var MOST_TEXT = 1 << 16;
+var utf82 = new TextDecoder();
+function programVariables(game, map, name = 0, player3) {
+  const p = map.programs.find((x) => (typeof name === "number" ? x.index === name : x.name === name) && (player3 === void 0 || x.owners.includes(player3)));
+  if (!p) {
+    const known = [...new Set(map.programs.map((x) => x.name).filter(Boolean))];
+    throw new Error(typeof name === "number" ? `There is no program ${name}: the script has ${map.programs.length}.` : `There is no program named "${name}"${player3 !== void 0 ? ` that runs for P${player3 + 1}` : ""}. ${known.length ? `Named: ${known.join(", ")}.` : 'A program is named by its option: program(() => { \u2026 }, { name: "waves" }).'}`);
+  }
+  const who = player3 ?? p.owners[0] ?? 0;
+  const { m, u8 } = game;
+  const raw = (at, rowed, stride = 4) => at == null ? 0 : m.getUint32(rowed ? at + stride * who : at, true);
+  const num2 = (v, t) => t.kind === "boolean" ? v !== 0 : t.bits || t.unsigned ? v >>> 0 : v | 0;
+  const cString = (at) => {
+    let end = at;
+    while (end < u8.length && end - at < MOST_TEXT && u8[end] !== 0) end++;
+    return utf82.decode(u8.subarray(at, end));
+  };
+  const where = (v, cell) => {
+    const x = raw(cell, v.rowed, v.stride);
+    return x && v.epd ? DEATHS3 + 4 * x >>> 0 : x;
+  };
+  const text = (v) => {
+    if (v.text === "made") {
+      const at = where(v, v.cells.addr);
+      return at ? cString(at) : "";
+    }
+    const id = raw(v.cells.value, v.rowed, v.stride) + (v.textBase ?? 0);
+    return id ? cString(map.strings + m.getUint32(map.strings + 4 * id, true)) : "";
+  };
+  const value = (v) => {
+    if (v.kind === "unit") {
+      const ptr = where(v, v.cells.ptr);
+      const uid = raw(v.cells.uid, v.rowed, v.stride);
+      return ptr ? game.unitAt(ptr, v.epd ? uid << 8 : uid) : null;
+    }
+    if (v.kind === "text") return text(v);
+    return num2(raw(v.cells.value, v.rowed, v.stride), v);
+  };
+  const cells = (a2) => {
+    if (a2.dynamic) {
+      if (map.heap == null && map.cells == null) return [];
+      const ptr = raw(a2.ptr, a2.rowed, a2.stride), n = Math.min(raw(a2.len, a2.rowed, a2.stride), MOST_TEXT);
+      return Array.from({ length: n }, (_, i) => num2(m.getUint32(listCellAt(map, ptr, i), true), a2));
+    }
+    if (a2.at == null) return new Array(a2.length).fill(num2(0, a2));
+    const row = a2.rowed ? who * a2.length : 0;
+    const stride = a2.stride ?? 4;
+    return Array.from({ length: a2.length }, (_, i) => num2(m.getUint32(a2.at + stride * (row + i), true), a2));
+  };
+  const named = (id, n) => id === n || id.startsWith(`${n}#`);
+  const last = (xs, n) => {
+    let found;
+    for (const x of xs) if (named(x.id, n)) found = x;
+    return found;
+  };
+  const lookup = (n) => {
+    const plain2 = last(p.vars.filter((v) => v.kind === "number" || v.kind === "boolean"), n);
+    if (plain2) return value(plain2);
+    const t = last(p.vars.filter((v) => v.kind === "text"), n);
+    if (t) return text(t);
+    const a2 = last(p.arrays, n);
+    if (a2) return cells(a2);
+    const u = last(p.vars.filter((v) => v.kind === "unit"), n);
+    if (u) return value(u);
+    const field = (id) => id.startsWith(`${n}.`) ? id.slice(n.length + 1).split("#")[0] : null;
+    const record = {};
+    for (const v of p.vars) {
+      const f = field(v.id);
+      if (f && v.kind !== "unit" && !(v.kind !== "text" && f.includes(" ("))) record[f] = value(v);
+    }
+    if (Object.keys(record).length) return record;
+    const rows = [];
+    for (const arr of p.arrays) {
+      const f = field(arr.id);
+      if (f) cells(arr).forEach((cell, i) => {
+        (rows[i] ??= {})[f] = cell;
+      });
+    }
+    return rows.length ? rows : void 0;
+  };
+  return new Proxy({}, { get: (_, key2) => typeof key2 === "string" ? lookup(key2) : void 0, has: (_, key2) => typeof key2 === "string" && lookup(key2) !== void 0 });
+}
+function readTriggerMap(lines) {
+  let head = null;
+  const triggers = [];
+  for (const line of lines) {
+    if (line.startsWith("TRIGSCRIPT-MAP ")) head = JSON.parse(line.slice("TRIGSCRIPT-MAP ".length));
+    else if (line.startsWith("TRIGSCRIPT-ROWS ")) triggers.push(...JSON.parse(line.slice("TRIGSCRIPT-ROWS ".length)));
+  }
+  return head && triggers.length === head.count ? { payload: head.payload, triggers } : null;
+}
+
+// compiler/gameCopies.ts
+function mergeCopies(ids, copies) {
+  return ids.map((id) => {
+    const each = copies.map((c2) => {
+      const report = c2.result;
+      const problem = c2.error ?? report?.error ?? null;
+      const r = report?.results.find((x) => x.id === id);
+      return { player: c2.player, r: problem || !r ? { id, status: "failed", message: problem ?? "the test did not run at this computer", printed: [], events: [], frames: 0, ms: 0 } : r };
+    });
+    const bad = each.find((e) => e.r.status === "failed");
+    const first = each[0].r;
+    const ms = Math.max(...each.map((e) => e.r.ms));
+    if (!bad) return { ...first, ms };
+    const same = each.every((e) => e.r.status === "failed" && e.r.message === bad.r.message);
+    return { ...bad.r, ms, message: same ? bad.r.message : `at P${bad.player + 1}'s computer: ${bad.r.message}` };
+  });
+}
+
+// compiler/gameCost.ts
+function shortCount(n) {
+  if (n < 1e3) return String(n);
+  if (n < 1e6) return `${(n / 1e3).toFixed(n < 1e4 ? 1 : 0)}k`;
+  return `${(n / 1e6).toFixed(1)}M`;
+}
+function shortMs(ms) {
+  return ms < 0.1 ? ms.toFixed(3) : ms < 1 ? ms.toFixed(2) : ms < 10 ? ms.toFixed(1) : ms.toFixed(0);
+}
+function costByLine(costs) {
+  const out = /* @__PURE__ */ new Map();
+  for (const { id, cost } of costs) for (const l of cost.lines) {
+    const key2 = `${l.file}:${l.line}`, was = out.get(key2);
+    if (!was || (l.ms && was.ms ? l.ms.peak > was.ms.peak : l.peak > was.peak)) out.set(key2, { ...l, test: id });
+  }
+  return [...out.values()];
+}
+
+// data/remastered-regions.json
+var remastered_regions_default = { build: "1.23.10.13515", source: "scm-sim-reader remastered/regions.py from the emulator's tree in a dump (2026-10-16)", strings: 421086152, pools: [{ name: "images", kind: 57, base: 5436776, stride: 64, count: 5e3 }, { name: "units", kind: 52, base: 5885096, stride: 336, count: 1700 }, { name: "kind 0x33", kind: 51, base: 6456504, stride: 4, count: 108 }, { name: "sprites", kind: 62, base: 6462872, stride: 36, count: 2500 }, { name: "pool 0x40", kind: 64, base: 6559392, stride: 20, count: 2e3 }, { name: "bullets", kind: 56, base: 6599400, stride: 112, count: 100 }], regions: [[2097152, 4096, 7], [2101248, 24576, 7], [4317392, 4, 7], [4352280, 4, 7], [4356352, 4, 7], [4357340, 4, 7], [4526924, 4, 7], [4526928, 4, 7], [4588620, 4, 7], [4753344, 4, 7], [4755972, 4, 7], [4796304, 4, 7], [4864152, 4, 7], [4864156, 4, 7], [4954460, 4, 7], [4969964, 4, 7], [4969968, 4, 7], [5073140, 4, 7], [5085372, 4, 7], [5190280, 4, 7], [5190496, 4, 7], [5234620, 4, 7], [5236036, 4, 0], [5241088, 12, 7], [5295552, 257, 36], [5300324, 4, 0], [5317848, 28, 0], [5318264, 4, 39], [5318268, 4, 39], [5318276, 4, 39], [5318280, 4, 39], [5318408, 76, 34], [5318904, 160, 7], [5323624, 49, 0], [5325176, 1090, 0], [5326268, 4, 0], [5326272, 838, 0], [5327112, 318, 0], [5327432, 688, 0], [5328120, 1316, 0], [5329436, 8, 7], [5329576, 84, 7], [5329660, 4, 0], [5329664, 72, 7], [5329736, 60, 7], [5329796, 4, 0], [5329800, 96, 7], [5331704, 16, 0], [5331720, 16, 0], [5331736, 32, 0], [5331768, 32, 0], [5331800, 8, 0], [5331808, 8, 0], [5331816, 8, 0], [5331824, 120, 0], [5331944, 60, 6], [5332004, 60, 6], [5332064, 20, 6], [5332084, 20, 6], [5332104, 20, 6], [5332124, 40, 6], [5332164, 20, 6], [5332184, 40, 6], [5332224, 20, 6], [5332244, 60, 6], [5332304, 20, 6], [5332324, 4, 0], [5332328, 100, 6], [5332432, 100, 6], [5332532, 4, 0], [5332536, 100, 6], [5332636, 4, 0], [5332640, 140, 6], [5332780, 40, 6], [5332820, 4, 0], [5332824, 180, 6], [5333004, 20, 6], [5333024, 180, 6], [5333204, 4, 0], [5333208, 140, 6], [5333348, 4, 0], [5333352, 120, 6], [5333472, 140, 6], [5333612, 4, 0], [5333616, 160, 6], [5333776, 140, 6], [5333916, 4, 0], [5333920, 140, 6], [5334060, 4, 0], [5334064, 180, 6], [5334244, 4, 0], [5334248, 180, 6], [5334428, 4, 0], [5334432, 140, 6], [5334572, 4, 0], [5334576, 200, 6], [5334776, 180, 6], [5334956, 4, 0], [5334960, 100, 6], [5335060, 4, 0], [5335064, 180, 6], [5335244, 4, 0], [5335248, 160, 6], [5335408, 20, 6], [5335428, 4, 0], [5335432, 80, 6], [5335512, 60, 6], [5335572, 60, 6], [5335632, 40, 6], [5335672, 100, 6], [5335772, 4, 0], [5335776, 100, 6], [5335876, 4, 0], [5335880, 100, 6], [5335980, 4, 0], [5335984, 80, 6], [5336064, 60, 6], [5336124, 60, 6], [5336184, 140, 6], [5336324, 4, 0], [5336328, 180, 6], [5336508, 4, 0], [5336512, 180, 6], [5336692, 4, 0], [5336696, 160, 6], [5336856, 140, 6], [5336996, 4, 0], [5337e3, 140, 6], [5337140, 4, 0], [5337144, 140, 6], [5337284, 4, 0], [5337288, 140, 6], [5337428, 4, 0], [5337432, 140, 6], [5337572, 4, 0], [5337576, 120, 6], [5337696, 140, 6], [5337836, 4, 0], [5337840, 100, 6], [5337940, 4, 0], [5337944, 120, 6], [5338064, 120, 6], [5338184, 40, 6], [5338224, 80, 6], [5338304, 160, 6], [5338464, 80, 6], [5338544, 140, 6], [5338684, 4, 0], [5338688, 100, 6], [5338788, 4, 0], [5338792, 80, 6], [5338872, 20, 6], [5338892, 60, 6], [5338952, 140, 6], [5339092, 4, 0], [5339096, 120, 6], [5339216, 140, 6], [5339356, 4, 0], [5339360, 180, 6], [5339540, 4, 0], [5339544, 180, 6], [5339724, 4, 0], [5339728, 100, 6], [5339828, 4, 0], [5339832, 180, 6], [5340012, 4, 0], [5340016, 160, 6], [5340176, 120, 6], [5340296, 140, 6], [5340436, 4, 0], [5340440, 140, 6], [5340580, 4, 0], [5340584, 160, 6], [5340744, 120, 6], [5340864, 120, 6], [5340984, 200, 6], [5341184, 20, 6], [5341204, 40, 6], [5341244, 40, 6], [5341288, 220, 6], [5341508, 4, 0], [5341512, 240, 6], [5341752, 240, 6], [5341992, 260, 6], [5342252, 4, 0], [5342256, 80, 6], [5342336, 140, 6], [5342476, 4, 0], [5342480, 120, 6], [5342600, 80, 6], [5342680, 100, 6], [5342780, 4, 0], [5342784, 140, 6], [5342924, 4, 0], [5342928, 120, 6], [5343048, 140, 6], [5343188, 20, 6], [5343208, 3e3, 9], [5346208, 2736, 0], [5350016, 12, 4], [5350028, 12, 4], [5350040, 12, 4], [5350052, 12, 4], [5350064, 12, 4], [5350076, 12, 4], [5350088, 12, 4], [5350100, 12, 4], [5350436, 22, 7], [5350464, 23, 7], [5352112, 23, 7], [5352136, 23, 7], [5352160, 23, 7], [5352340, 25, 7], [5352368, 16, 7], [5352384, 20, 7], [5352404, 26, 7], [5352432, 12, 7], [5352444, 20, 0], [5352464, 25, 7], [5352492, 24, 7], [5352520, 18, 7], [5352540, 23, 7], [5352564, 16, 7], [5352728, 22, 7], [5356280, 256, 7], [5360148, 4, 0], [5361264, 28, 0], [5361292, 4, 0], [5361304, 4, 0], [5361312, 4, 0], [5361360, 3996, 0], [5370536, 19980, 0], [5390544, 999, 0], [5432512, 4, 0], [5432776, 3996, 0], [5761896, 4, 58], [5761904, 4, 58], [5762784, 432, 8], [5763216, 4, 0], [5763252, 1, 0], [5763288, 4, 0], [5763312, 66396, 11], [5829708, 29604, 12], [5859320, 141, 0], [5859864, 255, 43], [5861896, 4, 51], [5861900, 4, 51], [5861904, 4, 51], [5861908, 4, 51], [5861912, 4, 51], [5861916, 4, 51], [5861920, 4, 51], [5861924, 4, 51], [5861928, 4, 51], [5861932, 4, 51], [5861936, 4, 51], [5861940, 4, 51], [5861944, 4, 0], [5861948, 1, 0], [5862304, 8192, 7], [5870532, 4, 26], [5870548, 4, 1], [5883584, 1024, 7], [5884764, 4, 44], [5884768, 256, 7], [5885048, 4, 0], [5885056, 4, 0], [6456304, 4, 0], [6456312, 4, 51], [6456316, 4, 51], [6456320, 4, 51], [6456324, 4, 51], [6456328, 4, 51], [6456332, 4, 51], [6456336, 4, 51], [6456340, 4, 51], [6456344, 4, 51], [6456348, 4, 51], [6456352, 4, 51], [6456356, 4, 51], [6456360, 4, 51], [6456364, 4, 51], [6456368, 4, 51], [6456372, 4, 51], [6456376, 4, 51], [6456380, 4, 51], [6456388, 4, 30], [6456392, 4, 0], [6456404, 4, 29], [6456408, 4, 33], [6456432, 4, 0], [6456460, 4, 0], [6456468, 4, 27], [6456472, 2, 0], [6456488, 4, 0], [6456492, 2, 0], [6462608, 256, 0], [6553136, 4, 60], [6553140, 4, 60], [6553304, 4, 0], [6553408, 4, 0], [6553464, 828, 46], [6554296, 656, 46], [6554960, 794, 46], [6555756, 4, 0], [6556504, 1, 0], [6556508, 4, 0], [6556512, 2834, 40], [6559388, 4, 0], [6599392, 4, 65], [6599396, 4, 65], [6610620, 4, 0], [6614744, 4, 54], [6614748, 4, 54], [6621600, 2, 0], [6621616, 4, 0], [6637696, 512, 0], [6638240, 4, 0], [6641380, 4, 0], [6641408, 61, 0], [6641472, 122, 0], [6641596, 4, 0], [6641600, 122, 0], [6641724, 4, 0], [6641728, 122, 0], [6641856, 122, 0], [6641984, 122, 0], [6642108, 4, 0], [6642112, 122, 0], [6642240, 122, 0], [6642368, 122, 0], [6642492, 61, 0], [6642556, 4, 0], [6642560, 122, 0], [6642684, 61, 0], [6642776, 440, 7], [6643328, 440, 7], [6644120, 88, 0], [6644208, 88, 0], [6644296, 88, 0], [6644384, 88, 0], [6644472, 88, 0], [6644560, 44, 0], [6644604, 4, 0], [6644608, 88, 0], [6644696, 88, 0], [6644784, 88, 0], [6644872, 44, 0], [6644916, 44, 0], [6644960, 130, 0], [6645096, 260, 0], [6645360, 130, 0], [6645492, 4, 0], [6645496, 130, 0], [6645628, 4, 0], [6645632, 260, 0], [6645892, 4, 0], [6645896, 260, 0], [6646156, 4, 0], [6646160, 130, 0], [6646292, 4, 0], [6646296, 520, 0], [6646816, 130, 0], [6646948, 4, 0], [6646952, 520, 0], [6647472, 260, 0], [6647732, 4, 0], [6647736, 130, 0], [6647868, 4, 0], [6647872, 130, 0], [6648004, 4, 0], [6648008, 260, 0], [6648268, 4, 0], [6648272, 130, 0], [6648404, 4, 0], [6648408, 130, 0], [6648540, 4, 0], [6648544, 260, 0], [6648804, 4, 0], [6648808, 130, 0], [6648940, 4, 0], [6648944, 520, 0], [6649464, 260, 0], [6649728, 260, 0], [6649992, 130, 0], [6650124, 4, 0], [6650128, 130, 0], [6650264, 260, 0], [6650524, 1, 0], [6650528, 4096, 7], [6683672, 228, 0], [6683904, 456, 0], [6684360, 228, 0], [6684592, 456, 0], [6685048, 228, 0], [6685280, 456, 0], [6685736, 456, 0], [6686192, 228, 0], [6686424, 228, 0], [6686656, 456, 0], [6687112, 228, 0], [6687344, 456, 0], [6687800, 456, 0], [6688256, 456, 0], [6688712, 228, 0], [6688940, 4, 0], [6688944, 912, 0], [6689856, 212, 0], [6690068, 4, 0], [6690072, 456, 0], [6690528, 228, 0], [6690756, 4, 0], [6690760, 1824, 0], [6692584, 212, 0], [6692796, 4, 0], [6692800, 212, 0], [6693012, 4, 0], [6693016, 228, 0], [6693244, 4, 0], [6693248, 228, 0], [6693476, 4, 0], [6693480, 228, 0], [6693712, 912, 0], [6694624, 384, 0], [6695008, 912, 0], [6695920, 456, 0], [6696376, 228, 0], [6696604, 4, 0], [6696608, 228, 0], [6696836, 4, 0], [6696840, 456, 0], [6697296, 228, 0], [6697524, 4, 0], [6697528, 228, 0], [6697756, 4, 0], [6697760, 228, 0], [6697988, 4, 0], [6697992, 456, 0], [6698448, 228, 0], [6698676, 4, 0], [6698680, 228, 0], [6698908, 4, 0], [6698912, 228, 0], [6699140, 4, 0], [6699144, 456, 0], [6699600, 228, 0], [6699832, 212, 0], [6700044, 4, 0], [6700048, 212, 0], [6700260, 4, 0], [6700264, 228, 0], [6700492, 4, 0], [6700496, 228, 0], [6700728, 456, 0], [6701184, 912, 0], [6702096, 228, 0], [6702324, 4, 0], [6702328, 228, 22], [6702556, 4, 0], [6702560, 228, 0], [6702788, 4, 0], [6702792, 228, 0], [6703020, 4, 0], [6703024, 228, 0], [6703252, 4, 0], [6703256, 228, 0], [6703484, 4, 0], [6703488, 192, 0], [6703680, 189, 0], [6703872, 189, 0], [6704064, 189, 0], [6704256, 189, 0], [6704448, 189, 0], [6704640, 189, 0], [6704832, 378, 0], [6705216, 189, 0], [6705408, 189, 0], [6705600, 189, 0], [6705792, 378, 0], [6706176, 189, 0], [6706368, 189, 0], [6706560, 378, 0], [6706944, 189, 0], [6707136, 189, 0], [6707328, 189, 0], [6707520, 189, 0], [6707712, 189, 0], [6707904, 387, 0], [6708296, 517, 0], [6708816, 387, 0], [6709208, 387, 0], [6709600, 1034, 17], [6710640, 517, 0], [6711160, 3996, 0], [6715160, 999, 0], [6716160, 3996, 0], [6720160, 3996, 0], [6724160, 999, 0], [6725160, 999, 18], [6726160, 3996, 0], [6730160, 3996, 0], [6734160, 999, 0], [6735160, 3996, 0], [6739160, 999, 0], [6740160, 3996, 0], [6744160, 999, 0], [6745160, 3996, 23], [6749452, 4, 0], [6750072, 27200, 49], [6859892, 1, 0], [6859916, 4, 44], [6865156, 4, 24], [6865160, 4, 25], [6865164, 50, 0], [6865216, 4, 44], [6865220, 1, 0], [6865224, 4, 44], [6865228, 2, 0], [6865376, 4, 0], [6865392, 4, 44], [6865396, 4, 21], [6865404, 4, 20], [6865412, 4, 19], [6865416, 24, 7], [6865444, 4, 44], [6865460, 4, 44], [6865464, 4, 0], [7057936, 1824, 0], [7066576, 6804, 45], [7116888, 209, 0], [7117104, 836, 0], [7117944, 418, 0], [7118368, 209, 0], [7118584, 836, 0], [7119424, 209, 0], [7119640, 418, 0], [7120060, 48, 0], [7120108, 48, 0], [7120156, 48, 0], [7120208, 252, 7], [7120460, 24, 7], [7121228, 48, 0], [7122840, 4, 0], [7122848, 10752, 0], [7133600, 516, 0], [7134120, 516, 0], [7134656, 2, 0], [7134660, 8, 66], [7135188, 36, 7], [7135232, 192, 7], [7136032, 1024, 7], [7137056, 1024, 7], [7138080, 26, 7], [7139312, 8, 0], [7139320, 1200, 31], [7147284, 4, 0], [7147300, 4, 0], [7147312, 633, 0], [7148032, 40482, 35], [7148084, 4, 0], [7148088, 4, 0], [7148128, 4, 28], [7166512, 4, 0], [7166572, 4, 0], [7167192, 4, 3], [7167508, 4, 42], [7167516, 4, 0], [7167688, 4, 32], [7168916, 24, 7], [7200768, 1214, 44], [7201984, 1214, 44], [7203200, 68e3, 44], [7271200, 1214, 44], [7272416, 68e3, 44], [7340416, 1214, 44], [7341632, 68e3, 44], [7409632, 1214, 44], [7410848, 68e3, 44], [7478848, 1214, 44], [7480064, 68e3, 44], [7548064, 1214, 44], [7549280, 68e3, 44], [7617280, 1214, 44], [7618496, 68e3, 44], [7686496, 1214, 44], [7687712, 68e3, 44], [7755712, 1214, 44], [7756928, 68e3, 44], [7824928, 734, 44], [7825664, 734, 44], [7826400, 68e3, 44], [7894400, 734, 44], [7895136, 68e3, 44], [7963136, 734, 44], [7963872, 68e3, 44], [8031872, 734, 44], [8032608, 68e3, 44], [8100608, 734, 44], [8101344, 68e3, 44], [8169344, 734, 44], [8170080, 68e3, 44], [8238080, 734, 44], [8238816, 68e3, 44], [8306816, 734, 44], [8307552, 68e3, 44], [8375552, 734, 44], [8376288, 68e3, 44], [8444288, 734, 44], [8445024, 68e3, 44], [8513024, 734, 44], [8513760, 68e3, 44], [8581760, 794, 44], [8582560, 794, 44], [8583360, 68e3, 44], [8651360, 794, 44], [8652160, 68e3, 44], [8720160, 794, 44], [8720960, 68e3, 44], [8788960, 794, 44], [8789760, 68e3, 44], [8857760, 794, 44], [8858560, 68e3, 44], [8926560, 794, 44], [8927360, 68e3, 44], [8995360, 794, 44], [8996160, 68e3, 44], [9064160, 438, 44], [9064608, 438, 44], [9065056, 68e3, 44], [9133056, 438, 44], [9133504, 68e3, 44], [9201504, 438, 44], [9201952, 68e3, 44], [9269952, 438, 44], [9270400, 68e3, 44], [9338400, 438, 44], [9338848, 68e3, 44], [9406848, 438, 44], [9407296, 68e3, 44], [9475296, 438, 44], [9475744, 68e3, 44], [9543744, 438, 44], [9544192, 68e3, 44], [9612192, 438, 44], [9612640, 68e3, 44], [9680640, 438, 44], [9681088, 68e3, 44], [9749088, 438, 44], [9749536, 68e3, 44], [9817536, 438, 44], [9817984, 68e3, 44], [9885984, 184, 44], [9886176, 184, 44], [9886368, 68e3, 44], [9954368, 184, 44], [9954560, 68e3, 44], [10022560, 184, 44], [10022752, 68e3, 44], [10090752, 184, 44], [10090944, 68e3, 44], [10158944, 184, 44], [10159136, 68e3, 44], [10227136, 184, 44], [10227328, 68e3, 44], [10295328, 184, 44], [10295520, 68e3, 44], [10363520, 184, 44], [10363712, 68e3, 44], [10431712, 184, 44], [10431904, 68e3, 44], [10499904, 184, 44], [10500096, 68e3, 44], [10568096, 4, 41], [10568112, 270, 44], [10568384, 270, 44], [10568656, 68e3, 44], [10636656, 270, 44], [10636928, 68e3, 44], [10704928, 270, 44], [10705200, 68e3, 44], [10773200, 270, 44], [10773472, 68e3, 44], [10841472, 270, 44], [10841744, 68e3, 44], [10909744, 4, 50], [10909760, 4, 37], [10909776, 4, 63], [10909792, 4, 38], [10909808, 4, 48], [10909824, 301056, 29], [11210880, 131072, 27], [11341952, 131072, 26], [11473024, 262144, 28], [11735168, 3145728, 30], [14880896, 204800, 33], [15085696, 81920, 32], [15167616, 48, 42], [15167664, 4826, 42], [352693752, 12, 13], [352708208, 1024, 10], [419532600, 4, 7], [419713736, 128, 7], [419717428, 4, 0], [419717432, 256, 7], [420025304, 4, 0], [420025312, 306901, 19], [420332224, 48714, 20], [420380944, 51207, 21], [420432160, 4, 59], [420432176, 5e3, 44], [420437184, 5e3, 44], [420442192, 68e3, 44], [420510192, 5e3, 44], [420515200, 68e3, 44], [420583200, 5e3, 44], [420588208, 68e3, 44], [420656208, 5e3, 44], [420661216, 68e3, 44], [420729216, 5e3, 44], [420734224, 68e3, 44], [420802224, 5e3, 44], [420807232, 68e3, 44], [420875232, 5e3, 44], [420880240, 68e3, 44], [420948240, 5e3, 44], [420953248, 68e3, 44], [421021248, 4, 55], [421021264, 4, 61], [421021280, 64864, 16]] };
+
+// compiler/remasteredCost.ts
+var FRAME_MS = 42;
+var GAME_MS = 5.4;
+var SMOOTH_MS = 15;
+var MOST_MS = FRAME_MS - GAME_MS;
+var RegionMap = class _RegionMap {
+  starts;
+  ends;
+  pools;
+  strings;
+  unitsBase;
+  unitsEnd;
+  /** Numbers past every region's own: the pools' elements, then pages of what no region names. */
+  static POOLS = 1 << 20;
+  constructor(data = remastered_regions_default) {
+    const r = [...data.regions].sort((a2, b) => a2[0] - b[0]);
+    this.starts = r.map((x) => x[0]);
+    this.ends = r.map((x) => x[0] + x[1]);
+    this.pools = data.pools;
+    this.strings = data.strings;
+    const units = data.pools.find((p) => p.name === "units");
+    this.unitsBase = units?.base ?? 0;
+    this.unitsEnd = units ? units.base + units.stride * units.count : 0;
+  }
+  /** The region of `address`: the strings region (eudplib's payload and variables) is -1. */
+  of(address) {
+    if (address >= this.strings) return -1;
+    let lo = 0, hi = this.starts.length - 1;
+    while (lo <= hi) {
+      const mid = lo + hi >> 1;
+      if (this.starts[mid] <= address) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    if (hi >= 0 && address < this.ends[hi]) return hi;
+    let base = _RegionMap.POOLS;
+    for (const p of this.pools) {
+      if (address >= p.base && address < p.base + p.stride * p.count) return base + Math.floor((address - p.base) / p.stride);
+      base += p.count;
+    }
+    return base + (address >>> 8);
+  }
+  /** Whether `address` is in a unit. */
+  unit(address) {
+    return address >= this.unitsBase && address < this.unitsEnd;
+  }
+};
 
 // tree.ts
 function buildTree(paths) {
@@ -6151,14 +9668,14 @@ function foldPlayers(events) {
   const out = [];
   const seen = /* @__PURE__ */ new Map();
   for (const e of events) {
-    const key = `${e.frame}|${e.file ?? ""}|${e.line ?? 0}|${e.text}`;
-    const first = seen.get(key);
+    const key2 = `${e.frame}|${e.file ?? ""}|${e.line ?? 0}|${e.text}`;
+    const first = seen.get(key2);
     if (first) {
       if (!first.players.includes(e.player)) first.players.push(e.player);
       continue;
     }
     const row = { ...e, players: [e.player] };
-    seen.set(key, row);
+    seen.set(key2, row);
     out.push(row);
   }
   return out;
@@ -6170,3128 +9687,8 @@ function summary(c2, t = english) {
   return { text: [t("{n} passed", { n: c2.passed }), c2.skipped ? t("{n} skipped", { n: c2.skipped }) : "", c2.notRun ? t("{n} not run", { n: c2.notRun }) : ""].filter(Boolean).join(", "), failed: false };
 }
 
-// compiler/generated/trigscriptPy.ts
-var TRIGSCRIPT_PY = `"""
-[trigscript]
-ir : /work/files/trigscript.json
-
-TrigScript's programs: the euddraft plugin that lowers the compiler's IR \u2014 data, never
-code \u2014 into eudplib. The IR file is what the plugin's compiler wrote (docs/ir.md);
-this module is handed to the eudplib library plugin as a source with every build, so the
-two halves of the IR version are always the same build.
-
-A program is a coroutine the game runs every frame. Its body is lowered to straight-line
-eudplib triggers with jumps between labels: \`if\` / \`while\` / \`switch\` become conditional
-jumps, and \`sleep\` stores the label to resume at in a state variable, sets a frame counter,
-and leaves the frame. The frame's entry counts the wait down, then jumps to the stored
-label. A program runs for the players it is owned by, as a trigger would: one owner runs
-it as that player while that player is in the game; several owners, All Players or a force
-run it once each frame for every such player who is in the game, CurrentPlayer set, its
-variables and its state as 12-slot arrays indexed by the player.
-
-Text is written out in the IR: an action's \`text\` or \`wav\` is the string itself, which
-eudplib adds to the built map's string table, or a number when the script named an index
-of the map's own. The map the user edits never holds a program's strings.
-
-A read is a value of the game taken when the expression is evaluated. What a condition compares
-is read from the game's tables where the table is that value (a player's deaths, kills, ore, gas)
-and otherwise found by asking the condition itself \u2014 "at least 2^31? at least that plus 2^30? \u2026" \u2014
-so a read means what the condition means, for a force's minerals or the units at a location alike.
-Player facts are bytes of the player tables. Text with values in it is printed through eudplib's
-string buffer, for the player it is for and nobody else.
-
-A unit of the game is a pointer into the game's unit table \u2014 1700 slots of 336 bytes \u2014 with the slot's
-uniqueness byte kept beside it: the game gives a dead unit's slot to the next unit made, so a unit kept
-in a variable is checked before every use (a sprite, an order other than "die", the same uniqueness
-byte) and reads 0, and takes no write, once it is gone. A loop over units and a pick walk the whole
-table with conditions whose address is moved on a slot at a time, as eudplib's own EUDLoopUnit2 does;
-a dying unit is passed over. What a unit can be asked and told is what Magenta's probe maps saw
-working in Remastered: no position, cloak or speed writes. The game's tables (\`stats()\`) are plain
-cells at addresses the IR carries; a speed is four flingy records, a colour two bytes, a name a string.
-
-What the players do \u2014 keys, clicks, the mouse, what they type \u2014 happens on one computer, and two
-plugins the build adds beside this one bring it to all of them in step. chatEvent (before this
-plugin) finds the line the local player typed; this plugin matches it against the programs'
-patterns, there and then, into a number for the pattern and up to three values; MSQC (after this
-plugin) sends those, the keys and the clicks to every computer as the player they came from, and
-keeps each player's mouse in a location. They land in arrays registered by name \u2014 which is how the
-other two plugins' settings reach them \u2014 a cell per player, fresh every frame: an input reads 1 on
-the frame it arrives. The IR's \`input\` lists what is asked for; the editor wrote the settings from it.
-
-Numbers keep one contract with the simulator: 32 bits, a \`number\` signed and a \`u32\` not, wrapping at
-either end. + - * and the bitwise operators are the same bits whichever way they are read; what reads
-them one way or the other - a comparison, a division, a shift right, min and max, a printed number -
-says which in the IR (\`unsigned\`), so nothing here works a type out. Where the game takes nothing below
-zero the compiler has already written max(v, 0), and a store keeps stopping at the top of what it holds.
-In here a number known when the map is built is a Python int holding the 32 bits, 0 to 2^32 - 1.
-
-A text is kept one of two ways, a variable at a time (the IR says which). One that only ever holds texts written in
-the script is the text's id in the built map's string table: a number. One that is made while the map is played is
-three cells - where its bytes are (UTF-8, ended by a 0), the block of the heap it owns (0: none, the bytes are a
-string of the table) and its length in characters. A made text is written into one scratch buffer, measured, and
-copied into a block of just that size, whose first cell says which size; what holds the text owns the block, so
-assigning copies it, a value that was just made is moved, and whatever a variable held goes back to the heap once
-its new value is worked out. compiler/simulateIr.ts takes and gives blocks in the same order, so both run out at
-the same text. A made text in an action's field goes over a string the build keeps for that kind of field, on the
-computer of the player the action is for and nowhere else: the game reads such a string again whenever it draws.
-"""
-import json
-
-from eudplib import *
-from eudplib.core.mapdata.stringmap import ForceAddString
-from eudplib.memio.rwcommon import br1, br2, bw1
-
-IR_VERSION = 14
-FRAMES_PER_SECOND = 24
-# Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
-# tables are the ones Magenta's probes 5 and 8 read in the game.
-DEATHS_TABLE = 0x58A364
-KILLS_TABLE = 0x5878A4
-ORE_TABLE = 0x57F0F0
-GAS_TABLE = 0x57F120
-PLAYER_BYTES = {"slot": 0x57F1B4, "race": 0x57F1C0}
-# Per race (144 bytes apart: Zerg, Terran, Protoss), a dword per player, in half supplies.
-SUPPLY_TABLES = {"provided": 0x582144, "used": 0x582174, "max": 0x5821A4}
-# The unit table, and a unit's dwords the scans test (as EPD offsets from the unit's own).
-UNIT_TABLE = 0x59CCA8
-UNIT_SIZE = 336
-UNIT_SLOTS = 1700
-UNIT_END = UNIT_TABLE + UNIT_SIZE * UNIT_SLOTS
-OFF_SPRITE, OFF_POS, OFF_OWNER_ORDER, OFF_TYPE, OFF_UID = 0x0C // 4, 0x28 // 4, 0x4C // 4, 0x64 // 4, 0xA4 // 4
-# units.dat: max hit points (dword, 256 to a point), max shields (word), the group flags a trigger's
-# Men / Buildings / Factories go by (byte), the flingy a type moves as (byte).
-UNITS_MAX_HP = 0x662350
-UNITS_MAX_SHIELDS = 0x660E00
-UNITS_GROUP = 0x6637A0
-UNITS_FLINGY = 0x6644F8
-GROUP_BITS = {230: 0x08, 231: 0x10, 232: 0x20}
-# flingy.dat, by flingy id: movement control (byte), top speed (dword), acceleration (word), halt distance (dword).
-FLINGY_CONTROL, FLINGY_SPEED, FLINGY_ACCELERATION, FLINGY_HALT = 0x6C9858, 0x6C9EF8, 0x6C9C78, 0x6C9930
-MINIMAP_COLOR_OFFSET = 0x581DD6 - 0x581D76
-# The location table, and the one an order borrows for the length of one action (put back after).
-MRGN = 0x58DC60
-SCRATCH_LOCATION = 255
-UNIT_TIMERS = {"stim": "stimTimer", "ensnare": "ensnareTimer", "plague": "plagueTimer", "lockdown": "lockdownTimer", "maelstrom": "maelstromTimer", "irradiate": "irradiateTimer", "stasis": "stasisTimer"}
-STATUS_INVINCIBLE, STATUS_HALLUCINATION, STATUS_BURROWED, STATUS_CLOAKED = 0x04000000, 0x40000000, 0x00000010, 0x00000300
-COND_COMMAND, COND_BRING, COND_ACCUMULATE, COND_KILL, COND_OPPONENTS, COND_DEATHS = 2, 3, 4, 5, 14, 15
-CURRENT_PLAYER = 13
-# The state of a program whose body ended: nothing resumes it.
-DONE = 0xFFFFFFFF
-U32 = 0xFFFFFFFF
-SIGN = 0x80000000
-
-MINUS_SIGN = Db(b"-\\0\\0\\0")
-NO_SIGN = Db(b"\\0\\0\\0\\0")
-
-with open(settings["ir"], encoding="utf-8") as _f:
-    IR = json.load(_f)
-if IR.get("version") != IR_VERSION:
-    raise RuntimeError("trigscript: the IR is version %r; this plugin reads version %d" % (IR.get("version"), IR_VERSION))
-
-
-def where(node):
-    """" at main.ts:12:5" for a node with a position \u2014 what the editor parses back into a marker."""
-    at = node.get("at") if isinstance(node, dict) else None
-    if not at:
-        return ""
-    if at.get("file"):
-        return " at %s:%s:%s" % (at.get("file"), at.get("line"), at.get("column"))
-    return " at %s:%s" % (at.get("line"), at.get("column"))
-
-
-class Fail(RuntimeError):
-    pass
-
-
-class Leave(Exception):
-    """Raised through the lowering when a statement ends the straight line (break / continue / return)."""
-
-
-class Storage:
-    """A variable's cell: plain, or a 12-slot row of a per-player program."""
-
-    def __init__(self, decl, per_player, player_of):
-        self.decl = decl
-        self.bits = decl.get("bits")
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        self.store = EUDArray([0] * 12) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
-
-    def get(self):
-        return self.store[self.player_of()] if self.rowed else self.store
-
-    def set(self, value):
-        if self.bits:
-            value = saturate(value, self.bits)
-        if self.rowed:
-            self.store[self.player_of()] = value
-        else:
-            self.store << value
-
-
-class ArrayStorage:
-    """An array's cells: \`length\` of them, twelve rows of that in a per-player program, or - \`values\` - a list
-    the script computed when it was built, which is in the map as it loads and which nothing writes. An index
-    past either end (read from 0 up, so one below zero too) reads 0 and stores nothing."""
-
-    def __init__(self, decl, per_player, player_of):
-        self.decl = decl
-        self.length = int(decl["length"])
-        self.bits = decl.get("bits")
-        values = decl.get("values")
-        self.rowed = per_player and not decl.get("shared") and values is None
-        self.player_of = player_of
-        if decl.get("texts") is not None:
-            # A list of texts the script has: a cell is the text's id in the built map's table.
-            values = [text_id(t) for t in decl["texts"]]
-        self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (12 if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
-
-    def at(self, index):
-        """The cell's place among the store's: the player's row first."""
-        if not self.rowed:
-            return index
-        p = self.player_of()
-        row = p * self.length if isinstance(p, int) else f_mul(p, self.length)
-        return row + index
-
-    def get(self, index):
-        if isinstance(index, int):
-            return self.store[self.at(index)] if index < self.length else 0
-        out = fresh(0)
-        if EUDIf()(index <= self.length - 1):
-            out << self.store[self.at(index)]
-        EUDEndIf()
-        return out
-
-    def set(self, index, value):
-        if self.bits:
-            value = saturate(value, self.bits)
-        if isinstance(index, int):
-            if index < self.length:
-                self.store[self.at(index)] = value
-            return
-        if EUDIf()(index <= self.length - 1):
-            self.store[self.at(index)] = value
-        EUDEndIf()
-
-    def fill(self, value):
-        if self.length <= 16:
-            for i in range(self.length):
-                self.set(i, value)
-            return
-        v, i = as_var(value), fresh(0)
-        if EUDWhile()(i <= self.length - 1):
-            self.set(i, v)
-            i += 1
-        EUDEndWhile()
-
-
-class SliceStorage:
-    """A window on another array's cells - a row of a grid: cell i is cell \`offset + i\` of the array it is a window
-    on, \`offset\` a variable of the program. Past its own end it reads 0 and stores nothing, so a row never reaches
-    into the next; what it is a window on keeps its own ends (and its own width, and its row a player)."""
-
-    def __init__(self, decl, lowering):
-        self.decl = decl
-        self.length = int(decl["length"])
-        self.lowering = lowering
-
-    def of(self):
-        return self.lowering.array(self.decl["slice"]["of"], self.decl)
-
-    def offset(self):
-        return self.lowering.var(self.decl["slice"]["offset"], self.decl).get()
-
-    def get(self, index):
-        if isinstance(index, int):
-            return self.of().get(self.offset() + index) if index < self.length else 0
-        out = fresh(0)
-        if EUDIf()(index <= self.length - 1):
-            out << self.of().get(self.offset() + index)
-        EUDEndIf()
-        return out
-
-    def set(self, index, value):
-        if isinstance(index, int):
-            if index < self.length:
-                self.of().set(self.offset() + index, value)
-            return
-        if EUDIf()(index <= self.length - 1):
-            self.of().set(self.offset() + index, value)
-        EUDEndIf()
-
-    def fill(self, value):
-        v, i = as_var(value), fresh(0)
-        if EUDWhile()(i <= self.length - 1):
-            self.set(i, v)
-            i += 1
-        EUDEndWhile()
-
-
-# The heap the programs' growing arrays share. A block is a power of two of cells, four at least; one given back
-# waits in its size's list (its first cell links the next) for whoever wants that size next; new ground is taken
-# from the bottom up. Cell 0 is never handed out: 0 is "no block". compiler/simulateIr.ts counts the same way, so
-# both run out at the same push. (Recursion's stack is an array of its own, below: how deep a function may go is
-# then the same whatever the arrays hold.)
-HEAP_CELLS = min(1 << 20, max(1024, int(IR.get("heap", 16384))))  # the map's script settings, or the default
-HEAP_SMALLEST = 4
-HEAP_ROOMS = []
-while HEAP_SMALLEST << len(HEAP_ROOMS) <= HEAP_CELLS:
-    HEAP_ROOMS.append(HEAP_SMALLEST << len(HEAP_ROOMS))
-_HEAP = {}
-
-
-def heap():
-    """The heap's cells and its functions, made when the first growing array is met."""
-    if _HEAP:
-        return _HEAP
-    cells = EUDArray(HEAP_CELLS)
-    rooms = EUDArray(HEAP_ROOMS + [0xFFFFFFFF])  # initial: the sizes, never written
-    free = EUDArray(len(HEAP_ROOMS))  # initial: no block waits
-    top = EUDVariable(1)  # initial: the heap's own state, for the whole game
-    said = EUDVariable(0)  # initial: the heap's own state
-
-    @EUDFunc
-    def take(k):
-        """A block of size class k: its place among the cells, or 0 when there is none."""
-        at = EUDVariable()
-        at << free[k]
-        if EUDIf()(at >= 1):
-            free[k] = cells[at]
-            EUDReturn(at)
-        EUDEndIf()
-        end = top + rooms[k]
-        if EUDIf()(end <= HEAP_CELLS):
-            at << top
-            top << end
-            EUDReturn(at)
-        EUDEndIf()
-        EUDReturn(0)
-
-    @EUDFunc
-    def give(at, k):
-        cells[at] = free[k]
-        free[k] = at
-
-    @EUDFunc
-    def grow(ptr, length, room, k, need):
-        """Room for \`need\` cells: a larger block, the cells copied over, the old block given back. Returns the
-        handle as it is now and whether there is room; when the heap has no block left the handle is unchanged."""
-        if EUDIf()(need <= room):
-            EUDReturn(ptr, room, k, 1)
-        EUDEndIf()
-        nk = EUDVariable()
-        nk << 0
-        if EUDIf()(ptr >= 1):
-            nk << k + 1
-        EUDEndIf()
-        if EUDWhile()(rooms[nk] < need):
-            nk += 1
-        EUDEndWhile()
-        if EUDIf()(nk >= len(HEAP_ROOMS)):
-            EUDReturn(ptr, room, k, 0)
-        EUDEndIf()
-        block = take(nk)
-        if EUDIf()(block == 0):
-            EUDReturn(ptr, room, k, 0)
-        EUDEndIf()
-        if EUDIf()(ptr >= 1):
-            if EUDIf()(length >= 1):
-                # An EUDArray's own value is where it is, as an EPD already.
-                f_repmovsd_epd(cells + block, cells + ptr, length)
-            EUDEndIf()
-            give(ptr, k)
-        EUDEndIf()
-        EUDReturn(block, rooms[nk], nk, 1)
-
-    @EUDFunc
-    def push(ptr, length, room, k, value):
-        """One more cell at the end; the handle as it is afterwards. Nothing is pushed when the heap is full."""
-        ptr, room, k, ok = grow(ptr, length, room, k, length + 1)
-        if EUDIf()(ok >= 1):
-            cells[ptr + length] = value
-            length += 1
-        if EUDElse()():
-            if EUDIf()(said == 0):
-                said << 1
-                GetGlobalStringBuffer().print("\\x06TrigScript: out of memory - an array could not grow (the programs' arrays share %d cells)." % HEAP_CELLS)
-            EUDEndIf()
-        EUDEndIf()
-        EUDReturn(ptr, length, room, k)
-
-    _HEAP.update(cells=cells, rooms=rooms, take=take, give=give, grow=grow, push=push)
-    return _HEAP
-
-
-# The stack of the functions that call themselves. A function's variables are cells of the program, one of each, so
-# a call that may come back into the function it is in (the IR's \`saves\`) puts what that function holds here first
-# and takes it back after, with where the function returns to. One stack serves every program and every player:
-# such a function never sleeps, so the stack is empty whenever a frame ends. It is as many frames of the largest
-# frame as the map's script settings allow calls deep (the IR file's \`stack\`), and the depth is what is counted -
-# compiler/simulateIr.ts counts the same - so a program stops at the same call in both.
-STACK_DEPTH = min(1 << 16, max(16, int(IR.get("stack", 1024))))
-STACK_CELLS_MAX = 1 << 20
-HANDLE = ("ptr", "len", "room", "k")
-_STACK = {}
-
-
-def frame_cells(saves, kinds):
-    return 1 + 4 * len(saves.get("arrays", [])) + sum(3 if kinds.get(v) in ("unit", "text") else 1 for v in saves.get("vars", []))
-
-
-def largest_frame():
-    most = [0]
-
-    def walk(node, kinds):
-        if isinstance(node, list):
-            for x in node:
-                walk(x, kinds)
-        elif isinstance(node, dict):
-            if isinstance(node.get("saves"), dict):
-                most[0] = max(most[0], frame_cells(node["saves"], kinds))
-            for v in node.values():
-                if isinstance(v, (dict, list)):
-                    walk(v, kinds)
-
-    def kinds_of(node, into):
-        if isinstance(node, list):
-            for x in node:
-                kinds_of(x, into)
-        elif isinstance(node, dict):
-            if isinstance(node.get("id"), str) and node.get("kind") in ("number", "boolean", "unit", "text") and "shared" in node:
-                # A text kept as its id is one cell, as a number is; one that was made is three.
-                into[node["id"]] = "number" if node["kind"] == "text" and node.get("text") == "id" else node["kind"]
-            for v in node.values():
-                if isinstance(v, (dict, list)):
-                    kinds_of(v, into)
-        return into
-
-    for program in IR.get("programs", []):
-        walk(program.get("functions", []), kinds_of(program, {}))
-    return most[0]
-
-
-def stack():
-    """The stack's cells, where the next frame goes (an EPD, so a cell is one write) and how deep it is."""
-    if _STACK:
-        return _STACK
-    frame = largest_frame()
-    if frame * STACK_DEPTH > STACK_CELLS_MAX:
-        raise Fail("trigscript: the stack would be %d cells - %d calls deep, %d cells a call - and %d is the most: lower the recursion depth in the script's Settings, or keep fewer variables in the function that calls itself" % (frame * STACK_DEPTH, STACK_DEPTH, frame, STACK_CELLS_MAX))
-    cells = EUDArray(max(1, frame) * STACK_DEPTH)
-    base = cells  # an EUDArray's own value is where it is, as an EPD already
-    at = EUDVariable(base)  # initial: the stack's own state; it is back here whenever a frame ends
-    depth = EUDVariable(0)  # initial: the stack's own state; nothing is on it between frames
-    _STACK.update(cells=cells, base=base, at=at, depth=depth)
-    return _STACK
-
-
-class ListStorage:
-    """An array that grows: a handle - where its block is among the heap's cells (0: none yet), how many cells are
-    in use, how many the block has room for, and the block's size class - a cell each, or a row of twelve each in
-    a per-player program. Reads and stores are bounded by the cells in use; a store at exactly the length is a push."""
-
-    def __init__(self, decl, per_player, player_of):
-        self.decl = decl
-        self.bits = decl.get("bits")
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no block
-        self.handle = {name: make() for name in ("ptr", "len", "room", "k")}
-        self.heap = heap()
-
-    def field(self, name):
-        cell = self.handle[name]
-        return cell[self.player_of()] if self.rowed else cell
-
-    def put(self, name, value):
-        if self.rowed:
-            self.handle[name][self.player_of()] = value
-        else:
-            self.handle[name] << value
-
-    def length(self):
-        return self.field("len")
-
-    def get(self, index):
-        out = fresh(0)
-        if EUDIf()(as_var(index) < as_var(self.field("len"))):
-            out << self.heap["cells"][self.field("ptr") + index]
-        EUDEndIf()
-        return out
-
-    def push(self, value):
-        if self.bits:
-            value = saturate(value, self.bits)
-        ptr, length, room, k = self.heap["push"](self.field("ptr"), self.field("len"), self.field("room"), self.field("k"), value)
-        for name, v in (("ptr", ptr), ("len", length), ("room", room), ("k", k)):
-            self.put(name, v)
-
-    def set(self, index, value):
-        if self.bits:
-            value = saturate(value, self.bits)
-        i, v, n = as_var(index), fresh(value), as_var(self.field("len"))
-        if EUDIf()(i < n):
-            self.heap["cells"][self.field("ptr") + i] = v
-        if EUDElseIf()(i == n):
-            self.push(v)  # xs[xs.length] = v, as JavaScript has it
-        EUDEndIf()
-
-    def pop(self):
-        out = fresh(0)
-        n = fresh(self.field("len"))
-        if EUDIf()(n >= 1):
-            n -= 1
-            self.put("len", n)
-            out << self.heap["cells"][self.field("ptr") + n]
-        EUDEndIf()
-        return out
-
-    def set_length(self, value):
-        v = as_var(value)
-        if EUDIf()(v < as_var(self.field("len"))):
-            self.put("len", v)
-        EUDEndIf()
-
-    def declare(self, values):
-        """Declared (again): the block it held goes back, and it starts over with these values."""
-        ptr = fresh(self.field("ptr"))
-        if EUDIf()(ptr >= 1):
-            self.heap["give"](ptr, self.field("k"))
-        EUDEndIf()
-        for name in ("ptr", "len", "room", "k"):
-            self.put(name, 0)
-        for v in values:
-            self.push(v)
-
-    def declare_filled(self, value, count):
-        """The same with one value \`count\` times over: a loop, where a push a cell would be a push a cell in the map."""
-        if count <= 8:
-            self.declare([value] * count)
-            return
-        self.declare([])
-        v, i = as_var(value), fresh(0)
-        if EUDWhile()(i <= count - 1):
-            self.push(v)
-            i += 1
-        EUDEndWhile()
-
-    def fill(self, value):
-        v, i = as_var(value), fresh(0)
-        if EUDWhile()(i < as_var(self.field("len"))):
-            self.heap["cells"][self.field("ptr") + i] = v
-            i += 1
-        EUDEndWhile()
-
-
-class InnerListStorage(ListStorage):
-    """An array that grows inside another: its handle is cell \`index\` of four arrays the outer one keeps (where the
-    block is, how many cells are in use, its room, its size class), \`index\` a variable of the program. Everything
-    else is a growing array's, which only ever asks for its handle's fields and puts them back."""
-
-    def __init__(self, decl, lowering):
-        self.decl = decl
-        self.bits = decl.get("bits")
-        self.rowed = False
-        self.lowering = lowering
-        self.heap = heap()
-
-    def at(self):
-        return self.lowering.var(self.decl["through"]["index"], self.decl).get()
-
-    def field(self, name):
-        return self.lowering.array(self.decl["through"][name], self.decl).get(self.at())
-
-    def put(self, name, value):
-        self.lowering.array(self.decl["through"][name], self.decl).set(self.at(), value)
-
-
-# \u2500\u2500 texts \u2500\u2500
-TEXT_BYTES = 1023  # the most a made text holds; compiler/ir.ts has the same number
-TEXT_FIELD_BYTES = 255  # the room of a string kept for an action's field or a unit type's name
-UNIT_MAP_STRING = 0x660260  # units.dat: the id of the name a map gives a unit type, a word each
-_TEXT = {}
-_SLOTS = {}
-
-
-def texts():
-    """The texts' part of the run time, made when the first text that is made is met."""
-    if _TEXT:
-        return _TEXT
-    h = heap()
-    cells, rooms, take, give = h["cells"], h["rooms"], h["take"], h["give"]
-    # A text being made. It may run one part past its most before it is cut, and a part is at most that long again.
-    scratch = Db(TEXT_BYTES + 1 + TEXT_BYTES + 1 + 8)
-    empty = Db(4)
-    said_cut = EUDVariable(0)  # initial: said once a game
-    said_full = EUDVariable(0)  # initial: said once a game
-    said_field = EUDVariable(0)  # initial: said once a game
-
-    @EUDFunc
-    def count(addr):
-        """How many characters the text at addr is: every byte but those that continue a character (10xxxxxx)."""
-        n = EUDVariable()
-        n << 0
-        br1.seekoffset(addr)
-        if EUDInfLoop()():
-            b = br1.readbyte()
-            EUDBreakIf(b == 0)
-            if EUDIfNot()(b.ExactlyX(0x80, 0xC0)):
-                n += 1
-            EUDEndIf()
-        EUDEndInfLoop()
-        EUDReturn(n)
-
-    @EUDFunc
-    def append(pos, src):
-        """The text at src written at pos, ended by a 0; where that 0 is. A text of the table may be any length, so no
-        more of it than leaves the scratch whole: what is past a text's most is cut by make() anyway."""
-        br1.seekoffset(src)
-        bw1.seekoffset(pos)
-        if EUDWhile()(pos <= scratch + TEXT_BYTES + TEXT_BYTES):
-            b = br1.readbyte()
-            EUDBreakIf(b == 0)
-            bw1.writebyte(b)
-            pos += 1
-        EUDEndWhile()
-        bw1.writebyte(0)
-        EUDReturn(pos)
-
-    @EUDFunc
-    def make(end):
-        """The text in the scratch, which ends at \`end\`, into a block of its own: where it is, the block, its
-        length in characters. Past what a text holds it is cut, never inside a character."""
-        if EUDIf()(end >= scratch + TEXT_BYTES + 1):
-            end << scratch + TEXT_BYTES
-            if EUDWhile()(f_bread(end).ExactlyX(0x80, 0xC0)):
-                end -= 1
-            EUDEndWhile()
-            f_bwrite(end, 0)
-            if EUDIf()(said_cut == 0):
-                said_cut << 1
-                GetGlobalStringBuffer().print("\\x06TrigScript: a text was cut off - one that is made holds %d bytes." % TEXT_BYTES)
-            EUDEndIf()
-        EUDEndIf()
-        need = f_div(end - scratch, 4)[0] + 2
-        k = EUDVariable()
-        k << 0
-        if EUDWhile()(rooms[k] < need):
-            k += 1
-        EUDEndWhile()
-        block = take(k)
-        if EUDIf()(block == 0):
-            if EUDIf()(said_full == 0):
-                said_full << 1
-                GetGlobalStringBuffer().print("\\x06TrigScript: out of memory - a text could not be made (the programs' arrays and texts share %d cells)." % HEAP_CELLS)
-            EUDEndIf()
-            EUDReturn(empty, 0, 0)
-        EUDEndIf()
-        cells[block] = k
-        f_repmovsd_epd(cells + block + 1, EPD(scratch), need - 1)
-        addr = f_mul(cells + block + 1, 4) + 0x58A364
-        EUDReturn(addr, block, count(addr))
-
-    @EUDFunc
-    def copy(addr, block, length):
-        """A text as something to keep: itself when it owns no block, else a block of the same size with the same cells."""
-        if EUDIf()(block == 0):
-            EUDReturn(addr, 0, length)
-        EUDEndIf()
-        k = cells[block]
-        mine = take(k)
-        if EUDIf()(mine == 0):
-            if EUDIf()(said_full == 0):
-                said_full << 1
-                GetGlobalStringBuffer().print("\\x06TrigScript: out of memory - a text could not be copied (the programs' arrays and texts share %d cells)." % HEAP_CELLS)
-            EUDEndIf()
-            EUDReturn(empty, 0, 0)
-        EUDEndIf()
-        f_repmovsd_epd(cells + mine, cells + block, rooms[k])
-        EUDReturn(f_mul(cells + mine + 1, 4) + 0x58A364, mine, length)
-
-    @EUDFunc
-    def release(block):
-        if EUDIf()(block >= 1):
-            give(block, cells[block])
-        EUDEndIf()
-
-    @EUDFunc
-    def skip(addr, n):
-        """Where character n of the text at addr starts; its end when it has fewer."""
-        br1.seekoffset(addr)
-        if EUDInfLoop()():
-            b = br1.readbyte()
-            EUDBreakIf(b == 0)
-            if EUDIfNot()(b.ExactlyX(0x80, 0xC0)):
-                EUDBreakIf(n == 0)
-                n -= 1
-            EUDEndIf()
-            addr += 1
-        EUDEndInfLoop()
-        EUDReturn(addr)
-
-    @EUDFunc
-    def size(addr):
-        """The bytes of the character that starts at addr; 0 at the text's end."""
-        b = f_bread(addr)
-        n = EUDVariable()
-        n << 1
-        if EUDIf()(b == 0):
-            n << 0
-        if EUDElseIf()(b >= 0xF0):
-            n << 4
-        if EUDElseIf()(b >= 0xE0):
-            n << 3
-        if EUDElseIf()(b >= 0xC0):
-            n << 2
-        EUDEndIf()
-        EUDReturn(n)
-
-    @EUDFunc
-    def slice_(addr, start, end):
-        """Characters start \u2026 end - 1 of the text at addr, made."""
-        a = skip(addr, start)
-        z = EUDVariable()
-        z << a
-        if EUDIf()(end >= start + 1):
-            z << skip(a, end - start)
-        EUDEndIf()
-        # A text of the table may be longer than one that is made: no more of it than the scratch holds, and make() cuts.
-        n = z - a
-        if EUDIf()(n >= TEXT_BYTES + 2):
-            n << TEXT_BYTES + 1
-        EUDEndIf()
-        f_memcpy(scratch, a, n)
-        f_bwrite(scratch + n, 0)
-        EUDReturn(*make(scratch + n))
-
-    @EUDFunc
-    def pad(addr, length, width, fill, at_start):
-        """The text with \`fill\` over and over before or after it until it is \`width\` characters; as it is when it is that long, or \`fill\` is empty."""
-        pos = EUDVariable()
-        pos << scratch
-        need = EUDVariable()
-        need << 0
-        if EUDIf()([width >= length + 1, width <= 0x7FFFFFFF, f_bread(fill) >= 1]):
-            need << width - length
-        EUDEndIf()
-        if EUDIf()(at_start == 0):
-            pos << append(pos, addr)
-        EUDEndIf()
-        src = EUDVariable()
-        src << fill
-        if EUDWhile()([need >= 1, pos <= scratch + TEXT_BYTES]):
-            n = size(src)
-            if EUDIf()(n == 0):
-                src << fill
-                n << size(src)
-            EUDEndIf()
-            f_memcpy(pos, src, n)
-            pos += n
-            src += n
-            need -= 1
-        EUDEndWhile()
-        f_bwrite(pos, 0)
-        if EUDIf()([at_start >= 1, pos <= scratch + TEXT_BYTES]):
-            pos << append(pos, addr)
-        EUDEndIf()
-        EUDReturn(*make(pos))
-
-    @EUDFunc
-    def repeat(addr, times):
-        pos = EUDVariable()
-        pos << scratch
-        f_bwrite(pos, 0)
-        if EUDIf()([times <= 0x7FFFFFFF, f_bread(addr) >= 1]):
-            if EUDWhile()([times >= 1, pos <= scratch + TEXT_BYTES]):
-                pos << append(pos, addr)
-                times -= 1
-            EUDEndWhile()
-        EUDEndIf()
-        EUDReturn(*make(pos))
-
-    @EUDFunc
-    def starts(addr, find):
-        """Whether the text at addr starts with the one at find."""
-        br1.seekoffset(addr)
-        br2.seekoffset(find)
-        if EUDInfLoop()():
-            want = br2.readbyte()
-            if EUDIf()(want == 0):
-                EUDReturn(1)
-            EUDEndIf()
-            EUDBreakIfNot(br1.readbyte() == want)
-        EUDEndInfLoop()
-        EUDReturn(0)
-
-    @EUDFunc
-    def find_from(addr, find, start):
-        """The place, in characters, of the first match at or after character \`start\`; 0xFFFFFFFF when there is none."""
-        if EUDIf()(start >= count(addr) + 1):
-            EUDReturn(0xFFFFFFFF)
-        EUDEndIf()
-        at = skip(addr, start)
-        place = EUDVariable()
-        place << start
-        if EUDInfLoop()():
-            if EUDIf()(starts(at, find) >= 1):
-                EUDReturn(place)
-            EUDEndIf()
-            n = size(at)
-            EUDBreakIf(n == 0)
-            at += n
-            place += 1
-        EUDEndInfLoop()
-        EUDReturn(0xFFFFFFFF)
-
-    @EUDFunc
-    def ends(addr, find):
-        a, b = f_strlen(addr), f_strlen(find)
-        if EUDIf()(b >= a + 1):
-            EUDReturn(0)
-        EUDEndIf()
-        if EUDIf()(f_strcmp(addr + (a - b), find) == 0):
-            EUDReturn(1)
-        EUDEndIf()
-        EUDReturn(0)
-
-    @EUDFunc
-    def code(addr, index):
-        """The number of character \`index\`; 0xFFFFFFFF past either end."""
-        if EUDIf()(index >= 0x80000000):
-            EUDReturn(0xFFFFFFFF)
-        EUDEndIf()
-        at = skip(addr, index)
-        n = size(at)
-        if EUDIf()(n == 0):
-            EUDReturn(0xFFFFFFFF)
-        EUDEndIf()
-        br1.seekoffset(at)
-        v = EUDVariable()
-        v << br1.readbyte()
-        if EUDIf()(n == 2):
-            v << (v & 0x1F)
-        if EUDElseIf()(n == 3):
-            v << (v & 0x0F)
-        if EUDElseIf()(n == 4):
-            v << (v & 0x07)
-        EUDEndIf()
-        if EUDWhile()(n >= 2):
-            v << f_mul(v, 64) + (br1.readbyte() & 0x3F)
-            n -= 1
-        EUDEndWhile()
-        EUDReturn(v)
-
-    @EUDFunc
-    def show(dst, src):
-        """At most TEXT_FIELD_BYTES bytes of the text at src over the string at dst, never half a character."""
-        used = EUDVariable()
-        used << 0
-        if EUDInfLoop()():
-            n = size(src)
-            EUDBreakIf(n == 0)
-            if EUDIf()(used + n >= TEXT_FIELD_BYTES + 1):
-                if EUDIf()(said_field == 0):
-                    said_field << 1
-                    GetGlobalStringBuffer().print("\\x06TrigScript: a text was cut off - an action's text and a unit's name show %d bytes of one that is made." % TEXT_FIELD_BYTES)
-                EUDEndIf()
-                EUDBreak()
-            EUDEndIf()
-            f_memcpy(dst + used, src, n)
-            used += n
-            src += n
-        EUDEndInfLoop()
-        f_bwrite(dst + used, 0)
-
-    @EUDFunc
-    def address(id_):
-        """Where the text of the table with this id is; an empty one for id 0."""
-        if EUDIf()(id_ == 0):
-            EUDReturn(empty)
-        EUDEndIf()
-        EUDReturn(GetMapStringAddr(id_))
-
-    _TEXT.update(scratch=scratch, empty=empty, append=append, count=count, make=make, copy=copy, release=release, slice=slice_, pad=pad, repeat=repeat,
-                 starts=starts, ends=ends, find=find_from, code=code, show=show, size=size, address=address)
-    return _TEXT
-
-
-def slot(kind):
-    """The string of the built map's table kept for one kind of field, made the first time one is asked for: its
-    room in bytes that nothing else shares, which is what ForceAddString is for."""
-    if kind not in _SLOTS:
-        text = "(TrigScript: %s)" % kind
-        _SLOTS[kind] = ForceAddString(text + " " * (TEXT_FIELD_BYTES - len(text)))
-    return _SLOTS[kind]
-
-
-# The actions whose text the game shows from a string it reads again whenever it draws (played 2026-09-19), by the
-# kind of field: a player has one of each at a time, so one string a kind is enough.
-SLOT_OF_ACTION = {12: "objectives", 7: "transmission"}
-for _t in (17, 18, 19, 20, 21, 33, 34, 35, 36, 37, 40):
-    SLOT_OF_ACTION[_t] = "leaderboard"
-
-
-def text_id(text):
-    """The id of a text written in the script; 0 for the empty one, which the table does not hold."""
-    return EncodeString(text) if text else 0
-
-
-class TextVal:
-    """A text as the lowering holds it: where it is, the block it owns (the int 0: none), and its length in
-    characters - an int, a variable, or None when nobody has counted yet. \`taken\`: the block is the value's own, so
-    what receives the value keeps the block or gives it back; a variable's is only looked at."""
-
-    def __init__(self, addr, block, length, taken):
-        self.addr, self.block, self._length, self.taken = addr, block, length, taken
-
-    def length(self):
-        if self._length is None:
-            self._length = texts()["count"](self.addr)
-        return self._length
-
-
-class TextStorage:
-    """A text variable that is made: three cells, or three rows of twelve in a per-player program."""
-
-    def __init__(self, decl, per_player, player_of):
-        self.decl = decl
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no text yet, and no block
-        self.addr, self.block, self.len = make(), make(), make()
-
-    def cell(self, cell):
-        return cell[self.player_of()] if self.rowed else cell
-
-    def get(self):
-        # A variable that was never given a text is an empty one: its address is 0 until then.
-        addr = fresh(self.cell(self.addr))
-        if EUDIf()(addr == 0):
-            addr << texts()["empty"]
-        EUDEndIf()
-        return TextVal(addr, self.cell(self.block), self.cell(self.len), False)
-
-    def write(self, addr, block, length):
-        for cell, value in ((self.addr, addr), (self.block, block), (self.len, length)):
-            if self.rowed:
-                cell[self.player_of()] = value
-            else:
-                cell << value
-
-    def take_out(self):
-        """The text, and its block with it: the variable holds no block from here on."""
-        v = self.get()
-        out = TextVal(v.addr, fresh(v.block), fresh(v.length()), True)
-        self.write(out.addr, 0, out.length())
-        return out
-
-
-class UnitRef:
-    """A unit of the game as the lowering holds it: the pointer, its EPD, and the slot's uniqueness byte
-    (as it sits in its dword, masked 0xFF00). \`uid\` None is the unit of a loop's turn, there by
-    construction; a pointer that is the int 0 is no unit at all."""
-
-    def __init__(self, ptr, epd, uid=None):
-        self.ptr, self.epd, self.uid = ptr, epd, uid
-
-    @property
-    def none(self):
-        return isinstance(self.ptr, int) and self.ptr == 0
-
-
-NO_UNIT = UnitRef(0, 0, 0)
-
-
-class UnitStorage:
-    """A unit variable: three cells, or three 12-slot rows of a per-player program."""
-
-    def __init__(self, decl, per_player, player_of):
-        self.decl = decl
-        self.rowed = per_player
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
-        self.ptr, self.epd, self.uid = make(), make(), make()
-
-    def get(self):
-        if self.rowed:
-            p = self.player_of()
-            return UnitRef(self.ptr[p], self.epd[p], self.uid[p])
-        return UnitRef(self.ptr, self.epd, self.uid)
-
-    def set(self, ref):
-        uid = ref.uid
-        if uid is None:
-            # The unit of a loop's turn is there now: this is when its slot's uniqueness byte is taken.
-            uid = f_maskread_epd(ref.epd + OFF_UID, 0xFF00)
-        for cell, value in ((self.ptr, ref.ptr), (self.epd, ref.epd), (self.uid, uid)):
-            if self.rowed:
-                cell[self.player_of()] = value
-            else:
-                cell << value
-
-
-class LoopUnit:
-    """The variable of a loop over units: the scan's own pointer, never kept past the loop."""
-
-    def __init__(self, ref):
-        self.ref = ref
-
-    def get(self):
-        return self.ref
-
-    def set(self, ref):
-        raise Fail("trigscript: the unit of a loop's turn cannot be assigned")
-
-
-def saturate(value, bits):
-    top = (1 << bits) - 1
-    if isinstance(value, int):
-        return min(value, top)
-    v = EUDVariable()
-    v << value
-    if EUDIf()(v >= top + 1):
-        v << top
-    EUDEndIf()
-    return v
-
-
-def as_var(value):
-    if isinstance(value, int):
-        return EUDVariable(value & U32)  # initial: a constant, never written
-    return value
-
-
-def fresh(value=0):
-    """A temporary that starts from \`value\` every time the code runs. \`EUDVariable(n)\` is not
-    that: n is the cell's value when the map loads, so a temporary built that way and then
-    written keeps what the last run left in it \u2014 \`ticks + 1\` went 1, 2, 4, 8 (found in the
-    first played probe, 2026-09-18). Anything the lowering writes to starts here."""
-    v = EUDVariable()
-    v << value
-    return v
-
-
-class Lowering:
-    def __init__(self, program):
-        self.p = program
-        self.per_player = bool(program.get("perPlayer"))
-        self.owner = int(program.get("owner", 0))
-        self.slots = owner_slots(program)
-        self.player = None
-        self.vars = {}
-        self.arrays = {a["id"]: SliceStorage(a, self) if a.get("slice") else InnerListStorage(a, self) if a.get("through") else (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
-        self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
-        self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
-        self.resumes = []  # (index, Forward) for every sleep
-        self.frame_end = None
-        self.latches = {}
-        # The functions that are called, by id, and each one's EUDFunc once something has called it.
-        self.functions = {f["id"]: f for f in program.get("functions", [])}
-        self.made = {}
-        self.in_function = 0
-        # The function being lowered, when it is one that calls itself: whose return address a frame keeps.
-        self.within = []
-
-    # \u2500\u2500 storage \u2500\u2500
-    def player_of(self):
-        if self.player is None:
-            raise Fail("trigscript: a per-player variable outside the player loop")
-        return self.player
-
-    def declare(self, decl):
-        if decl.get("kind") == "unit":
-            s = UnitStorage(decl, self.per_player, self.player_of)
-        elif decl.get("kind") == "text" and decl.get("text") != "id":
-            s = TextStorage(decl, self.per_player, self.player_of)
-        else:
-            s = Storage(decl, self.per_player, self.player_of)
-        self.vars[decl["id"]] = s
-        return s
-
-    def array(self, id_, node=None):
-        a = self.arrays.get(id_)
-        if a is None:
-            raise Fail("trigscript: unknown array %r%s" % (id_, where(node)))
-        return a
-
-    def var(self, id_, node=None):
-        s = self.vars.get(id_)
-        if s is None:
-            raise Fail("trigscript: unknown variable %r%s" % (id_, where(node)))
-        return s
-
-    def get_state(self):
-        return self.state[self.player] if self.per_player else self.state
-
-    def set_state(self, value):
-        if self.per_player:
-            self.state[self.player] = value
-        else:
-            self.state << value
-
-    def get_wait(self):
-        return self.wait[self.player] if self.per_player else self.wait
-
-    def set_wait(self, value):
-        if self.per_player:
-            self.wait[self.player] = value
-        else:
-            self.wait << value
-
-    # \u2500\u2500 numbers: an int (the 32 bits, 0 \u2026 2^32 - 1) or an EUDVariable \u2500\u2500
-    def num(self, e):
-        k = e["kind"]
-        if k in ("textLength", "textIndexOf", "textCode"):
-            return self.text_number(e)
-        if k == "input":
-            return INPUT.read(e["input"], self, e)
-        if k == "const":
-            return int(e["value"]) & U32
-        if k == "var":
-            return self.var(e["id"], e).get()
-        if k == "element":
-            return self.array(e["array"], e).get(self.num(e["index"]))
-        if k == "length":
-            a = self.array(e["array"], e)
-            return a.length() if isinstance(a, ListStorage) else a.length
-        if k == "pop":
-            return self.array(e["array"], e).pop()
-        if k == "cast":
-            return self.num(e["expr"])
-        if k == "unary":
-            x = self.num(e["expr"])
-            return (-x) & U32 if isinstance(x, int) else 0 - x
-        if k == "binary":
-            return self.binary(e)
-        if k == "read":
-            return self.read(e)
-        if k == "randomInt":
-            # 0 \u2026 n - 1; an n of 0 gives 0, as a 0 divisor does.
-            n = self.num(e["bound"])
-            if isinstance(n, int):
-                if n <= 1:
-                    return 0
-                return f_div(f_dwrand(), n)[1]
-            out = fresh(0)
-            if EUDIf()(n >= 1):
-                out << f_div(f_dwrand(), n)[1]
-            EUDEndIf()
-            return out
-        if k == "unitField":
-            return self.unit_field(e)
-        if k == "unitPart":
-            return self.unit_part(e)
-        if k == "tableRead":
-            return self.table_read(e["cell"], e)
-        if k == "ternary":
-            t = EUDVariable()
-            if EUDIf()(self.cond(e["cond"])):
-                t << self.num(e["whenTrue"])
-            if EUDElse()():
-                t << self.num(e["whenFalse"])
-            EUDEndIf()
-            return t
-        if k == "intrinsic" and e["name"] == "abs":
-            x = self.num(e["args"][0])
-            if isinstance(x, int):
-                return abs(signed(x)) & U32
-            t = fresh(x)
-            if EUDIf()(t >= SIGN):
-                t << 0 - t
-            EUDEndIf()
-            return t
-        if k == "intrinsic":
-            a, b = [self.num(x) for x in e["args"]]
-            name = e["name"]
-            unsigned = bool(e.get("unsigned"))
-            if isinstance(a, int) and isinstance(b, int):
-                key = (lambda v: v) if unsigned else signed
-                return min(a, b, key=key) if name == "min" else max(a, b, key=key)
-            t = EUDVariable()
-            if EUDIf()(self.ordered(a, "<=" if name == "min" else ">=", b, unsigned)):
-                t << a
-            if EUDElse()():
-                t << b
-            EUDEndIf()
-            return t
-        if k == "call":
-            return self.call(e["call"])
-        raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))
-
-    def binary(self, e):
-        a, b = self.num(e["left"]), self.num(e["right"])
-        op = e["op"]
-        if op in BITWISE:
-            return self.bitwise(op, a, b)
-        both = isinstance(a, int) and isinstance(b, int)
-        if op == "+":
-            return (a + b) & U32 if both else a + b
-        if op == "-":
-            return (a - b) & U32 if both else a - b
-        if op == "*":
-            return (a * b) & U32 if both else f_mul(as_var(a), as_var(b))
-        # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
-        unsigned = bool(e.get("unsigned"))
-        pick = (lambda q, r: q) if op == "/" else (lambda q, r: r)
-        if isinstance(b, int):
-            if b == 0:
-                raise Fail("trigscript: division by zero%s" % where(e))
-            if both:
-                if unsigned:
-                    return pick(a // b, a % b)
-                x, y = signed(a), signed(b)
-                q = abs(x) // abs(y) * (-1 if (x < 0) != (y < 0) else 1)
-                return pick(q, x - q * y) & U32
-            return pick(*(f_div(a, b) if unsigned else f_div_towards_zero(fresh(a), signed(b))))
-        out = fresh(0)
-        if EUDIf()(b >= 1):
-            q, r = f_div(as_var(a), b) if unsigned else f_div_towards_zero(fresh(a), fresh(b))
-            out << pick(q, r)
-        EUDEndIf()
-        return out
-
-    def ordered(self, a, op, b, unsigned):
-        """\`a op b\` as one condition, the two read as u32s (\`unsigned\` true), as signed numbers (false), or one of
-        each ("left" / "right" names the u32) - exactly: a number below zero is smaller than any u32. At least one
-        side is a variable. A signed order is the unsigned one with the top bit of both sides flipped."""
-        if unsigned in ("left", "right"):
-            # s is the signed side, u the u32, and the comparison is turned to read s op u.
-            s_, u_ = (b, a) if unsigned == "left" else (a, b)
-            if unsigned == "left":
-                op = FLIPPED[op]
-            if isinstance(s_, int):
-                if s_ >= SIGN:
-                    return always(op in ("<", "<=", "!="))
-                return self.ordered(s_, op, u_, True)
-            sv = as_var(s_)
-            if op in ("<", "<=", "!="):
-                return EUDOr(sv >= SIGN, relation(sv, op, u_))
-            return EUDAnd(sv <= SIGN - 1, relation(sv, op, u_))
-        if isinstance(a, int):
-            a, b, op = b, a, FLIPPED[op]
-        if unsigned or op in ("==", "!="):
-            return relation(as_var(a), op, b)
-        return relation(a + SIGN, op, (b + SIGN) & U32 if isinstance(b, int) else b + SIGN)
-
-    @staticmethod
-    def bitwise(op, a, b):
-        """& | ^ << >> >>> over 32 bits. \`>>\` keeps the sign of what it shifts and \`>>>\` does not; a shift by 32 or
-        more leaves nothing but that sign."""
-        if op in ("<<", ">>", ">>>"):
-            if isinstance(a, int) and isinstance(b, int):
-                if op == "<<":
-                    return 0 if b >= 32 else (a << b) & U32
-                if op == ">>>":
-                    return 0 if b >= 32 else a >> b
-                return (signed(a) >> min(b, 31)) & U32
-            if isinstance(b, int) and b == 0:
-                return a
-            if isinstance(b, int) and b >= 32 and op != ">>":
-                return 0
-            if op == "<<":
-                return f_bitlshift(fresh(a), b)
-            if op == ">>>":
-                return f_bitrshift(fresh(a), b)
-            # The sign kept: a number below zero is shifted as its complement, which has zeros where it has ones.
-            x, below = fresh(a), fresh(0)
-            if EUDIf()(x >= SIGN):
-                below << 1
-                x << ~x
-            EUDEndIf()
-            r = fresh(f_bitrshift(x, b)) if not (isinstance(b, int) and b >= 32) else fresh(0)
-            if EUDIf()(below >= 1):
-                r << ~r
-            EUDEndIf()
-            return r
-        if isinstance(a, int) and isinstance(b, int):
-            return {"&": a & b, "|": a | b, "^": a ^ b}[op]
-        # Copies: eudplib computes in place into an operand nothing else refers to, and ours may be a variable's own cell.
-        x, y = fresh(a), fresh(b)
-        return x & y if op == "&" else x | y if op == "|" else x ^ y
-
-    # \u2500\u2500 reads: a value of the game \u2500\u2500
-    def current(self):
-        """The player the program is running as: a slot, or the player loop's variable."""
-        return self.player if self.per_player else self.slots[0]
-
-    def one_player(self, p, node):
-        if p == CURRENT_PLAYER:
-            return self.current()
-        if 0 <= p < 12:
-            return p
-        raise Fail("trigscript: a read takes one player%s" % where(node))
-
-    def read(self, e):
-        r = e["read"]
-        source = r.get("source")
-        if source == "condition":
-            return self.read_condition(r["record"], e)
-        if source == "player" and r.get("fact") == "left":
-            return self.read_left(r, e)
-        if source == "player":
-            base = PLAYER_BYTES.get(r.get("fact"))
-            if base is None:
-                raise Fail("trigscript: unknown player fact %r%s" % (r.get("fact"), where(e)))
-            value = f_bread(base + self.one_player(r["player"], e))
-            if r.get("fact") == "slot":
-                # A computer of a Use Map Settings game keeps the map's own number, 5; a melee computer is 1
-                # (the slice 2 probe read 5 for one). Both are "a computer": one number for the script.
-                kind = fresh(value)
-                if EUDIf()(kind == 5):
-                    kind << 1
-                EUDEndIf()
-                return kind
-            return value
-        if source == "supply":
-            return self.read_supply(r, e)
-        raise Fail("trigscript: unknown read %r%s" % (source, where(e)))
-
-    def read_left(self, r, e):
-        """1 once a player who was in the map's settings as a human or a computer is gone. Asked the way
-        eudplib's f_playerexist asks (the player's trigger list), which the player loop already relies on.
-        The byte table at 0x581D62 read 0 for players who were there, as it should, but nobody has seen it
-        turn 1 in a game \u2014 a computer never leaves \u2014 so it is not what this rests on."""
-        p = self.one_player(r["player"], e)
-        if isinstance(p, int) and (p >= 8 or GetPlayerInfo(p).typestr not in ("Human", "Computer")):
-            return 0
-        gone = fresh(1)
-        if EUDIf()(f_playerexist(p)):
-            gone << 0
-        EUDEndIf()
-        return gone
-
-    def read_supply(self, r, e):
-        base = SUPPLY_TABLES.get(r.get("of"))
-        if base is None:
-            raise Fail("trigscript: unknown supply %r%s" % (r.get("of"), where(e)))
-        p = self.one_player(r["player"], e)
-        half = fresh(0)
-        if r.get("race") is None:
-            # The race the player plays; a slot with none (neutral, empty) has no supply.
-            race = f_bread(PLAYER_BYTES["race"] + p)
-            if EUDIf()(race <= 2):
-                half << f_dwread_epd(EPD(base) + race * 36 + p)
-            EUDEndIf()
-        else:
-            half << f_dwread_epd(EPD(base) + int(r["race"]) * 36 + p)
-        # As the top bar shows it: half a supply in use counts as one.
-        if r["of"] == "used":
-            half += 1
-        return half // 2
-
-    def read_condition(self, rec, e):
-        t, player, unit = rec["type"], rec["player"], rec["unitId"]
-        one = player == CURRENT_PLAYER or not 12 <= player <= 26  # not a group; beyond 26 is an EUD offset, read as it stands
-        table = None
-        if one and t in (COND_DEATHS, COND_KILL) and not 229 <= unit <= 232:
-            table = (DEATHS_TABLE if t == COND_DEATHS else KILLS_TABLE, unit * 12)
-        elif one and t == COND_ACCUMULATE and rec["resource"] in (0, 1):
-            table = (ORE_TABLE if rec["resource"] == 0 else GAS_TABLE, 0)
-        if table is not None:
-            p = self.current() if player == CURRENT_PLAYER else player
-            return f_dwread_epd(EPD(table[0]) + table[1] + p)
-        # No table holds it (a group's sum, units counted at a location, a score, a clock): ask the
-        # condition, a bit at a time from the top. A unit count stays under 2^12, a number of players under 2^4.
-        bits = 12 if t in (COND_BRING, COND_COMMAND) else 4 if t == COND_OPPONENTS else 32
-        found = fresh(0)
-        for bit in reversed(range(bits)):
-            probe = found + (1 << bit)
-            if EUDIf()(Condition(rec["location"], player, probe, unit, 0, t, rec["resource"], rec["flags"], eudx=rec.get("mask", 0) or 0)):
-                found << probe
-            EUDEndIf()
-        return found
-
-    # \u2500\u2500 booleans: an eudplib condition \u2500\u2500
-    def cond(self, e):
-        k = e["kind"]
-        if k == "const":
-            return always(e["value"])
-        if k == "cond":
-            return condition(e["record"])
-        if k == "var":
-            return as_var(self.var(e["id"], e).get()) >= 1
-        if k == "element":
-            return as_var(self.array(e["array"], e).get(self.num(e["index"]))) >= 1
-        if k == "pop":
-            return as_var(self.array(e["array"], e).pop()) >= 1
-        if k == "test":
-            return as_var(self.num(e["expr"])) >= 1
-        if k == "compare":
-            a, b = self.num(e["left"]), self.num(e["right"])
-            op, unsigned = e["op"], e.get("unsigned", False)
-            if isinstance(a, int) and isinstance(b, int):
-                x = a if unsigned in (True, "left") else signed(a)
-                y = b if unsigned in (True, "right") else signed(b)
-                return always(compare(x, op, y))
-            # One comparison, built once: a comparison between variables writes into its own
-            # condition, and one that is built and dropped is an orphan eudplib refuses.
-            return self.ordered(a, op, b, unsigned)
-        if k == "and":
-            return EUDAnd(*[self.cond(c) for c in e["items"]])
-        if k == "or":
-            return EUDOr(*[self.cond(c) for c in e["items"]])
-        if k == "not":
-            return EUDNot(self.cond(e["expr"]))
-        if k == "random":
-            return (f_rand() & 1) >= 1
-        if k in ("unitAlive", "unitFlag", "unitSame"):
-            return as_var(self.truth(e)) >= 1
-        if k == "edge":
-            return self.edge(e)
-        if k == "ternary":
-            t = EUDVariable()
-            if EUDIf()(self.cond(e["cond"])):
-                t << self.truth(e["whenTrue"])
-            if EUDElse()():
-                t << self.truth(e["whenFalse"])
-            EUDEndIf()
-            return t >= 1
-        if k == "call":
-            return as_var(self.call(e["call"])) >= 1
-        if k in ("textCompare", "textTest"):
-            return as_var(self.text_truth(e)) >= 1
-        raise Fail("trigscript: unknown condition %r%s" % (k, where(e)))
-
-    def truth(self, e):
-        """A boolean expression as 0 / 1."""
-        if e["kind"] == "const":
-            return 1 if e["value"] else 0
-        if e["kind"] == "var":
-            return self.var(e["id"], e).get()
-        if e["kind"] == "element":
-            return self.array(e["array"], e).get(self.num(e["index"]))
-        if e["kind"] == "pop":
-            return self.array(e["array"], e).pop()
-        if e["kind"] == "unitAlive":
-            ref = self.unit(e["unit"])
-            t = fresh(0)
-            if not ref.none:
-                self.when_alive(ref, lambda: t << 1)
-            return t
-        if e["kind"] == "unitFlag":
-            return self.unit_flag(e)
-        if e["kind"] == "unitSame":
-            a, b = self.unit(e["left"]), self.unit(e["right"])
-            t = fresh(0)
-            if not a.none and not b.none:
-                ap, bp = as_var(a.ptr), as_var(b.ptr)
-                if EUDIf()([ap >= 1, ap == bp]):
-                    t << 1
-                EUDEndIf()
-            return t
-        t = fresh(0)
-        if EUDIf()(self.cond(e)):
-            t << 1
-        EUDEndIf()
-        return t
-
-    def edge(self, e):
-        """rose(c): true on the frame c becomes true; once(c): true the first time it holds."""
-        key = id(e)
-        if key not in self.latches:
-            self.latches[key] = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: the latch
-        latch = self.latches[key]
-
-        def get():
-            return latch[self.player] if self.per_player else latch
-
-        def put(v):
-            if self.per_player:
-                latch[self.player] = v
-            else:
-                latch << v
-
-        fired = fresh(0)
-        held = self.truth(e["cond"])
-        if EUDIf()(as_var(held) >= 1):
-            if EUDIf()(as_var(get()) == 0):
-                fired << 1
-                put(1)
-            EUDEndIf()
-        if EUDElse()():
-            if e["edge"] == "rose":
-                put(0)
-        EUDEndIf()
-        return fired >= 1
-
-    # \u2500\u2500 units: a pointer into the game's unit table, checked before use \u2500\u2500
-    def unit(self, e):
-        k = e["kind"]
-        if k == "unitNull":
-            return NO_UNIT
-        if k == "unitVar":
-            return self.var(e["id"], e).get()
-        if k == "pick":
-            return self.pick(e)
-        if k == "unitAt":
-            # A unit kept as three numbers of the program (a cell each of an array of units): re-checked like any kept unit.
-            ptr = self.num(e["ptr"])
-            if isinstance(ptr, int) and ptr == 0:
-                return NO_UNIT
-            return UnitRef(fresh(ptr), fresh(self.num(e["epd"])), fresh(self.num(e["uid"])))
-        if k == "call":
-            return self.call(e["call"])
-        raise Fail("trigscript: unknown unit expression %r%s" % (k, where(e)))
-
-    def unit_part(self, e):
-        """One of the three numbers a unit is kept as. The unit of a loop's turn has no uniqueness byte taken yet: it is read here."""
-        ref = self.unit(e["unit"])
-        if ref.none:
-            return 0
-        part = e["part"]
-        if part == "ptr":
-            return ref.ptr
-        if part == "epd":
-            return ref.epd
-        return f_maskread_epd(ref.epd + OFF_UID, 0xFF00) if ref.uid is None else ref.uid
-
-    def when_alive(self, ref, body):
-        """\`body()\` when the unit is still the one that was kept: the slot has a sprite, its order is not
-        "die", and its uniqueness byte is the one taken with the pointer."""
-        if ref.none:
-            return
-        if ref.uid is None:
-            body()
-            return
-        ptr, epd = as_var(ref.ptr), as_var(ref.epd)
-        if EUDIf()([ptr >= 1, MemoryEPD(epd + OFF_SPRITE, AtLeast, 1), MemoryXEPD(epd + OFF_OWNER_ORDER, AtLeast, 0x100, 0xFF00), MemoryXEPD(epd + OFF_UID, Exactly, ref.uid, 0xFF00)]):
-            body()
-        EUDEndIf()
-
-    @staticmethod
-    def cunit(ref):
-        return CUnit(ref.epd, ptr=ref.ptr)
-
-    def unit_field(self, e):
-        ref = self.unit(e["unit"])
-        out = fresh(0)
-        self.when_alive(ref, lambda: out << self.field_of(self.cunit(ref), e["field"], e))
-        return out
-
-    def field_of(self, cu, field, node):
-        """A unit's number, in the script's units: whole points for hit points (as the game shows them,
-        a started point counting), shields and energy."""
-        if field == "hp":
-            return f_div(cu.hp + 255, 256)[0]
-        if field == "maxHp":
-            return f_div(f_dwread_epd(EPD(UNITS_MAX_HP) + cu.unitType), 256)[0]
-        if field == "shields":
-            return f_div(cu.shield, 256)[0]
-        if field == "maxShields":
-            return f_wread(UNITS_MAX_SHIELDS + cu.unitType * 2)
-        if field == "energy":
-            return f_div(cu.energy, 256)[0]
-        if field in UNIT_TIMERS:
-            return getattr(cu, UNIT_TIMERS[field])
-        name = {"owner": "owner", "type": "unitType", "x": "posX", "y": "posY", "kills": "killCount", "orderId": "orderID", "cooldown": "groundWeaponCooldown", "resources": "resourceAmount"}.get(field)
-        if name is None:
-            raise Fail("trigscript: unknown unit field %r%s" % (field, where(node)))
-        return getattr(cu, name)
-
-    def unit_flag(self, e):
-        ref = self.unit(e["unit"])
-        out = fresh(0)
-
-        def body():
-            cu = self.cunit(ref)
-            flag = e["flag"]
-            if flag == "underAttack":
-                held = cu.attackNotifyTimer >= 1
-            else:
-                mask = {"hallucinated": STATUS_HALLUCINATION, "cloaked": STATUS_CLOAKED, "burrowed": STATUS_BURROWED, "invincible": STATUS_INVINCIBLE}.get(flag)
-                if mask is None:
-                    raise Fail("trigscript: unknown unit flag %r%s" % (flag, where(e)))
-                held = cu.check_status_flag(mask)
-            if EUDIf()(held):
-                out << 1
-            EUDEndIf()
-
-        self.when_alive(ref, body)
-        return out
-
-    def location_bounds(self, number):
-        base = EPD(MRGN + (int(number) - 1) * 20)
-        return [f_dwread_epd(base + i) for i in range(4)]
-
-    def scan(self, flt, node, body):
-        """The game's unit table, slot by slot: \`body(ref, next_, exit_)\` for every unit on the map the
-        filter matches. Every test is one condition whose address moves on with the slot, so a slot
-        that does not match costs a trigger or two."""
-        ptr, epd = EUDVariable(), EUDVariable()
-        empty = MemoryEPD(0, Exactly, 0)
-        dying = MemoryXEPD(0, Exactly, 0, 0xFF00)
-        moving = [(empty, OFF_SPRITE), (dying, OFF_OWNER_ORDER)]
-        match, values = [], []
-        owner = flt.get("owner")
-        if owner is not None:
-            who = self.current() if owner == CURRENT_PLAYER else int(owner)
-            c = MemoryXEPD(0, Exactly, who if isinstance(who, int) else 0, 0xFF)
-            match.append(c)
-            moving.append((c, OFF_OWNER_ORDER))
-            if not isinstance(who, int):
-                values.append((c, who))
-        kind = flt.get("type")
-        if kind is not None and kind < 228:
-            c = MemoryXEPD(0, Exactly, int(kind), 0xFFFF)
-            match.append(c)
-            moving.append((c, OFF_TYPE))
-        elif kind is not None and kind not in GROUP_BITS:
-            raise Fail("trigscript: unknown unit type %r%s" % (kind, where(node)))
-        if flt.get("at"):
-            left, top, right, bottom = self.location_bounds(flt["at"])
-            # A location reaching past the map's edge starts below zero, which a unit's position never is.
-            for v in (left, top):
-                if EUDIf()(v >= 0x80000000):
-                    v << 0
-                EUDEndIf()
-            for comparison, mask, value in ((AtLeast, 0xFFFF, left), (AtMost, 0xFFFF, right), (AtLeast, 0xFFFF0000, f_bitlshift(top, 16)), (AtMost, 0xFFFF0000, f_bitlshift(bottom, 16))):
-                c = MemoryXEPD(0, comparison, 0, mask)
-                match.append(c)
-                moving.append((c, OFF_POS))
-                values.append((c, value))
-        DoActions([ptr.SetNumber(UNIT_TABLE), epd.SetNumber(EPD(UNIT_TABLE))] + [SetMemory(c + 4, SetTo, EPD(UNIT_TABLE) + off) for c, off in moving])
-        for c, value in values:
-            f_dwwrite_epd(EPD(c + 8), value)
-        head, next_, exit_ = Forward(), Forward(), Forward()
-        head << NextTrigger()
-        EUDJumpIf(ptr >= UNIT_END, exit_)
-        EUDJumpIf(empty, next_)
-        EUDJumpIf(dying, next_)
-        if match:
-            matched = Forward()
-            EUDJumpIf(match, matched)
-            EUDJump(next_)
-            matched << NextTrigger()
-        if kind in GROUP_BITS:
-            group = fresh(f_bread(UNITS_GROUP + f_maskread_epd(epd + OFF_TYPE, 0xFFFF)))
-            EUDJumpIf((group & GROUP_BITS[kind]) == 0, next_)
-        body(UnitRef(ptr, epd, None), next_, exit_)
-        next_ << NextTrigger()
-        DoActions([SetMemory(c + 4, Add, UNIT_SIZE // 4) for c, _ in moving] + [ptr.AddNumber(UNIT_SIZE), epd.AddNumber(UNIT_SIZE // 4)])
-        EUDJump(head)
-        exit_ << NextTrigger()
-
-    def pick(self, e):
-        """One unit among the matching: the first, the nearest to a location's centre, or one at random."""
-        by, flt = e["by"], e.get("filter", {})
-        found_ptr, found_epd = fresh(0), fresh(0)
-
-        def take(ref):
-            found_ptr << ref.ptr
-            found_epd << ref.epd
-
-        if by == "first":
-            def body(ref, next_, exit_):
-                take(ref)
-                EUDJump(exit_)
-            self.scan(flt, e, body)
-        elif by == "nearest":
-            if e.get("mouse") is not None:
-                # A player's mouse, and nothing farther from it than \`within\`.
-                cx = as_var(INPUT.read({"source": "mouse", "axis": "x", "player": e["mouse"]}, self, e))
-                cy = as_var(INPUT.read({"source": "mouse", "axis": "y", "player": e["mouse"]}, self, e))
-                least = fresh(int(e.get("within", 48)) + 1)
-            else:
-                left, top, right, bottom = self.location_bounds(e["near"])
-                cx, cy = f_div(left + right, 2)[0], f_div(top + bottom, 2)[0]
-                least = fresh(U32)
-
-            def body(ref, next_, exit_):
-                cu = self.cunit(ref)
-                # |dx| + |dy| is enough to say which is nearest, and never overflows.
-                d = distance(cu.posX, cx) + distance(cu.posY, cy)
-                if EUDIf()(d < least):
-                    least << d
-                    take(ref)
-                EUDEndIf()
-            self.scan(flt, e, body)
-        elif by == "random":
-            # Count the matching, draw one, take the drawn one on a second pass.
-            count = fresh(0)
-            self.scan(flt, e, lambda ref, next_, exit_: count.__iadd__(1))
-            none = Forward()
-            EUDJumpIf(count == 0, none)
-            drawn = f_div(f_dwrand(), count)[1]
-            i = fresh(0)
-
-            def body(ref, next_, exit_):
-                hit = Forward()
-                EUDJumpIf(i == drawn, hit)
-                i.__iadd__(1)
-                EUDJump(next_)
-                hit << NextTrigger()
-                take(ref)
-                EUDJump(exit_)
-            self.scan(flt, e, body)
-            none << NextTrigger()
-        else:
-            raise Fail("trigscript: unknown pick %r%s" % (by, where(e)))
-        uid = fresh(0)
-        if EUDIf()(found_ptr >= 1):
-            uid << f_maskread_epd(found_epd + OFF_UID, 0xFF00)
-        EUDEndIf()
-        return UnitRef(found_ptr, found_epd, uid)
-
-    def unit_loop(self, st, ctx):
-        def body(ref, next_, exit_):
-            self.vars[st["decl"]["id"]] = LoopUnit(ref)
-            self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": next_}))
-        self.scan(st.get("filter", {}), st, body)
-
-    def unit_write(self, st):
-        ref = self.unit(st["unit"])
-        field = st["field"]
-        if field == "invincible":
-            on = self.truth(st["value"])
-
-            def flag():
-                cu = self.cunit(ref)
-                if isinstance(on, int):
-                    cu.set_invincible() if on else cu.clear_invincible()
-                    return
-                if EUDIf()(as_var(on) >= 1):
-                    cu.set_invincible()
-                if EUDElse()():
-                    cu.clear_invincible()
-                EUDEndIf()
-            self.when_alive(ref, flag)
-            return
-        value = self.num(st["value"])
-
-        def write():
-            cu = self.cunit(ref)
-            if field == "hp":
-                # Hit points at 0 are a dead unit, so that is what the write makes of it.
-                if isinstance(value, int):
-                    if value == 0:
-                        cu.die()
-                    else:
-                        cu.hp = min(value, 0xFFFFFF) * 256
-                    return
-                if EUDIf()(value == 0):
-                    cu.die()
-                if EUDElse()():
-                    cu.hp = f_mul(saturate(value, 24), 256)
-                EUDEndIf()
-            elif field == "shields":
-                cu.shield = points(value, 24)
-            elif field == "energy":
-                cu.energy = points(value, 8)
-            elif field == "kills":
-                cu.killCount = saturate(value, 8)
-            elif field == "resources":
-                cu.resourceAmount = saturate(value, 16)
-            elif field == "cooldown":
-                frames = saturate(value, 8)
-                cu.groundWeaponCooldown = frames
-                cu.airWeaponCooldown = frames
-                cu.spellCooldown = frames
-            elif field in UNIT_TIMERS:
-                setattr(cu, UNIT_TIMERS[field], saturate(value, 8))
-            else:
-                raise Fail("trigscript: a unit's %s takes no write%s" % (field, where(st)))
-        self.when_alive(ref, write)
-
-    def unit_do(self, st):
-        ref = self.unit(st["unit"])
-        verb = st["verb"]
-        do = verb["do"]
-        amount = self.num(verb["amount"]) if do in ("damage", "heal") else 0
-
-        def act():
-            cu = self.cunit(ref)
-            if do == "kill":
-                cu.die()
-            elif do == "remove":
-                cu.remove()
-            elif do == "give":
-                to = int(verb["to"])
-                cu.cgive(self.current() if to == CURRENT_PLAYER else to)
-            elif do == "order":
-                self.order(cu, verb, st)
-            elif do == "locate":
-                self.locate(cu, int(verb["location"]))
-            elif do in ("damage", "heal"):
-                self.adjust(cu, do, amount, bool(verb.get("percent")))
-            else:
-                raise Fail("trigscript: unknown unit verb %r%s" % (do, where(st)))
-        self.when_alive(ref, act)
-
-    def order(self, cu, verb, node):
-        """The game's own Order, reaching this unit alone: a location is made a small box around the unit
-        for the length of the action (the game did nothing with a box of no size), then put back."""
-        kind = {"move": Move, "patrol": Patrol, "attack": Attack}.get(verb["order"])
-        if kind is None:
-            raise Fail("trigscript: unknown order %r%s" % (verb["order"], where(node)))
-        base = EPD(MRGN + (SCRATCH_LOCATION - 1) * 20)
-        kept = [f_dwread_epd(base + i) for i in range(5)]
-        x, y = cu.posX, cu.posY
-        for i, v in enumerate((x - 2, y - 2, x + 2, y + 2, 0)):
-            f_dwwrite_epd(base + i, v)
-        DoActions(Order(cu.unitType, cu.owner, SCRATCH_LOCATION, kind, int(verb["target"])))
-        for i, v in enumerate(kept):
-            f_dwwrite_epd(base + i, v)
-
-    def locate(self, cu, number):
-        """A location centred on the unit, its size kept."""
-        base = EPD(MRGN + (number - 1) * 20)
-        left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
-        width, height = right - left, bottom - top
-        x, y = cu.posX - f_div(width, 2)[0], cu.posY - f_div(height, 2)[0]
-        for i, v in enumerate((x, y, x + width, y + height)):
-            f_dwwrite_epd(base + i, v)
-
-    def center_location(self, st):
-        """A location centred on a point, its size kept."""
-        x, y = self.num(st["x"]), self.num(st["y"])
-        base = EPD(MRGN + (int(st["location"]) - 1) * 20)
-        left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
-        width, height = right - left, bottom - top
-        nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
-        for i, v in enumerate((nx, ny, nx + width, ny + height)):
-            f_dwwrite_epd(base + i, v)
-
-    def adjust(self, cu, do, amount, percent):
-        """Hit points down \u2014 at 0 the unit dies \u2014 or up to the type's maximum, in the game's own units (256 to a point)."""
-        now = fresh(cu.hp)
-        top = f_dwread_epd(EPD(UNITS_MAX_HP) + cu.unitType)
-        if percent:
-            step = f_div(f_mul(top, as_var(amount)), 100)[0]
-        else:
-            step = amount * 256 if isinstance(amount, int) else f_mul(saturate(amount, 24), 256)
-        if do == "damage":
-            if EUDIf()(now <= step):
-                cu.die()
-            if EUDElse()():
-                cu.hp = now - step
-            EUDEndIf()
-            return
-        new = fresh(now + step)
-        if EUDIf()(new >= top):
-            new << top
-        EUDEndIf()
-        cu.hp = new
-
-    # \u2500\u2500 the game's tables \u2500\u2500
-    def cell_address(self, c):
-        index = c["index"]
-        if c.get("player") and index == CURRENT_PLAYER:
-            index = self.current()
-        base = int(c["base"]) + int(c.get("key") or 0)
-        return base + index * int(c["stride"])
-
-    def table_read(self, c, node):
-        if c.get("special"):
-            raise Fail("trigscript: %s cannot be read%s" % (c.get("name"), where(node)))
-        addr = self.cell_address(c)
-        width = c["width"]
-        if width == "bit":
-            v = fresh(0)
-            if EUDIf()(MemoryX(addr, AtLeast, 1, 1 << int(c["bit"]))):
-                v << 1
-            EUDEndIf()
-            return v
-        v = f_dwread(addr) if width == 4 else f_wread(addr) if width == 2 else f_bread(addr)
-        scale = int(c.get("scale") or 1)
-        return f_div(v, scale)[0] if scale > 1 else v
-
-    def table_write(self, st):
-        c = st["cell"]
-        addr = self.cell_address(c)
-        special = c.get("special")
-        if special == "name":
-            if self.has_id(st["value"]):
-                f_wwrite(addr, self.text_id_of(st["value"]))
-                return
-            # A name that was made: over the string kept for this unit type, on every computer - a name is nobody's in particular.
-            made = self.text(st["value"])
-            sid = slot("the name of unit type %d" % int(c["index"]))
-            texts()["show"](GetMapStringAddr(sid), made.addr)
-            self.used(made)
-            f_wwrite(addr, sid)
-            return
-        width = c["width"]
-        if st.get("boolean"):
-            value = self.truth(st["value"])
-        else:
-            value = self.num(st["value"])
-            scale = int(c.get("scale") or 1)
-            if scale > 1 and not st.get("scaled"):
-                value = value * scale if isinstance(value, int) else f_mul(value, scale)
-        top = 1 if width == "bit" else (1 << (8 * width)) - 1
-        if isinstance(value, int):
-            value = min(value, top)
-        elif width != 4 and width != "bit":
-            value = saturate(value, 8 * width)
-        if special == "speed":
-            self.write_speed(int(c["index"]), value)
-        elif special == "color":
-            f_bwrite(addr, value)
-            f_bwrite(addr + MINIMAP_COLOR_OFFSET, value)
-        elif width == "bit":
-            mask = 1 << int(c["bit"])
-            if isinstance(value, int):
-                DoActions(SetMemoryX(addr, SetTo, mask if value else 0, mask))
-            else:
-                if EUDIf()(value >= 1):
-                    DoActions(SetMemoryX(addr, SetTo, mask, mask))
-                if EUDElse()():
-                    DoActions(SetMemoryX(addr, SetTo, 0, mask))
-                EUDEndIf()
-        elif width == 4:
-            f_dwwrite(addr, value)
-        elif width == 2:
-            f_wwrite(addr, value)
-        else:
-            f_bwrite(addr, value)
-
-    def write_speed(self, unit, speed):
-        """A unit type's top speed is its flingy's: the flingy is switched to table control and given the
-        speed, with acceleration about a seventeenth of it and the braking distance v\xB2 / 2a to match
-        (the Vulture's own figures), as Magenta writes it. Units made afterwards move at the new speed."""
-        flingy = f_bread(UNITS_FLINGY + unit)
-        if isinstance(speed, int):
-            acceleration = max(1, round(speed / 17))
-            halt = max(1, round(speed * speed / (2 * acceleration)))
-        else:
-            acceleration = fresh(f_div(speed, 17)[0])
-            if EUDIf()(acceleration == 0):
-                acceleration << 1
-            EUDEndIf()
-            halt = fresh(f_div(f_mul(speed, speed), acceleration * 2)[0])
-            if EUDIf()(halt == 0):
-                halt << 1
-            EUDEndIf()
-            acceleration = saturate(acceleration, 16)
-        f_bwrite(FLINGY_CONTROL + flingy, 0)
-        f_dwwrite(FLINGY_SPEED + flingy * 4, speed)
-        f_wwrite(FLINGY_ACCELERATION + flingy * 2, acceleration)
-        f_dwwrite(FLINGY_HALT + flingy * 4, halt)
-
-    # \u2500\u2500 statements \u2500\u2500
-    def block(self, statements, ctx):
-        for st in statements:
-            self.statement(st, ctx)
-
-    def statement(self, st, ctx):
-        k = st["kind"]
-        if k == "declare":
-            s = self.declare(st["decl"])
-            if not st.get("failed"):
-                self.put(s, st["init"], st["decl"]["kind"])
-        elif k == "assignText":
-            self.put(self.var(st["target"], st), st["value"], "text")
-        elif k == "storeText":
-            self.store_text(st)
-        elif k == "releaseText":
-            block, i = self.array(st["block"], st), fresh(self.num(st["index"]))
-            texts()["release"](as_var(block.get(i)))
-            block.set(i, 0)
-        elif k == "textLoop":
-            self.text_loop(st, ctx)
-        elif k == "assignUnit":
-            self.var(st["target"], st).set(self.unit(st["value"]))
-        elif k == "unitLoop":
-            self.unit_loop(st, ctx)
-        elif k == "unitWrite":
-            self.unit_write(st)
-        elif k == "unitDo":
-            self.unit_do(st)
-        elif k == "tableWrite":
-            self.table_write(st)
-        elif k == "assign":
-            self.var(st["target"], st).set(self.num(st["value"]))
-        elif k == "assignBool":
-            self.var(st["target"], st).set(self.truth(st["value"]))
-        elif k == "declareArray":
-            a = self.array(st["array"], st)
-            cell = self.num if a.decl["kind"] == "number" else self.truth
-            if isinstance(a, ListStorage):
-                if st.get("fill") is not None:
-                    v = cell(st["fill"])
-                    a.declare_filled(v if isinstance(v, int) else fresh(v), int(a.decl["length"]))
-                else:
-                    values = [cell(v) for v in st.get("init", [])]
-                    a.declare([v if isinstance(v, int) else fresh(v) for v in values])
-            elif st.get("fill") is not None:
-                a.fill(cell(st["fill"]))
-            else:
-                # Every value first, then the stores: [b, a] of two cells of the array itself is a swap.
-                values = [cell(v) for v in st.get("init", [])]
-                values = [v if isinstance(v, int) else fresh(v) for v in values]
-                for i, v in enumerate(values):
-                    a.set(i, v)
-        elif k == "push":
-            a = self.array(st["array"], st)
-            a.push((self.num if a.decl["kind"] == "number" else self.truth)(st["value"]))
-        elif k == "pop":
-            self.array(st["array"], st).pop()
-        elif k == "setLength":
-            self.array(st["array"], st).set_length(self.num(st["value"]))
-        elif k == "store":
-            a = self.array(st["array"], st)
-            value = (self.num if a.decl["kind"] == "number" else self.truth)(st["value"])
-            a.set(self.num(st["index"]), value)
-        elif k == "if":
-            self.if_(st, ctx)
-        elif k == "while":
-            self.while_(st, ctx)
-        elif k == "do":
-            self.do_(st, ctx)
-        elif k == "for":
-            self.for_(st, ctx)
-        elif k == "unrolled":
-            self.unrolled(st, ctx)
-        elif k == "switch":
-            self.switch(st, ctx)
-        elif k == "break":
-            if "break" not in ctx:
-                raise Fail("trigscript: break outside a loop%s" % where(st))
-            EUDJump(ctx["break"])
-            raise Leave()
-        elif k == "continue":
-            if "continue" not in ctx:
-                raise Fail("trigscript: continue outside a loop%s" % where(st))
-            EUDJump(ctx["continue"])
-            raise Leave()
-        elif k == "return":
-            fn = ctx.get("fn")
-            if fn is None:
-                raise Fail("trigscript: return outside a function%s" % where(st))
-            if st.get("value") is not None and fn["result"] is not None:
-                self.put(fn["result"], st["value"], fn["kind"])
-            EUDJump(fn["end"])
-            raise Leave()
-        elif k == "sleep":
-            self.sleep(st)
-        elif k == "action":
-            self.action(st)
-        elif k == "print":
-            self.print_(st)
-        elif k == "centerLocation":
-            self.center_location(st)
-        elif k == "call":
-            self.call(st["call"])
-        elif k == "block":
-            self.block(st["body"], ctx)
-        elif k == "remark":
-            pass
-        else:
-            raise Fail("trigscript: unknown statement %r%s" % (k, where(st)))
-
-    def straight(self, statements, ctx):
-        """A statement list whose end may not be reached (a break inside): Leave stops it. True when the end was reached."""
-        try:
-            self.block(statements, ctx)
-            return True
-        except Leave:
-            return False
-
-    def if_(self, st, ctx):
-        else_l, end = Forward(), Forward()
-        EUDJumpIfNot(self.cond(st["cond"]), else_l)
-        if self.straight(st["then"], ctx):
-            EUDJump(end)
-        else_l << NextTrigger()
-        if st.get("else"):
-            self.straight(st["else"], ctx)
-        end << NextTrigger()
-
-    def while_(self, st, ctx):
-        head, exit_ = Forward(), Forward()
-        head << NextTrigger()
-        if st.get("cond") is not None:
-            EUDJumpIfNot(self.cond(st["cond"]), exit_)
-        if self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": head})):
-            EUDJump(head)
-        exit_ << NextTrigger()
-
-    def do_(self, st, ctx):
-        body, check, exit_ = Forward(), Forward(), Forward()
-        body << NextTrigger()
-        self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": check}))
-        check << NextTrigger()
-        EUDJumpIf(self.cond(st["cond"]), body)
-        exit_ << NextTrigger()
-
-    def for_(self, st, ctx):
-        head, update, exit_ = Forward(), Forward(), Forward()
-        head << NextTrigger()
-        if st.get("cond") is not None:
-            EUDJumpIfNot(self.cond(st["cond"]), exit_)
-        self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": update}))
-        update << NextTrigger()
-        if self.straight(st["update"], ctx):
-            EUDJump(head)
-        exit_ << NextTrigger()
-
-    def unrolled(self, st, ctx):
-        exit_ = Forward()
-        for statements in st["iterations"]:
-            nxt = Forward()
-            self.straight(statements, dict(ctx, **{"break": exit_, "continue": nxt}))
-            nxt << NextTrigger()
-        exit_ << NextTrigger()
-
-    def switch(self, st, ctx):
-        v = as_var(self.num(st["value"]))
-        exit_ = Forward()
-        labels = [Forward() for _ in st["cases"]]
-        default = None
-        for c, label in zip(st["cases"], labels):
-            if c["value"] is None:
-                default = label
-                continue
-            n = c["value"]
-            if n != n or n < -SIGN or n > U32:  # NaN, or a value the variable never holds
-                continue
-            EUDJumpIf(v == int(n) & U32, label)
-        EUDJump(default if default is not None else exit_)
-        for c, label in zip(st["cases"], labels):
-            label << NextTrigger()
-            self.straight(c["body"], dict(ctx, **{"break": exit_}))
-        exit_ << NextTrigger()
-
-    def sleep(self, st):
-        if self.in_function:
-            raise Fail("trigscript: sleep inside a function that is called%s" % where(st))
-        if st.get("cycles") is not None:
-            frames = int(st["cycles"])
-        else:
-            frames = max(1, int(round(float(st.get("ms", 0)) * FRAMES_PER_SECOND / 1000)))
-        index = len(self.resumes) + 1
-        resume = Forward()
-        self.resumes.append((index, resume))
-        self.set_state(index)
-        # The frame after this one is one frame later: sleep(frames(1)) goes on in the next frame, as the
-        # simulator has it. (Until 3.4 the wait was one frame longer, so a loop sleeping a frame ran every other.)
-        self.set_wait(frames - 1)
-        EUDJump(self.frame_end)
-        resume << NextTrigger()
-
-    def action(self, st):
-        r = st["record"]
-        fields = dict(locid1=r["location"], strid=string_of(r["text"]), wavid=string_of(r["wav"]), time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])
-        shown = None
-        if st.get("text") is not None:
-            if self.has_id(st["text"]):
-                fields["strid"] = self.text_id_of(st["text"])
-            else:
-                kind = SLOT_OF_ACTION.get(int(r["type"]))
-                if kind is None:
-                    raise Fail("trigscript: this action's text cannot be one that is made%s" % where(st))
-                # Over the string kept for this kind of field - on the computer of the player the action is for, which is
-                # the one the program is running as: the game reads the string again whenever it draws, and another
-                # player's text must not be there when it does. Nothing of the script can read the string back.
-                shown = self.text(st["text"])
-                if EUDIf()(IsUserCP()):
-                    texts()["show"](GetMapStringAddr(slot(kind)), shown.addr)
-                EUDEndIf()
-                self.used(shown)
-                fields["strid"] = slot(kind)
-        count = None
-        for variable in st.get("variables") or []:
-            value = as_var(self.num(variable["expr"]))
-            field = variable["field"]
-            if field == "modifier":
-                # A unit count: the byte field is not a variable's place, so the action is done once per
-                # unit \u2014 as many as the variable says, 0 being none (in the record, 0 means "all").
-                count = value
-                continue
-            name = {"target": "player2", "time": "time", "player": "player1", "location": "locid1", "text": "strid", "wav": "wavid", "unitId": "unitid"}.get(field)
-            if name is None:
-                raise Fail("trigscript: no variable can stand in the %s field%s" % (field, where(st)))
-            if name == "unitid":
-                # A unit type the game has: past the table, an action reads what is not a unit.
-                value = fresh(value)
-                if EUDIf()(value >= 228):
-                    value << 228
-                EUDEndIf()
-            fields[name] = value
-        if count is None:
-            DoActions(Action(**fields))
-            return
-        fields["amount"] = 1
-        for _ in EUDLoopRange(0, count):
-            DoActions(Action(**fields))
-
-    def print_(self, st):
-        """Text with values in it: every value first, then the text, shown only on the screen of the player it is for."""
-        args = []
-        temps = []
-        for part in st["parts"]:
-            k = part["kind"]
-            if k == "text":
-                args.append(part["text"])
-            elif k == "value":
-                v = self.text(part["text"])
-                temps.append(v)
-                args.append(ptr2s(v.addr))
-            elif k == "number":
-                v = self.num(part["expr"])
-                if isinstance(v, int):
-                    args.append(str(v if part.get("unsigned") else signed(v)))
-                elif part.get("unsigned"):
-                    args.append(v)
-                else:
-                    # A number below zero: its minus sign, then how far below it is.
-                    sign, size = fresh(NO_SIGN), fresh(v)
-                    if EUDIf()(size >= SIGN):
-                        sign << MINUS_SIGN
-                        size << 0 - size
-                    EUDEndIf()
-                    args.append(ptr2s(sign))
-                    args.append(size)
-            elif k == "name":
-                args.append(PName(self.one_player(part["player"], st)))
-            elif k == "color":
-                args.append(PColor(self.one_player(part["player"], st)))
-            else:
-                raise Fail("trigscript: unknown text part %r%s" % (k, where(st)))
-        if not args:
-            return
-        # eudplib prints for the current player, and only on that player's own computer.
-        show = (lambda: f_eprintln(*args)) if st.get("position") == "center" else (lambda: GetGlobalStringBuffer().print(*args))
-        to = int(st.get("to", CURRENT_PLAYER))
-        if to == CURRENT_PLAYER:
-            show()
-            self.used(*temps)
-            return
-        for p in group_slots(to, st):
-            f_setcurpl(p)
-            show()
-        f_setcurpl(self.current())
-        self.used(*temps)
-
-    # \u2500\u2500 texts \u2500\u2500
-    def has_id(self, e):
-        """Whether a text is one of the built map's table whatever happens in the game (compiler/ir.ts#textHasId)."""
-        k = e["kind"]
-        if k in ("text", "textOf"):
-            return True
-        if k == "textVar":
-            return not isinstance(self.var(e["id"], e), TextStorage)
-        if k == "textTernary":
-            return self.has_id(e["whenTrue"]) and self.has_id(e["whenFalse"])
-        return False
-
-    def text_id_of(self, e):
-        """The id of a text that has one: an int, or a variable."""
-        k = e["kind"]
-        if k == "text":
-            return text_id(e["text"])
-        if k == "textVar":
-            return self.var(e["id"], e).get()
-        if k == "textOf":
-            return self.array(e["array"], e).get(self.num(e["index"]))
-        if k == "textTernary":
-            t = EUDVariable()
-            if EUDIf()(self.cond(e["cond"])):
-                t << self.text_id_of(e["whenTrue"])
-            if EUDElse()():
-                t << self.text_id_of(e["whenFalse"])
-            EUDEndIf()
-            return t
-        raise Fail("trigscript: this text has no id%s" % where(e))
-
-    def used(self, *values):
-        """Values that have been used: a block that was the value's own goes back to the heap."""
-        for v in values:
-            if v.taken and not isinstance(v.block, int):
-                texts()["release"](v.block)
-
-    def texts_of(self, exprs):
-        """Several texts in the order they are written. A variable's text is only looked at - unless working a later
-        one out runs a call, which may give that variable another text and its block back to the heap: then it is a copy."""
-        out = []
-        for i, e in enumerate(exprs):
-            v = self.text(e)
-            if not v.taken and any(has_call(x) for x in exprs[i + 1:]):
-                v = self.own(v)
-            out.append(v)
-        return out
-
-    def own(self, v):
-        """A value as something to keep: its own block as it is, a copy of a variable's."""
-        if v.taken:
-            return v
-        addr, block, length = texts()["copy"](v.addr, v.block, v.length())
-        return TextVal(addr, block, length, True)
-
-    def store_text(self, st):
-        """A text into cell i of three arrays (a row's): worked out first - it may be made from what the cells hold -
-        then the block they held goes back, then they take the text, a copy of one that was only looked at."""
-        v = self.own(self.text(st["value"]))
-        addr, block, length = fresh(v.addr), fresh(v.block), fresh(v.length())
-        i = fresh(self.num(st["index"]))
-        held = self.array(st["block"], st)
-        texts()["release"](as_var(held.get(i)))
-        self.array(st["addr"], st).set(i, addr)
-        held.set(i, block)
-        self.array(st["chars"], st).set(i, length)
-
-    def put(self, storage, e, kind):
-        """A value into a variable. A text is worked out first - it may be made from what the variable holds - and only then does the block the variable held go back."""
-        if kind != "text":
-            storage.set(self.value(e, kind))
-            return
-        if not isinstance(storage, TextStorage):
-            storage.set(self.text_id_of(e))
-            return
-        v = self.own(self.text(e))
-        addr, block, length = fresh(v.addr), fresh(v.block), fresh(v.length())
-        texts()["release"](storage.cell(storage.block))
-        storage.write(addr, block, length)
-
-    def written(self, parts, st):
-        """The parts of a text in the scratch, and where it ends. Every value is worked out first, since working one
-        out may use the scratch itself; then the parts are written a group at a time, a group being what cannot
-        come to more than a text holds, so that checking where the writing has got to between groups keeps it inside."""
-        T = texts()
-        items, temps = [], []
-        for part in parts:
-            k = part["kind"]
-            if k == "text":
-                data = part["text"].encode("utf-8")[:TEXT_BYTES].decode("utf-8", "ignore")
-                items.append(([data], len(data.encode("utf-8")), None))
-            elif k == "number":
-                v = self.num(part["expr"])
-                if isinstance(v, int):
-                    data = str(v if part.get("unsigned") else signed(v))
-                    items.append(([data], len(data), None))
-                elif part.get("unsigned"):
-                    items.append(([fresh(v)], 10, None))
-                else:
-                    sign, size = fresh(NO_SIGN), fresh(v)
-                    if EUDIf()(size >= SIGN):
-                        sign << MINUS_SIGN
-                        size << 0 - size
-                    EUDEndIf()
-                    items.append(([ptr2s(sign), size], 11, None))
-            elif k == "name":
-                items.append(([PName(self.one_player(part["player"], st))], 25, None))
-            elif k == "color":
-                items.append(([PColor(self.one_player(part["player"], st))], 1, None))
-            elif k == "value":
-                v = self.text(part["text"])
-                if not v.taken and has_call(parts[parts.index(part) + 1:]):
-                    v = self.own(v)
-                temps.append(v)
-                items.append((None, TEXT_BYTES, v))
-            else:
-                raise Fail("trigscript: unknown text part %r%s" % (k, where(st)))
-        pos = fresh(T["scratch"])
-        f_bwrite(pos, 0)
-        group, room, first = [], 0, [True]
-
-        def flush():
-            if not group:
-                return
-            if first[0]:
-                pos << f_dbstr_print(pos, *group)
-            else:
-                if EUDIf()(pos <= T["scratch"] + TEXT_BYTES):
-                    pos << f_dbstr_print(pos, *group)
-                EUDEndIf()
-            first[0] = False
-            del group[:]
-
-        for args, size, value in items:
-            if value is not None:
-                flush()
-                room = 0
-                if first[0]:
-                    pos << T["append"](pos, value.addr)
-                else:
-                    if EUDIf()(pos <= T["scratch"] + TEXT_BYTES):
-                        pos << T["append"](pos, value.addr)
-                    EUDEndIf()
-                first[0] = False
-                continue
-            if room + size > TEXT_BYTES + 1:
-                flush()
-                room = 0
-            group.extend(args)
-            room += size
-        flush()
-        return pos, temps
-
-    def text(self, e):
-        """A text: where it is, its block, its length (TextVal)."""
-        T = texts()
-        k = e["kind"]
-        if k == "text":
-            return TextVal(fresh(GetMapStringAddr(e["text"]) if e["text"] else T["empty"]), 0, len(e["text"]), True)
-        if k == "textVar" and isinstance(self.var(e["id"], e), TextStorage):
-            return self.var(e["id"], e).get()
-        if k == "textAt":
-            # Cells that were never given a text are 0: the empty one, as a variable's are.
-            i = fresh(self.num(e["index"]))
-            addr = fresh(self.array(e["addr"], e).get(i))
-            if EUDIf()(addr == 0):
-                addr << T["empty"]
-            EUDEndIf()
-            return TextVal(addr, fresh(self.array(e["block"], e).get(i)), fresh(self.array(e["chars"], e).get(i)), False)
-        if self.has_id(e):
-            return TextVal(T["address"](as_var(self.text_id_of(e))), 0, None, True)
-        if k == "template":
-            pos, temps = self.written(e["parts"], e)
-            addr, block, length = T["make"](pos)
-            self.used(*temps)
-            return TextVal(addr, block, length, True)
-        if k == "textTernary":
-            addr, block, length = EUDVariable(), EUDVariable(), EUDVariable()
-            if EUDIf()(self.cond(e["cond"])):
-                v = self.own(self.text(e["whenTrue"]))
-                addr << v.addr
-                block << v.block
-                length << v.length()
-            if EUDElse()():
-                v = self.own(self.text(e["whenFalse"]))
-                addr << v.addr
-                block << v.block
-                length << v.length()
-            EUDEndIf()
-            return TextVal(addr, block, length, True)
-        if k == "textSlice":
-            of = self.text(e["of"])
-            start = self.num(e["start"]) if e.get("start") is not None else 0
-            end = self.num(e["end"]) if e.get("end") is not None else 0x7FFFFFFF
-            addr, block, length = T["slice"](of.addr, start, end)
-            self.used(of)
-            return TextVal(addr, block, length, True)
-        if k == "textPad":
-            of, fill = self.texts_of([e["of"], e["with"]])
-            width = self.num(e["width"])
-            addr, block, length = T["pad"](of.addr, of.length(), width, fill.addr, 1 if e["side"] == "start" else 0)
-            self.used(of, fill)
-            return TextVal(addr, block, length, True)
-        if k == "textRepeat":
-            of = self.text(e["of"])
-            addr, block, length = T["repeat"](of.addr, self.num(e["count"]))
-            self.used(of)
-            return TextVal(addr, block, length, True)
-        if k == "textCall":
-            self.call(e["call"])
-            result = e["call"].get("result")
-            if result is None:
-                return TextVal(fresh(T["empty"]), 0, 0, True)
-            return self.var(result["decl"]["id"], e).take_out()
-        raise Fail("trigscript: unknown text %r%s" % (k, where(e)))
-
-    def text_number(self, e):
-        T = texts()
-        k = e["kind"]
-        if k == "textIndexOf":
-            of, find = self.texts_of([e["of"], e["find"]])
-            start = self.num(e["from"]) if e.get("from") is not None else 0
-            out = T["find"](of.addr, find.addr, start)
-            self.used(of, find)
-            return out
-        of = self.text(e["of"])
-        if k == "textLength":
-            n = of.length()
-            out = n if isinstance(n, int) else fresh(n)
-            self.used(of)
-            return out
-        out = T["code"](of.addr, self.num(e["index"]))
-        self.used(of)
-        return out
-
-    def text_truth(self, e):
-        """A comparison of two texts, or a test of one, as 0 / 1."""
-        T = texts()
-        t = fresh(0)
-        if e["kind"] == "textTest":
-            of, find = self.texts_of([e["of"], e["find"]])
-            if e["test"] == "startsWith":
-                t << T["starts"](of.addr, find.addr)
-            elif e["test"] == "endsWith":
-                t << T["ends"](of.addr, find.addr)
-            else:
-                if EUDIfNot()(T["find"](of.addr, find.addr, 0) == 0xFFFFFFFF):
-                    t << 1
-                EUDEndIf()
-            self.used(of, find)
-            return t
-        op = e["op"]
-        if op in ("==", "!=") and self.has_id(e["left"]) and self.has_id(e["right"]):
-            # Two texts of the table: the same text is the same id.
-            a, b = self.text_id_of(e["left"]), self.text_id_of(e["right"])
-            if isinstance(a, int) and isinstance(b, int):
-                return 1 if (a == b) == (op == "==") else 0
-            if EUDIf()(as_var(a) == b):
-                t << 1
-            EUDEndIf()
-        else:
-            a, b = self.texts_of([e["left"], e["right"]])
-            # The difference of the first bytes that differ, as a number of 32 bits: 0, below zero, or above.
-            d = f_strcmp(a.addr, b.addr)
-            self.used(a, b)
-            if op in ("==", "!="):
-                if EUDIf()(d == 0):
-                    t << 1
-                EUDEndIf()
-            else:
-                below = (lambda: d >= SIGN)
-                if op in ("<", ">="):
-                    if EUDIf()(below()):
-                        t << 1
-                    EUDEndIf()
-                else:  # "<=" and ">": whether it is not above
-                    if EUDIf()(EUDOr(d == 0, below())):
-                        t << 1
-                    EUDEndIf()
-                return flipped(t) if op in (">=", ">") else t
-        return flipped(t) if op == "!=" else t
-
-    def text_loop(self, st, ctx):
-        """\`for (const ch of s)\`: the text walked once, a character a turn, each a made text of its own."""
-        T = texts()
-        turn = self.declare(st["decl"])
-        over = self.own(self.text(st["of"]))
-        held = fresh(over.block)
-        at = fresh(over.addr)
-        head, done = Forward(), Forward()
-        inner = dict(ctx)
-        inner["break"], inner["continue"] = done, head
-        leave = None
-        if ctx.get("fn") is not None:
-            # A return inside the loop leaves through here, so that the text the loop holds goes back first.
-            leave = Forward()
-            inner["fn"] = dict(ctx["fn"], end=leave)
-        head << NextTrigger()
-        n = T["size"](at)
-        EUDJumpIf(n == 0, done)
-        f_memcpy(T["scratch"], at, n)
-        f_bwrite(T["scratch"] + n, 0)
-        addr, block, length = T["make"](T["scratch"] + n)
-        T["release"](turn.cell(turn.block))
-        turn.write(addr, block, length)
-        at += n
-        if self.straight(st["body"], inner):
-            EUDJump(head)
-        done << NextTrigger()
-        T["release"](held)
-        if leave is not None:
-            after = Forward()
-            EUDJump(after)
-            leave << NextTrigger()
-            T["release"](held)
-            EUDJump(ctx["fn"]["end"])
-            after << NextTrigger()
-
-    def value(self, e, kind):
-        """An expression as what a variable of \`kind\` holds."""
-        return self.num(e) if kind == "number" else self.unit(e) if kind == "unit" else self.truth(e)
-
-    def function(self, id_, node):
-        """A called function: its parameters' cells, its result's, and its one body \u2014 an EUDFunc of no
-        arguments, since the cells are the program's own (a row a player, as any variable is)."""
-        made = self.made.get(id_)
-        if made is not None:
-            return made
-        f = self.functions.get(id_)
-        if f is None:
-            raise Fail("trigscript: unknown function %r%s" % (id_, where(node)))
-        params = [self.declare(d) for d in f["params"]]
-        kind = f["result"]["kind"] if f.get("result") else "void"
-        result = self.declare(f["result"]["decl"]) if f.get("result") else None
-        lowering = self
-        if f.get("recursive"):
-            return self.recursive_function(id_, f, params, kind, result)
-
-        @EUDFunc
-        def body():
-            # A text result keeps what it held until \`return\` puts the next one in it, which is when that block goes back.
-            if result is not None and kind != "text":
-                result.set(NO_UNIT if kind == "unit" else 0)
-            end = Forward()
-            lowering.in_function += 1
-            try:
-                lowering.straight(f["body"], {"fn": {"result": result, "kind": kind, "end": end}})
-            finally:
-                lowering.in_function -= 1
-            end << NextTrigger()
-
-        made = self.made[id_] = (body, params, result)
-        return made
-
-    def recursive_function(self, id_, f, params, kind, result):
-        """A function that calls itself. eudplib's EUDFunc keeps one return address and is not there to be called
-        until its body is whole, so this one is triggers of our own: the body in a scope apart, ended by a trigger
-        whose next-trigger field is the return address - a cell a call writes, and a frame keeps. It is on record
-        before its body is lowered, so a call of it met in that body finds it."""
-        start, tail = Forward(), Forward()
-        # The return address a second time, in a variable: a frame keeps it from there, since reading a cell of
-        # the game's memory back costs some thirty triggers and writing a variable out costs two.
-        back = EUDVariable()
-
-        def body():
-            after = Forward()
-            DoActions([SetNextPtr(tail, after), back.SetNumber(after)])
-            EUDJump(start)
-            after << NextTrigger()
-
-        made = self.made[id_] = (body, params, result)
-        entry = {"f": f, "tail": tail, "back": back}
-        PushTriggerScope()
-        start << NextTrigger()
-        if result is not None and kind != "text":
-            result.set(NO_UNIT if kind == "unit" else 0)
-        end = Forward()
-        self.in_function += 1
-        self.within.append(entry)
-        try:
-            self.straight(f["body"], {"fn": {"result": result, "kind": kind, "end": end}})
-        finally:
-            self.within.pop()
-            self.in_function -= 1
-        end << NextTrigger()
-        tail << RawTrigger()
-        PopTriggerScope()
-        return made
-
-    def saved_cells(self, saves, node):
-        """What a frame keeps, as (read, write) pairs a cell: the variables, a unit three cells, an array's handle four."""
-        pairs = []
-        for id_ in saves.get("vars", []):
-            s = self.vars.get(id_)
-            if s is None:
-                # Declared further down the body: it has no cell yet, and the declaration that makes it sets it.
-                continue
-            if isinstance(s, UnitStorage):
-                for cell in (s.ptr, s.epd, s.uid):
-                    pairs.append(self.cell_pair(cell, s.rowed))
-            elif isinstance(s, TextStorage):
-                for cell in (s.addr, s.block, s.len):
-                    pairs.append(self.cell_pair(cell, s.rowed))
-            elif isinstance(s, Storage):
-                pairs.append(self.cell_pair(s.store, s.rowed))
-        for id_ in saves.get("arrays", []):
-            a = self.array(id_, node)
-            if isinstance(a, ListStorage):
-                for name in HANDLE:
-                    pairs.append(self.cell_pair(a.handle[name], a.rowed))
-        return pairs
-
-    def saved_texts(self, saves):
-        """The made texts among what a frame keeps: each owns a block, which the frame keeps for it."""
-        return [s for s in (self.vars.get(id_) for id_ in saves.get("vars", [])) if isinstance(s, TextStorage)]
-
-    def cell_pair(self, cell, rowed):
-        if rowed:
-            return (lambda: cell[self.player_of()]), (lambda v: cell.__setitem__(self.player_of(), v))
-        return (lambda: cell), (lambda v: cell << v)
-
-    def keep(self, call):
-        """Before a call that may come back into the function it is in: that function's cells and its return
-        address onto the stack, the handles of its arrays set to "no block". Past the depth the map allows the
-        program says so and stops for good."""
-        saves = call["saves"]
-        st = stack()
-        if not self.within:
-            raise Fail("trigscript: a call keeps a frame outside a function that calls itself%s" % where(call))
-        mine = self.within[-1]
-        if EUDIf()(st["depth"] >= STACK_DEPTH):
-            GetGlobalStringBuffer().print("\\x06TrigScript: stack overflow in %s, line %s - %d calls deep. The program has stopped." % (saves.get("within", "a function"), (call.get("at") or {}).get("line", "?"), STACK_DEPTH))
-            st["depth"] << 0
-            st["at"] << st["base"]
-            self.set_state(DONE)
-            EUDJump(self.frame_end)
-        EUDEndIf()
-        pairs = self.saved_cells(saves, call)
-        at = st["at"]
-        f_dwwrite_epd(at, mine["back"])
-        at += 1
-        for read, _ in pairs:
-            f_dwwrite_epd(at, read())
-            at += 1
-        st["depth"] += 1
-        for id_ in saves.get("arrays", []):
-            a = self.array(id_, call)
-            if isinstance(a, ListStorage):
-                for name in HANDLE:
-                    a.put(name, 0)
-        # A text the function holds keeps its block on the stack; the variable holds none for the length of the call,
-        # so that the inner run's first text does not give the outer run's block back.
-        held = self.saved_texts(saves)
-        for s in held:
-            s.write(0, 0, 0)
-        return pairs, mine, held
-
-    def bring_back(self, call, kept):
-        pairs, mine, held = kept
-        st = stack()
-        # The block the inner run left in a text goes back to the heap before the text is the outer run's again.
-        for s in held:
-            texts()["release"](s.cell(s.block))
-        # The block the inner run left in a handle goes back to the heap before the handle is the outer run's again.
-        for id_ in call["saves"].get("arrays", []):
-            a = self.array(id_, call)
-            if isinstance(a, ListStorage):
-                ptr = fresh(a.field("ptr"))
-                if EUDIf()(ptr >= 1):
-                    a.heap["give"](ptr, a.field("k"))
-                EUDEndIf()
-        at = st["at"]
-        for _, write in reversed(pairs):
-            at -= 1
-            write(f_dwread_epd(at))
-        at -= 1
-        mine["back"] << f_dwread_epd(at)
-        f_dwwrite_epd(EPD(mine["tail"]) + 1, mine["back"])
-        st["depth"] -= 1
-
-    def call_function(self, call, result):
-        body, params, returned = self.function(call["fn"], call)
-        if len(params) != len(call["params"]):
-            raise Fail("trigscript: %s takes %d values, not %d%s" % (call["fn"], len(params), len(call["params"]), where(call)))
-        # Every argument first, then the parameters: an argument may be a call of this same function. A variable's
-        # own cell is copied when a later argument holds a call, which may be of a function that writes that variable.
-        values = []
-        for i, p in enumerate(call["params"]):
-            if p["decl"]["kind"] == "text":
-                # A text is a copy of its own by the time the parameter takes it: three numbers, read now.
-                t = self.own(self.text(p["init"]))
-                values.append((fresh(t.addr), fresh(t.block), fresh(t.length())))
-                continue
-            v = self.value(p["init"], p["decl"]["kind"])
-            later = any(has_call(q["init"]) for q in call["params"][i + 1:])
-            if later and p["decl"]["kind"] != "unit" and not isinstance(v, int):
-                v = fresh(v)
-            values.append(v)
-        # A call that may come back here keeps this function's frame: after the arguments are worked out (they read
-        # it), before the parameters are set (they may be this function's own).
-        kept = None
-        if call.get("saves"):
-            # Copies: an argument may be one of this function's own parameters, which the ones set before it write over.
-            values = [v if isinstance(v, (int, tuple)) else UnitRef(v.ptr if isinstance(v.ptr, int) else fresh(v.ptr), v.epd if isinstance(v.epd, int) else fresh(v.epd), v.uid if v.uid is None or isinstance(v.uid, int) else fresh(v.uid)) if isinstance(v, UnitRef) else fresh(v) for v in values]
-            kept = self.keep(call)
-        for s, v in zip(params, values):
-            if isinstance(v, tuple):
-                # What the parameter held from the call before goes back; then it holds this call's text.
-                texts()["release"](s.cell(s.block))
-                s.write(*v)
-            else:
-                s.set(v)
-        body()
-        if kept is not None:
-            self.bring_back(call, kept)
-        if result is None:
-            return 0
-        if isinstance(result, TextStorage):
-            # The function's text moves to the call's own result, from where a textCall takes it.
-            v = returned.take_out()
-            texts()["release"](result.cell(result.block))
-            result.write(v.addr, v.block, v.length())
-            return 0
-        result.set(returned.get())
-        return result.get()
-
-    def call(self, call):
-        result = self.declare(call["result"]["decl"]) if call.get("result") else None
-        if call.get("fn") is not None:
-            return self.call_function(call, result)
-        # A text result keeps what it held until \`return\` puts the next one in it, which is when that block goes back.
-        if result is not None and call["result"]["kind"] != "text":
-            result.set(NO_UNIT if call["result"]["kind"] == "unit" else 0)
-        for p in call["params"]:
-            s = self.declare(p["decl"])
-            self.put(s, p["init"], p["decl"]["kind"])
-        end = Forward()
-        self.straight(call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}})
-        end << NextTrigger()
-        return result.get() if result is not None else 0
-
-    # \u2500\u2500 one frame \u2500\u2500
-    def frame(self):
-        self.frame_end = Forward()
-        start = Forward()
-        skip = Forward()
-        # Still waiting: count down and leave.
-        EUDJumpIfNot(as_var(self.get_wait()) >= 1, skip)
-        self.set_wait(as_var(self.get_wait()) - 1)
-        EUDJump(self.frame_end)
-        skip << NextTrigger()
-        # The body once, resumes recorded as sleeps are met; the jump table is filled in after.
-        table = Forward()
-        EUDJump(table)
-        start << NextTrigger()
-        try:
-            self.block(self.p["body"], {})
-        except Leave:
-            pass
-        # The body ended: the program stops for good, as the classic backend's does.
-        self.set_state(DONE)
-        EUDJump(self.frame_end)
-        table << NextTrigger()
-        EUDJumpIf(as_var(self.get_state()) == DONE, self.frame_end)
-        for index, resume in self.resumes:
-            EUDJumpIf(as_var(self.get_state()) == index, resume)
-        EUDJump(start)
-        self.frame_end << NextTrigger()
-
-    def run(self):
-        if self.per_player:
-            for p in loop_players(self.slots):
-                self.player = p
-                f_setcurpl(p)
-                self.frame()
-            self.player = None
-        else:
-            # As a trigger owned by that player would: not at all once the player has left.
-            if EUDIf()(f_playerexist(self.slots[0])):
-                f_setcurpl(self.slots[0])
-                self.frame()
-            EUDEndIf()
-
-
-def flipped(t):
-    """1 for 0 and 0 for anything else, in a variable of its own."""
-    out = fresh(0)
-    if EUDIf()(t == 0):
-        out << 1
-    EUDEndIf()
-    return out
-
-
-def has_call(node):
-    """Whether a call is anywhere in a piece of the IR."""
-    if isinstance(node, list):
-        return any(has_call(x) for x in node)
-    if not isinstance(node, dict):
-        return False
-    if node.get("kind") in ("call", "textCall") and isinstance(node.get("call"), dict):
-        return True
-    return any(has_call(v) for v in node.values() if isinstance(v, (dict, list)))
-
-
-def string_of(value):
-    """An action's text or sound: the string itself (eudplib adds it to the map), or an index the script named."""
-    if isinstance(value, str):
-        return EncodeString(value) if value else 0
-    return int(value or 0)
-
-
-def group_slots(group, node):
-    """The player slots a player number stands for: a slot is itself, All Players and a force their human and computer players."""
-    playing = lambda p: GetPlayerInfo(p).typestr in ("Human", "Computer")
-    if 0 <= group < 8:
-        return [group]
-    if group == 17:
-        return [p for p in range(8) if playing(p)]
-    if 18 <= group <= 21:
-        return [p for p in range(8) if playing(p) and GetPlayerInfo(p).force == group - 18]
-    raise Fail("trigscript: expected players 1 to 8, All Players or a force%s" % where(node))
-
-
-def owner_slots(program):
-    """The player slots a program runs for, from its owners and the map's player settings: a slot is
-    itself, All Players and a force are their human and computer players \u2014 who a trigger runs for."""
-    slots = []
-    for o in program.get("owners", [program.get("owner", 0)]):
-        for p in group_slots(int(o), program):
-            if p not in slots:
-                slots.append(p)
-    if not slots:
-        raise Fail("trigscript: no human or computer player of this map is among the program's owners%s" % where(program))
-    return slots
-
-
-def loop_players(slots):
-    """Each of \`slots\` who is in the game, as an EUDVariable: EUDLoopPlayer, for a list of our own."""
-    start, end = min(slots), max(slots)
-    v = EUDVariable()
-    v << start
-    if EUDWhile()(v <= end):
-        for i in range(start, end):
-            if i not in slots:
-                EUDContinueIf(v == i)
-        EUDContinueIfNot(f_playerexist(v))
-        yield v
-        EUDSetContinuePoint()
-        v += 1
-    EUDEndWhile()
-
-
-BITWISE = ("&", "|", "^", "<<", ">>", ">>>")
-FLIPPED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!="}
-
-
-def points(value, bits):
-    """Whole points as the game stores them, 256 to a point; \`bits\` is how many bits of points the cell holds."""
-    if isinstance(value, int):
-        return min(value, (1 << bits) - 1) * 256
-    return f_mul(saturate(value, bits), 256)
-
-
-def uses_random(node):
-    if isinstance(node, dict):
-        return node.get("kind") in ("random", "randomInt") or (node.get("kind") == "pick" and node.get("by") == "random") or any(uses_random(v) for v in node.values())
-    return isinstance(node, list) and any(uses_random(v) for v in node)
-
-
-def distance(a, b):
-    """|a - b| of two places on the map, both from 0 up."""
-    d = fresh(a)
-    d -= b
-    if EUDIf()(d >= SIGN):
-        d << 0 - d
-    EUDEndIf()
-    return d
-
-
-def signed(v):
-    """The 32 bits as a signed number."""
-    v &= U32
-    return v - (1 << 32) if v >= SIGN else v
-
-
-def always(truth):
-    """A condition that is known when the map is built."""
-    return EUDVariable(1 if truth else 0) >= 1  # initial: a constant, never written
-
-
-def relation(av, op, b):
-    """\`av op b\` between a variable and a variable or an int, both read from 0 up."""
-    if op == "==":
-        return av == b
-    if op == "!=":
-        return av != b
-    if op == "<":
-        return av < b
-    if op == "<=":
-        return av <= b
-    if op == ">":
-        return av > b
-    return av >= b
-
-
-def compare(a, op, b):
-    return {"==": a == b, "!=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
-
-
-def condition(r):
-    return Condition(r["location"], r["player"], r["amount"], r["unitId"], r["comparison"], r["type"], r["resource"], r["flags"], eudx=r.get("mask", 0) or 0)
-
-
-class Input:
-    """What the players do, as it reaches every computer: the cells chatEvent and MSQC write, by the
-    names the editor put in their settings (compiler/input.ts, INPUT_NAMES), and the reads of them."""
-
-    MAX_NUMBER = 0xFFFFF
-
-    def __init__(self, plan):
-        self.plan = plan or {}
-        self.keys = list(self.plan.get("keys", []))
-        self.buttons = list(self.plan.get("buttons", []))
-        self.chats = list(self.plan.get("chats", []))
-        self.mouse_base = self.plan.get("mouseBase")
-        # A person can sit in the map's human slots, which is where MSQC counts the mouse locations from.
-        self.humans = [p for p in range(8) if GetPlayerInfo(p).typestr == "Human"]
-        if plan and not self.humans:
-            raise Fail("trigscript: a program reads keys, clicks, the mouse or chat, and the map has no human player to give any")
-        self.key_cells = [self.register("tsin_key%d" % i, EUDArray(12)) for i in range(len(self.keys))]
-        self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
-        self.captures = max([len(c["captures"]) for c in self.chats] or [0])
-        if self.chats:
-            # Local: what chatEvent found on this computer, and what the patterns made of it.
-            self.heard = self.register("tsin_heard", EUDVariable())
-            self.pointer = self.register("tsin_pointer", EUDVariable())
-            self.length = self.register("tsin_length", EUDVariable())
-            self.register("tsin_pattern", EUDVariable())
-            self.chat_local = self.register("tsin_chat", EUDVariable())
-            self.capture_local = [self.register("tsin_capture%d" % i, EUDVariable()) for i in range(self.captures)]
-            # Everyone's: what MSQC delivered this frame, by player; 0xFFFFFFFF on a frame with nothing.
-            self.chat_in = self.register("tsin_chat_in", EUDArray(12))
-            self.capture_in = [self.register("tsin_capture%d_in" % i, EUDArray(12)) for i in range(self.captures)]
-            self.unit_table = None
-
-    @staticmethod
-    def register(name, cell):
-        EUDRegisterObjectToNamespace(name, cell)
-        return cell
-
-    # \u2500\u2500 reads \u2500\u2500
-    def read(self, i, low, node):
-        source = i.get("source")
-        p = low.one_player(i["player"], node)
-        if source == "key":
-            return self.cell(self.key_cells, self.keys, i["key"], node)[p]
-        if source == "click":
-            return self.cell(self.button_cells, self.buttons, i["button"], node)[p]
-        if source == "mouse":
-            return self.mouse(p, 0 if i["axis"] == "x" else 1, node)
-        if source == "chat":
-            number = self.chat_number(i["pattern"], node)
-            out = fresh(0)
-            if EUDIf()(self.chat_in[p] == number):
-                out << (1 if i.get("capture") is None else self.capture_in[int(i["capture"])][p])
-            EUDEndIf()
-            return out
-        raise Fail("trigscript: unknown input %r%s" % (source, where(node)))
-
-    @staticmethod
-    def cell(cells, names, name, node):
-        if name not in names:
-            raise Fail("trigscript: the IR's input plan has no %r%s" % (name, where(node)))
-        return cells[names.index(name)]
-
-    def chat_number(self, pattern, node):
-        for index, c in enumerate(self.chats):
-            if c["pattern"] == pattern:
-                return index + 1
-        raise Fail("trigscript: the IR's input plan has no pattern %r%s" % (pattern, where(node)))
-
-    def mouse(self, p, axis, node):
-        """MSQC keeps the mouse of the map's first human slot in location \`mouseBase\`, the next slot's in the next."""
-        if self.mouse_base is None:
-            raise Fail("trigscript: the IR's input plan keeps no mouse%s" % where(node))
-        first = min(self.humans)
-        cell = lambda h: EPD(MRGN + (int(self.mouse_base) - 1 + h - first) * 20) + axis
-        if isinstance(p, int):
-            return f_dwread_epd(cell(p)) if p in self.humans else 0
-        out = fresh(0)
-        for h in self.humans:
-            if EUDIf()(p == h):
-                out << f_dwread_epd(cell(h))
-            EUDEndIf()
-        return out
-
-    # \u2500\u2500 the typed line, on the computer it was typed on \u2500\u2500
-    @staticmethod
-    def hash_of(data):
-        """What \`hashed\` makes of the same bytes: capitals A to Z as small letters, h = h \xD7 31 + byte."""
-        h = 0
-        for b in data:
-            if 65 <= b <= 90:
-                b += 32
-            h = (h * 31 + b) & U32
-        return h
-
-    def hashed(self, pos, stop_at_space):
-        """The hash of the line from \`pos\` to its end or, with \`stop_at_space\`, to the next space; \`pos\` moves past it."""
-        h = fresh(0)
-        if EUDWhile()(pos < self.length):
-            ch = fresh(f_bread(self.pointer + pos))
-            if stop_at_space:
-                EUDBreakIf(ch == 32)
-            if EUDIf()([ch >= 65, ch <= 90]):
-                ch += 32
-            EUDEndIf()
-            h << f_mul(h, 31) + ch
-            pos += 1
-        EUDEndWhile()
-        return h
-
-    def units(self):
-        """Unit names by hash, in hash order, for a search by halves: two arrays side by side."""
-        if self.unit_table is None:
-            by_hash = {}
-            for name, unit in self.plan.get("unitNames", []):
-                by_hash.setdefault(self.hash_of(name.encode("utf-8")), int(unit))
-            ordered = sorted(by_hash.items())
-            self.unit_table = (EUDArray([h for h, _ in ordered] or [0]), EUDArray([u for _, u in ordered] or [0]), len(ordered))
-        return self.unit_table
-
-    def capture(self, c, pos, fail):
-        """One value out of the line at \`pos\`, or a jump to \`fail\`."""
-        value = fresh(0)
-        if c["kind"] == "number":
-            digits = fresh(0)
-            if EUDWhile()(pos < self.length):
-                ch = f_bread(self.pointer + pos)
-                EUDBreakIf(ch <= 47)
-                EUDBreakIf(ch >= 58)
-                value << f_mul(value, 10) + ch - 48
-                if EUDIf()(value >= self.MAX_NUMBER + 1):
-                    value << self.MAX_NUMBER
-                EUDEndIf()
-                pos += 1
-                digits += 1
-            EUDEndWhile()
-            EUDJumpIf(digits == 0, fail)
-        elif c["kind"] == "word":
-            h = self.hashed(pos, True)
-            found = fresh(0)
-            for index, word in enumerate(c["words"]):
-                if EUDIf()(h == self.hash_of(word.encode("utf-8"))):
-                    value << index
-                    found << 1
-                EUDEndIf()
-            EUDJumpIf(found == 0, fail)
-        elif c["kind"] == "unit":
-            h = self.hashed(pos, False)
-            hashes, units, count = self.units()
-            lo, hi = fresh(0), fresh(count)
-            if EUDWhile()(lo < hi):
-                mid = f_div(lo + hi, 2)[0]
-                if EUDIf()(hashes[mid] < h):
-                    lo << mid + 1
-                if EUDElse()():
-                    hi << mid
-                EUDEndIf()
-            EUDEndWhile()
-            EUDJumpIf(lo >= count, fail)
-            EUDJumpIfNot(hashes[lo] == h, fail)
-            value << units[lo]
-        else:
-            raise Fail("trigscript: unknown chat capture %r" % (c["kind"],))
-        return value
-
-    def match_line(self):
-        """The line the local player typed against every pattern, in order: the first that fits the whole
-        line gives its number and values to the cells MSQC sends from. Nothing fits: nothing is sent."""
-        DoActions([self.chat_local.SetNumber(0)] + [c.SetNumber(0) for c in self.capture_local])
-        if EUDIf()(self.heard >= 1):
-            done = Forward()
-            for index, chat in enumerate(self.chats):
-                fail = Forward()
-                pos = fresh(0)
-                values = []
-                for seg in chat["segments"]:
-                    if isinstance(seg, str):
-                        data = seg.encode("utf-8")
-                        EUDJumpIf(pos + len(data) >= self.length + 1, fail)
-                        EUDJumpIfNot(f_memcmp(self.pointer + pos, Db(data + b"\\0"), len(data)) == 0, fail)
-                        pos += len(data)
-                    else:
-                        values.append(self.capture(chat["captures"][int(seg)], pos, fail))
-                EUDJumpIfNot(pos == self.length, fail)
-                DoActions(self.chat_local.SetNumber(index + 1))
-                for cell, value in zip(self.capture_local, values):
-                    cell << value
-                EUDJump(done)
-                fail << NextTrigger()
-            done << NextTrigger()
-        EUDEndIf()
-
-
-INPUT = Input(IR.get("input"))
-PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
-
-
-def onPluginStart():
-    # eudplib's generator starts from the same seed in every game; the game's own randomness (a switch randomized) seeds it.
-    if uses_random(IR.get("programs", [])):
-        f_randomize()
-
-
-def beforeTriggerExec():
-    # After chatEvent has looked for a typed line, before MSQC sends what it was.
-    if INPUT.chats:
-        INPUT.match_line()
-
-
-def afterTriggerExec():
-    for prog in PROGRAMS:
-        prog.run()
-`;
-
-// vendor/eudplib.ts
-var EUDPLIB_SERVICE = "eudplib.build";
+// vendor/scmSim.ts
+var SCM_SIM_SERVICE = "scm-sim.engine";
 
 // service.ts
 var START_LOCATION_UNIT = 214;
@@ -9307,11 +9704,24 @@ function firstFault(diagnostics) {
   if (!d) return "The script has errors.";
   return `${d.file}:${d.line} \u2014 ${d.message.split("\n")[0]}${diagnostics.length > 1 ? ` (and ${diagnostics.length - 1} more)` : ""}`;
 }
+var ContributionError = class extends Error {
+  contribution;
+  constructor(contribution, message) {
+    super(`${contribution.label}: ${message}`);
+    this.contribution = contribution;
+  }
+};
+function refusalAt(refusal) {
+  const m = /, line (\d+)(?: of (\S+))?$/.exec(refusal);
+  return m ? { reason: refusal.slice(0, m.index), line: Number(m[1]), file: m[2] ?? null } : { reason: refusal, line: null, file: null };
+}
 var LABEL2 = "TrigScript";
+var MAGENTA_MEMBER = "magenta\\magenta.json";
+var MAGENTA = "magenta";
 function snapshotExtras(api) {
   const out = /* @__PURE__ */ new Map();
   for (const name of api.document.extras.list()) {
-    if (!isScriptMember(name)) continue;
+    if (!isScriptMember(name) && !isBuiltSound(name)) continue;
     const bytes2 = api.document.extras.get(name);
     if (bytes2) out.set(name, bytes2);
   }
@@ -9325,14 +9735,22 @@ var ScriptService = class {
   api;
   claim;
   compiler;
+  builder;
+  /** Who hears about the builds TrigScript does itself (`onBuild`). */
+  ownListeners = /* @__PURE__ */ new Set();
+  /** The other plugins' parts of the build (`contribute`), by id. */
+  contributions = /* @__PURE__ */ new Map();
   lastManifest;
   /** The last compile, for a save that comes right after an apply: the same files against the same names need no second compile. */
   lastArtifact = null;
+  /** Builds under way that want the lowering to say where the programs' variables are (`withVariableMap`). */
+  variableMaps = 0;
   /** The editor's language, for what a person reads in the editor's own trigger editors and notices; what the commands return stays English. */
   t;
-  constructor(api, open, compiler = compileInBackground) {
+  constructor(api, open, compiler = compileInBackground, builder = buildInBackground) {
     this.api = api;
     this.compiler = compiler;
+    this.builder = builder;
     const t = api.i18n ? (text, params) => api.i18n.t(text, params) : english;
     this.t = t;
     this.claim = api.triggers.claim({
@@ -9367,17 +9785,17 @@ var ScriptService = class {
     if (!this.api.document.isOpen()) return null;
     return scriptState(this.api.triggers.list(), snapshotExtras(this.api));
   }
-  /** The eudplib plugin's service, or null when it is not installed or is off. */
-  library() {
-    return this.api.services.get(EUDPLIB_SERVICE);
+  /** The scm-sim plugin's engine, or null when it is not installed or is off: where a script's tests run in the game. */
+  engine() {
+    return this.api.services.get(SCM_SIM_SERVICE);
   }
-  /** Called at once and whenever the eudplib plugin arrives or goes. */
-  watchLibrary(listener) {
-    return this.api.services.watch(EUDPLIB_SERVICE, (s) => listener(s));
+  /** Called at once and whenever the scm-sim plugin arrives or goes. */
+  watchEngine(listener) {
+    return this.api.services.watch(SCM_SIM_SERVICE, (s) => listener(s));
   }
   /**
-   * Take part in saving: bring the map's block up to date before its bytes are produced,
-   * and hand the programs to the eudplib plugin's build. Dispose when the plugin goes.
+   * Take part in saving: bring the map's block up to date before its bytes are produced, then build the programs
+   * into the map (TrigScript 4, step 14). Dispose when the plugin goes.
    */
   attach() {
     const before = this.api.document.buildSteps?.before({
@@ -9386,21 +9804,183 @@ var ScriptService = class {
       applies: () => this.api.document.isOpen() && snapshotExtras(this.api).size > 0,
       run: () => this.bringUpToDate()
     });
-    let mine = null;
-    const watch = this.watchLibrary((library) => {
-      mine?.dispose();
-      mine = library?.contribute?.({ id: "trigscript", label: LABEL2, applies: () => this.hasPrograms(), collect: () => this.collect() }) ?? null;
+    const step = this.api.document.buildSteps?.add({
+      id: "build",
+      label: LABEL2,
+      applies: () => this.hasPrograms() || this.contributionsApply(),
+      run: (input) => this.buildOwn(input)
     });
     return { dispose: () => {
       before?.dispose();
-      mine?.dispose();
-      watch.dispose();
+      step?.dispose();
     } };
+  }
+  /** Another plugin's standing offer to take part in the build (`BuildContribution`); the second of one id replaces the first. */
+  contribute(contribution) {
+    this.contributions.set(contribution.id, contribution);
+    return { dispose: () => {
+      if (this.contributions.get(contribution.id) === contribution) this.contributions.delete(contribution.id);
+    } };
+  }
+  /** Whether any contribution has something for the open map. */
+  contributionsApply() {
+    if (!this.api.document.isOpen()) return false;
+    for (const c2 of this.contributions.values()) if (c2.applies()) return true;
+    return false;
+  }
+  /** The service held out to other plugins as `trigscript.build`. */
+  buildService(version) {
+    return {
+      versions: { plugin: version },
+      contribute: (c2) => this.contribute(c2),
+      onBuild: (l) => this.onBuild(l),
+      check: (files, entries) => this.check(files, entries)
+    };
+  }
+  /**
+   * A contribution's source as a build would compile it, without building: the problems (TypeScript's, the compiler's,
+   * a `trigger()` where only programs go, what the own build does not take), for the contributor's own preflight.
+   */
+  async check(files, entries) {
+    const map = this.names();
+    const at = entries[0] ?? Object.keys(files)[0] ?? ENTRY_FILE;
+    if (!map) return { problems: [{ file: at, line: 1, column: 1, message: this.t("No map is open.") }], programs: 0 };
+    const own = this.ownCheck();
+    const r = await this.compiler({ files: { [ENTRY_FILE]: "", ...files }, names: map.names, entries, ...own ? { own } : {} }, this.dist());
+    const problems = r.diagnostics.map((d) => ({ file: d.file, line: d.line, column: d.column, message: d.message }));
+    if (r.ok && r.triggers.length) problems.push({ file: at, line: 1, column: 1, message: this.t("A contribution holds programs only: its trigger() calls are not written into the map.") });
+    if (r.ok && r.ownRefusal) {
+      const where = refusalAt(r.ownRefusal);
+      problems.push({ file: where.file ?? at, line: where.line ?? 1, column: 1, message: this.t("TrigScript does not take this yet ({reason}).", { reason: where.reason }) });
+    }
+    return { problems, programs: r.ir.length };
+  }
+  /** The contributions that apply, collected: their files and entries together, and which contribution each file is. */
+  async collectContributions(ctx) {
+    const files = {}, entries = [], of = /* @__PURE__ */ new Map();
+    for (const c2 of this.contributions.values()) {
+      if (!c2.applies()) continue;
+      let brought;
+      try {
+        brought = await c2.collect(ctx);
+      } catch (err) {
+        throw new ContributionError(c2, err instanceof Error ? err.message : String(err));
+      }
+      for (const [path, text] of Object.entries(brought.files)) {
+        if (!path.startsWith(`${c2.id}/`)) throw new ContributionError(c2, this.t("{label} brought the file {file}, which is not under its own folder ({folder}/).", { label: c2.label, file: path, folder: c2.id }));
+        files[path] = text;
+        of.set(path, c2);
+      }
+      entries.push(...brought.entries);
+    }
+    return { files, entries, of };
   }
   /** Whether the map's script, as last applied, has programs — read off the manifest, so it costs a save nothing. */
   hasPrograms() {
     if (!this.api.document.isOpen()) return false;
     return (readManifest(snapshotExtras(this.api))?.programs ?? 0) > 0;
+  }
+  /** Why the programs cannot be built into this map, in the user's words — a Magenta that builds through eudplib has triggers in it — or null. */
+  whyNotBuilt() {
+    if (!this.api.document.isOpen()) return null;
+    if (this.api.document.extras.get(MAGENTA_MEMBER) !== null && !this.contributions.has(MAGENTA)) return this.t("Magenta's triggers are in this map, and this Magenta builds them through eudplib, which rewrites the part of the map TrigScript's programs go into. Update Magenta to the version that builds with TrigScript, or keep the two in different maps.");
+    return null;
+  }
+  /** The open map as a map of our own is checked against while the script is typed: who plays, and its size in pixels. */
+  ownCheck() {
+    const scn = this.api.document.scenario();
+    if (!scn) return null;
+    const types2 = scn.playerTypes.slice(0, 8);
+    return {
+      players: { slots: types2.flatMap((type, slot) => type === OWNER_HUMAN || type === OWNER_COMPUTER ? [slot] : []), forces: scn.forces.playerForce.slice(0, 8) },
+      humans: types2.flatMap((type, slot) => type === OWNER_HUMAN ? [slot] : []),
+      width: scn.width * 32,
+      height: scn.height * 32
+    };
+  }
+  /**
+   * The build step: the scenario out of the map Save made (the script applied), the programs laid out into it by
+   * TrigScript itself (`compiler/backend/build.ts`, in the compile worker), the scenario back — the editor lays the
+   * file out with the user's save options and the map's members as they are. What the other plugins contribute
+   * (`contribute`) is compiled with the script and built with it, their programs after the script's. Throws, worded
+   * for the editor's notice, when the script or a contribution does not compile, the build does not take it, or a
+   * Magenta that builds through eudplib has triggers in the map; the map is then saved without its programs.
+   */
+  async buildOwn(input) {
+    const started = Date.now();
+    const contributors = ["trigscript"];
+    const lines = [];
+    const say = (event) => {
+      for (const l of this.ownListeners) l(event);
+    };
+    const log = (line) => {
+      lines.push(line);
+      say({ kind: "log", line });
+    };
+    say({ kind: "start", purpose: input.purpose, contributors });
+    let from = "trigscript";
+    try {
+      const state = this.state();
+      const why = this.whyNotBuilt();
+      if (why) throw new Error(why);
+      const brought = await this.collectContributions(input);
+      for (const c2 of new Set(brought.of.values())) contributors.push(c2.id);
+      if (!state?.files && !brought.entries.length) throw new Error(this.t("The map has no script."));
+      const map = this.names();
+      if (!map) throw new Error(this.t("No map is open."));
+      const guard = this.settings().testsGuardBuild;
+      let compiled = null;
+      if (state?.files) {
+        const cached = this.lastArtifact;
+        const fresh = cached && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
+        const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : void 0);
+        if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
+        if (guard) this.guardTests(artifact.compiled);
+        compiled = artifact.compiled;
+      }
+      if (brought.entries.length) {
+        const files = { ...state?.files ?? { [ENTRY_FILE]: "" }, ...brought.files };
+        compiled = await this.compiler({ files, names: map.names, entries: brought.entries }, this.dist());
+        if (!compiled.ok) {
+          const fault = compiled.diagnostics[0];
+          const c2 = fault && brought.of.get(fault.file);
+          if (c2) {
+            from = c2.id;
+            throw new Error(`${c2.label}: ${firstFault(compiled.diagnostics)}`);
+          }
+          throw new Error(firstFault(compiled.diagnostics));
+        }
+        const contributedTriggers = compiled.sources.filter((s) => s && brought.of.has(s.file)).length;
+        if (contributedTriggers) {
+          const c2 = brought.of.get(compiled.sources.find((s) => s && brought.of.has(s.file)).file);
+          from = c2.id;
+          throw new Error(this.t("{label} brought trigger() calls, and a contribution holds programs only.", { label: c2.label }));
+        }
+      }
+      const chk = await this.api.document.sections.chkOf(input.map);
+      const { heapCells: heapCells2, stackDepth: stackDepth2 } = this.settings();
+      log(brought.entries.length ? this.t("Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map, {contributors} among them", { n: compiled.ir.length, contributors: [...new Set(brought.of.values())].map((c2) => c2.label).join(", ") }) : this.t("Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map", { n: compiled.ir.length }));
+      const out = await this.builder({ chk, compiled: { ir: compiled.ir, strings: compiled.strings, input: compiled.input, triggers: [] }, settings: { heapCells: heapCells2, stackDepth: stackDepth2 }, ...this.variableMaps ? { maps: true } : {} }, this.dist());
+      if (isRefused(out)) {
+        const where = refusalAt(out.refused);
+        const c2 = where.file ? brought.of.get(where.file) : void 0;
+        if (c2) {
+          from = c2.id;
+          throw new Error(this.t("{label}: TrigScript does not take this yet ({reason}).", { label: c2.label, reason: out.refused }));
+        }
+        throw new Error(this.t("The programs were not built: TrigScript does not take this yet ({reason}).", { reason: out.refused }));
+      }
+      for (const line of out.lines) log(line);
+      for (const line of out.maps?.lines ?? []) log(line);
+      for (const message of out.warnings) say({ kind: "warning", message });
+      say({ kind: "done", purpose: input.purpose, contributors, log: lines.join("\n"), chkBytes: out.chk.length, ms: Date.now() - started });
+      return out.chk;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof ContributionError) from = err.contribution.id;
+      say({ kind: "failed", purpose: input.purpose, contributors, from, message, log: lines.join("\n") });
+      throw err;
+    }
   }
   /**
    * Apply the script when its files are newer than the block: what Save, Test Map and an
@@ -9475,37 +10055,26 @@ var ScriptService = class {
     const first = failed[0];
     throw new Error(`Not built: ${failed.length === 1 ? "a test fails" : `${failed.length} tests fail`} \u2014 ${testName(first)}: ${first.message ?? "failed"}. (The script's settings make a failing test refuse the build.)`);
   }
-  /** The programs for the library's build: the IR as a data file, the lowering as a source, eudTurbo so the game runs them every frame. */
-  async collect() {
-    const state = this.state();
-    if (!state?.files) throw new Error("The map has no script.");
-    const map = this.names();
-    const cached = this.lastArtifact;
-    const guard = this.settings().testsGuardBuild;
-    const fresh = cached && map && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
-    const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : void 0);
-    if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
-    if (guard) this.guardTests(artifact.compiled);
-    return {
-      // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
-      plugins: buildPlugins(artifact.compiled.input, "/work/files/trigscript.json"),
-      sources: { trigscript: TRIGSCRIPT_PY },
-      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings, artifact.compiled.input, this.settings()) }
-    };
+  /**
+   * `run` with every build it starts asked to say where the programs' variables and its triggers are — lines of the
+   * build's log (`compiler/gameVariables.ts`) — for tests in the lifted game to read them and name lines.
+   */
+  async withVariableMap(run) {
+    this.variableMaps++;
+    try {
+      return await run();
+    } finally {
+      this.variableMaps--;
+    }
   }
-  /** Hear about the library's builds (it runs them on Save, Test Map and export): the log, and where a failure points. */
+  /** Hear about the builds of the programs (on Save, Test Map and export): the log, and where a failure points. */
   onBuild(listener) {
-    let mine = null;
-    const watch = this.watchLibrary((library) => {
-      mine?.dispose();
-      mine = library?.onBuild?.(listener) ?? null;
-    });
+    this.ownListeners.add(listener);
     return { dispose: () => {
-      mine?.dispose();
-      watch.dispose();
+      this.ownListeners.delete(listener);
     } };
   }
-  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names and custom unit names. Null with no map. */
+  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names, custom unit names and sounds. Null with no map. */
   names() {
     const api = this.api;
     const info = api.document.info();
@@ -9517,7 +10086,9 @@ var ScriptService = class {
       forceNames: api.settings.forces().map((f) => f.name || null),
       locations: used.map((index) => ({ index, name: api.names.location(index) })),
       switchNames,
-      unitCustomName: (id) => custom.get(id) || null
+      unitCustomName: (id) => custom.get(id) || null,
+      // (A host from before the Sound Editor's API has no sounds() to ask.)
+      sounds: (api.settings.sounds?.() ?? []).map((w) => ({ stringIndex: w.stringIndex, path: w.path }))
     });
     const decls = generateDeclarations(names);
     return { names, decls, context: hashText(decls) };
@@ -9545,14 +10116,16 @@ var ScriptService = class {
   /**
    * Compile into an artifact `install` can check: the files as they are now, against the
    * map in front and its names as they are now (`map`, when the caller already has them —
-   * the editor keeps a copy that follows the map's events).
+   * the editor keeps a copy that follows the map's events). With `sounds`, a build's: its
+   * long clips encoded as Ogg Vorbis for the map, which a check as the user types does not wait for.
    */
-  async prepare(input, map = this.names(), tests) {
+  async prepare(input, map = this.names(), tests, sounds = false) {
     if (!map) throw new Error("No map is open.");
     const files = this.filesOf(input);
     const document2 = this.documentId();
     const archived = hashFiles(this.state()?.files ?? {});
-    const compiled = await this.compiler({ files, names: map.names, ...tests ? { tests } : {} }, this.dist());
+    const own = this.ownCheck();
+    const compiled = await this.compiler({ files, names: map.names, ...tests ? { tests } : {}, ...sounds ? { sounds } : {}, ...own ? { own } : {} }, this.dist());
     const artifact = { files, compiled, document: document2, context: map.context, archived };
     this.lastArtifact = artifact;
     return artifact;
@@ -9578,8 +10151,8 @@ var ScriptService = class {
     let replaced;
     this.api.document.update("Apply TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
-      const intern = (text) => tx.strings.intern(text);
-      const plan = buildScript(tx.triggers.list(), before, files, compiled, intern, { ...options, keepFiles });
+      const intern2 = (text) => tx.strings.intern(text);
+      const plan = buildScript(tx.triggers.list(), before, files, compiled, intern2, { ...options, keepFiles });
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block2 = plan.block;
@@ -9600,7 +10173,7 @@ var ScriptService = class {
    */
   async build(input, options = {}) {
     for (let attempt = 0; ; attempt++) {
-      const out = this.install(await this.prepare(input), options);
+      const out = this.install(await this.prepare(input, void 0, void 0, true), options);
       if (out.refused !== "changed" || attempt >= 2) return out;
     }
   }
@@ -9674,6 +10247,11 @@ var ICONS = {
   ellipsis: "ea7c",
   "new-file": "ea7f",
   "new-folder": "ea80",
+  "device-camera-video": "ead9",
+  "file-media": "eaea",
+  unmute: "eb75",
+  music: "ec1b",
+  "debug-pause": "ead1",
   folder: "ea83",
   "folder-opened": "eaf7",
   edit: "ea73",
@@ -9700,7 +10278,20 @@ var ICONS = {
   "run-errors": "ebde",
   "circle-outline": "eabc",
   "circle-slash": "eabd",
-  "pass-filled": "ebb3"
+  "pass-filled": "ebb3",
+  // The debugger's (TrigScript 4, A5).
+  "debug-alt": "eb91",
+  "debug-continue": "eacf",
+  "debug-reverse-continue": "eb8e",
+  "debug-step-over": "ead6",
+  "debug-step-back": "eb8f",
+  "debug-stop": "ead7",
+  "debug-restart": "ead2",
+  "debug-line-by-line": "ebd0",
+  "arrow-left": "ea9b",
+  "arrow-right": "ea9c",
+  eye: "ea70",
+  game: "ec17"
 };
 var DEFAULT_LAYOUT = { sidebar: true, sidebarWidth: 180, panel: false, panelHeight: 180, panelView: "problems" };
 var COMPACT_LAYOUT = { sidebar: true, sidebarWidth: 136, panel: false, panelHeight: 130, panelView: "problems" };
@@ -9747,6 +10338,8 @@ ${Object.entries(ICONS).map(([name, code]) => `.tsd-i-${name}::before { content:
 .tsd-row.tsd-active { background: var(--bg-4); color: var(--text); }
 .tsd-row .tsd-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .tsd-row .tsd-about { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); font-size: var(--fs-sm); }
+.tsd-row .tsd-game { display: inline-flex; flex: none; margin-left: -2px; border-radius: 50%; }
+.tsd-row .tsd-game-differs { box-shadow: 0 0 0 1px var(--danger); }
 .tsd-row .tsd-problem, .tsd-tab .tsd-problem { color: var(--danger); }
 .tsd-row .tsd-count { flex: none; margin-left: auto; color: var(--danger); font-size: var(--fs-sm); }
 .tsd-row .tsd-icon-button { display: none; margin-left: 0; }
@@ -9835,7 +10428,7 @@ button.tsd-status-item:hover { background: var(--bg-4); color: var(--text); }
 function createShell(options) {
   const { el } = options;
   const t = options.t ?? english;
-  const layout = { ...options.layout };
+  const layout2 = { ...options.layout };
   const icon = (name, spin = false) => el("span", { className: `tsd-i tsd-i-${name}${spin ? " tsd-spin" : ""}`, ariaHidden: "true" });
   const iconButton = (spec) => {
     let name = spec.icon;
@@ -9892,12 +10485,12 @@ function createShell(options) {
     notifications
   );
   const applyLayout = () => {
-    sidebar.hidden = sidebarSash.hidden = !layout.sidebar;
-    sidebar.style.width = `${layout.sidebarWidth}px`;
-    panel.hidden = panelSash.hidden = !layout.panel;
-    panel.style.height = `${layout.panelHeight}px`;
+    sidebar.hidden = sidebarSash.hidden = !layout2.sidebar;
+    sidebar.style.width = `${layout2.sidebarWidth}px`;
+    panel.hidden = panelSash.hidden = !layout2.panel;
+    panel.style.height = `${layout2.panelHeight}px`;
   };
-  const saveLayout = () => options.onLayout({ ...layout });
+  const saveLayout = () => options.onLayout({ ...layout2 });
   const drag = (sash, start, move) => {
     const down = (e) => {
       if (e.button !== 0) return;
@@ -9923,20 +10516,20 @@ function createShell(options) {
     };
     sash.addEventListener("pointerdown", down);
   };
-  drag(sidebarSash, () => layout.sidebarWidth, (from, dx) => {
-    layout.sidebarWidth = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.min(root.clientWidth - 200, from + dx)));
+  drag(sidebarSash, () => layout2.sidebarWidth, (from, dx) => {
+    layout2.sidebarWidth = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.min(root.clientWidth - 200, from + dx)));
   });
-  drag(panelSash, () => layout.panelHeight, (from, _dx, dy) => {
-    layout.panelHeight = Math.max(PANEL_MIN, Math.min(main.clientHeight - 120, from - dy));
+  drag(panelSash, () => layout2.panelHeight, (from, _dx, dy) => {
+    layout2.panelHeight = Math.max(PANEL_MIN, Math.min(main.clientHeight - 120, from - dy));
   });
   const sideViews = /* @__PURE__ */ new Map();
   const showSide = (id) => {
     const v = sideViews.get(id) ?? sideViews.get("explorer");
     if (!v) return;
-    layout.sidebarView = v.id;
-    for (const [key, other] of sideViews) {
-      other.button.classList.toggle("tsd-active", key === v.id && layout.sidebar);
-      other.button.ariaSelected = String(key === v.id && layout.sidebar);
+    layout2.sidebarView = v.id;
+    for (const [key2, other] of sideViews) {
+      other.button.classList.toggle("tsd-active", key2 === v.id && layout2.sidebar);
+      other.button.ariaSelected = String(key2 === v.id && layout2.sidebar);
     }
     sidebarTitle.replaceChildren(el("span", { className: "tsd-grow" }, v.title), ...v.actions);
     sidebarHolder.replaceChildren(v.body);
@@ -9944,13 +10537,13 @@ function createShell(options) {
   const addSide = (spec, body2) => {
     const badge = el("span", { className: "tsd-badge", hidden: true });
     const button = el("button", { type: "button", role: "tab", title: spec.title, ariaLabel: spec.title, onClick: () => {
-      if (layout.sidebar && layout.sidebarView === spec.id) layout.sidebar = false;
+      if (layout2.sidebar && layout2.sidebarView === spec.id) layout2.sidebar = false;
       else {
-        layout.sidebar = true;
-        layout.sidebarView = spec.id;
+        layout2.sidebar = true;
+        layout2.sidebarView = spec.id;
       }
       applyLayout();
-      showSide(layout.sidebarView ?? "explorer");
+      showSide(layout2.sidebarView ?? "explorer");
       saveLayout();
     } }, icon(spec.icon), badge);
     const view = { id: spec.id, title: spec.title, body: body2, actions: (spec.actions ?? []).map((a2) => iconButton(a2).element), button, badge };
@@ -9965,25 +10558,25 @@ function createShell(options) {
   const showView = (id, announce = true) => {
     const wanted = views.has(id) ? id : [...views.keys()][0];
     if (!wanted) return;
-    layout.panelView = wanted;
-    for (const [key, v2] of views) {
-      v2.tab.classList.toggle("tsd-active", key === wanted);
-      v2.tab.ariaSelected = String(key === wanted);
+    layout2.panelView = wanted;
+    for (const [key2, v2] of views) {
+      v2.tab.classList.toggle("tsd-active", key2 === wanted);
+      v2.tab.ariaSelected = String(key2 === wanted);
     }
     const v = views.get(wanted);
     panelBody.replaceChildren(v.body);
     panelActions.replaceChildren(...v.actions, closePanel.element);
-    if (layout.panel && announce) v.onShow?.();
+    if (layout2.panel && announce) v.onShow?.();
   };
   const showPanel = (id) => {
-    layout.panel = true;
+    layout2.panel = true;
     applyLayout();
-    showView(id ?? layout.panelView);
+    showView(id ?? layout2.panelView);
     saveLayout();
   };
   const togglePanel = (id) => {
-    if (layout.panel && (id === void 0 || id === layout.panelView)) {
-      layout.panel = false;
+    if (layout2.panel && (id === void 0 || id === layout2.panelView)) {
+      layout2.panel = false;
       applyLayout();
       saveLayout();
       return;
@@ -10045,12 +10638,12 @@ function createShell(options) {
     box.querySelector("button:not(:disabled)")?.focus();
   };
   const shown = /* @__PURE__ */ new Map();
-  const dismiss = (key) => {
-    const n = shown.get(key);
+  const dismiss = (key2) => {
+    const n = shown.get(key2);
     if (!n) return;
     if (n.timer !== null) clearTimeout(n.timer);
     n.element.remove();
-    shown.delete(key);
+    shown.delete(key2);
   };
   const notify = (spec) => {
     dismiss(spec.key);
@@ -10145,7 +10738,7 @@ function createShell(options) {
     sidebarView(spec) {
       const body2 = el("div", { className: "tsd-sections" });
       const view = addSide(spec, body2);
-      if (layout.sidebarView === spec.id) showSide(spec.id);
+      if (layout2.sidebarView === spec.id) showSide(spec.id);
       return {
         body: body2,
         badge(count, kind) {
@@ -10154,17 +10747,17 @@ function createShell(options) {
           view.badge.classList.toggle("tsd-error", kind === "error");
         },
         show() {
-          layout.sidebar = true;
+          layout2.sidebar = true;
           applyLayout();
           showSide(spec.id);
           saveLayout();
         }
       };
     },
-    toggleSidebar(show) {
-      layout.sidebar = show ?? !layout.sidebar;
+    toggleSidebar(show2) {
+      layout2.sidebar = show2 ?? !layout2.sidebar;
       applyLayout();
-      showSide(layout.sidebarView ?? "explorer");
+      showSide(layout2.sidebarView ?? "explorer");
       saveLayout();
     },
     view(spec) {
@@ -10173,7 +10766,7 @@ function createShell(options) {
       const body2 = el("div");
       views.set(spec.id, { tab, badge, body: body2, actions: (spec.actions ?? []).map((a2) => iconButton(a2).element), onShow: spec.onShow });
       panelTabs.append(tab);
-      if (views.size === 1 || spec.id === layout.panelView) showView(spec.id, false);
+      if (views.size === 1 || spec.id === layout2.panelView) showView(spec.id, false);
       return { body: body2, badge: (count) => {
         badge.hidden = !count;
         badge.textContent = count ? String(count) : "";
@@ -10181,6 +10774,14 @@ function createShell(options) {
     },
     showPanel,
     togglePanel,
+    growPanel(height) {
+      const most = Math.max(PANEL_MIN, main.clientHeight - 120);
+      const next = Math.min(most, Math.max(layout2.panelHeight, height));
+      if (next === layout2.panelHeight) return;
+      layout2.panelHeight = next;
+      applyLayout();
+      saveLayout();
+    },
     statusItem(side) {
       const slot = el("span", { hidden: true, style: "display: contents" });
       (side === "left" ? statusLeft : statusRight).append(slot);
@@ -10202,9 +10803,2115 @@ function createShell(options) {
     menu,
     dispose() {
       closeMenu?.();
-      for (const key of [...shown.keys()]) dismiss(key);
+      for (const key2 of [...shown.keys()]) dismiss(key2);
     }
   };
+}
+
+// compiler/gameDebug.ts
+var STEP_BUILD = -1;
+var STEP_TEST = -3;
+var STEP_UNSEEN = -4;
+var LIMITS = { steps: 4e6, writes: 6e6, keptBytes: 256 * 2 ** 20, every: 48 };
+
+// compiler/debugModel.ts
+var key = (p) => `${p.file}:${p.line}`;
+var UNITS = 5885096;
+var UNIT_BYTES = 336;
+var DebugCursor = class {
+  rec;
+  map;
+  /** The script's memory at the cursor (`rec.memory.at` on). */
+  memory;
+  view;
+  at = { k: 0, s: 0 };
+  /** Writes done: everything before this index of `rec.writes` (by write). */
+  done = 0;
+  /** The step's line, or null for eudplib's own and the rest. */
+  placeOf;
+  constructor(rec, map) {
+    this.rec = rec;
+    this.map = map;
+    this.memory = rec.memory.bytes.slice();
+    this.view = new DataView(this.memory.buffer);
+    this.placeOf = (s) => {
+      const l = rec.stepLine[s];
+      return l >= 0 ? rec.lines[l] ?? null : null;
+    };
+    if (rec.frames) this.moveTo({ k: 0, s: rec.frameSteps[0] });
+  }
+  get where() {
+    return { ...this.at };
+  }
+  get frames() {
+    return this.rec.frames;
+  }
+  /** The game frame of record frame k. */
+  frame(k = this.at.k) {
+    return this.rec.first + k;
+  }
+  frameStart(k) {
+    return this.rec.frameSteps[k];
+  }
+  frameEnd(k) {
+    return this.rec.frameSteps[k + 1];
+  }
+  atEnd() {
+    return this.at.s >= this.frameEnd(this.at.k);
+  }
+  /** The memory is what the record says only up to where it was cut. */
+  get known() {
+    return !this.rec.cut || this.frame() < this.rec.cut.frame;
+  }
+  /** The line about to run (null at a frame's end, or for a step that is no line of the script's). */
+  line() {
+    return this.atEnd() ? null : this.placeOf(this.at.s);
+  }
+  /** The test's line that asked for the frame the cursor is in. */
+  testLine(k = this.at.k) {
+    const f = this.rec.testFileOf[k], line = this.rec.testLine[k];
+    return f >= 0 && line > 0 ? { file: this.rec.testFile[f], line } : null;
+  }
+  moveTo(to) {
+    const k = Math.max(0, Math.min(to.k, this.rec.frames - 1));
+    const s = Math.max(this.frameStart(k), Math.min(to.s, this.frameEnd(k)));
+    const target = this.rec.stepWrites[s];
+    const w = this.rec.writes, base = this.rec.memory.at, v = this.view;
+    while (this.done < target) {
+      const i = 3 * this.done++;
+      v.setUint32(w[i] - base, w[i + 2], true);
+    }
+    while (this.done > target) {
+      const i = 3 * --this.done;
+      v.setUint32(w[i] - base, w[i + 1], true);
+    }
+    this.at = { k, s };
+  }
+  /** A step the person stops at: a line of the script's, or every step with `all`. */
+  visible(s, all) {
+    return all || this.rec.stepLine[s] >= 0;
+  }
+  /** The next line (or the frame's end, then the next frame's first line). */
+  stepForward(all = false) {
+    const { k, s } = this.at;
+    for (let i = s + 1; i < this.frameEnd(k); i++) if (this.visible(i, all)) {
+      this.moveTo({ k, s: i });
+      return;
+    }
+    if (s < this.frameEnd(k)) {
+      this.moveTo({ k, s: this.frameEnd(k) });
+      return;
+    }
+    if (k + 1 >= this.rec.frames) return;
+    for (let i = this.frameStart(k + 1); i < this.frameEnd(k + 1); i++) if (this.visible(i, all)) {
+      this.moveTo({ k: k + 1, s: i });
+      return;
+    }
+    this.moveTo({ k: k + 1, s: this.frameEnd(k + 1) });
+  }
+  /** The line before (or the end of the frame before). */
+  stepBack(all = false) {
+    const { k, s } = this.at;
+    for (let i = s - 1; i >= this.frameStart(k); i--) if (this.visible(i, all)) {
+      this.moveTo({ k, s: i });
+      return;
+    }
+    if (k > 0) this.moveTo({ k: k - 1, s: this.frameEnd(k - 1) });
+    else this.moveTo({ k: 0, s: this.frameStart(0) });
+  }
+  /** To the end of this frame; from a frame's end, to the end of the next. */
+  nextFrame() {
+    const { k, s } = this.at;
+    if (s < this.frameEnd(k)) this.moveTo({ k, s: this.frameEnd(k) });
+    else if (k + 1 < this.rec.frames) this.moveTo({ k: k + 1, s: this.frameEnd(k + 1) });
+  }
+  /** To the end of the frame before (the start of this one). */
+  prevFrame() {
+    const { k } = this.at;
+    if (k > 0) this.moveTo({ k: k - 1, s: this.frameEnd(k - 1) });
+    else this.moveTo({ k: 0, s: this.frameStart(0) });
+  }
+  /** Record frame k's end. */
+  toFrame(k) {
+    this.moveTo({ k, s: this.frameEnd(Math.max(0, Math.min(k, this.rec.frames - 1))) });
+  }
+  /** The cell addresses of every variable named in `watch` ("waves.wave", or "wave" in any program), at the cursor. */
+  watched(watch) {
+    const out = /* @__PURE__ */ new Map();
+    if (!this.map) return out;
+    for (const p of this.map.programs) for (const name of watch) {
+      const [prog, v] = name.includes(".") ? name.split(".", 2) : [null, name];
+      if (prog !== null && prog !== (p.name ?? String(p.index))) continue;
+      for (const [addr] of this.cellsOf(p, v)) out.set(addr, name);
+    }
+    return out;
+  }
+  /** A variable's cells in a program: its own, an array's (a growing one's block as the cursor finds it). */
+  cellsOf(p, name) {
+    const out = /* @__PURE__ */ new Map();
+    for (const v of p.vars) if (top(v.id) === name) {
+      for (const at of Object.values(v.cells)) if (at != null) for (let r = 0; r < (v.rowed ? 12 : 1); r++) out.set(at + (v.stride ?? 4) * r, true);
+    }
+    for (const a2 of p.arrays) if (top(a2.id) === name) for (const [addr] of this.arrayCells(a2)) out.set(addr, true);
+    return out;
+  }
+  arrayCells(a2) {
+    const out = /* @__PURE__ */ new Map();
+    const rows = a2.rowed ? 12 : 1, stride = a2.stride ?? 4;
+    if (!a2.dynamic && a2.at != null) for (let i = 0; i < Math.min(a2.length * rows, 4096); i++) out.set(a2.at + stride * i, true);
+    if (a2.dynamic) {
+      for (const c2 of [a2.ptr, a2.len]) if (c2 != null) for (let r = 0; r < rows; r++) out.set(c2 + stride * r, true);
+      for (let r = 0; r < rows; r++) {
+        const ptr = a2.ptr != null ? this.read32(a2.ptr + stride * r) : 0, len = a2.len != null ? this.read32(a2.len + stride * r) : 0;
+        if (ptr) for (let i = 0; i < Math.min(len, 4096); i++) {
+          const at = this.map ? listCellAt(this.map, ptr, i) : null;
+          if (at !== null) out.set(at, true);
+        }
+      }
+    }
+    return out;
+  }
+  read32(addr) {
+    const i = addr - this.rec.memory.at;
+    return i >= 0 && i + 4 <= this.memory.length ? this.view.getUint32(i, true) : 0;
+  }
+  /**
+   * On to the next breakpoint (a line of `breakpoints` about to run, or a test's line that asks for a frame, at that
+   * frame's end) or the next change of a watched variable (stopped just after the step that made it), else the end.
+   */
+  continueForward(breakpoints, watch = []) {
+    return this.run(1, breakpoints, watch);
+  }
+  /** The same, backwards: the last stop before the cursor, else the start. */
+  continueBack(breakpoints, watch = []) {
+    return this.run(-1, breakpoints, watch);
+  }
+  run(dir, breakpoints, watch) {
+    const rec = this.rec;
+    const cells = this.watched(watch);
+    const w = rec.writes;
+    const touches = (s2) => {
+      for (let i = rec.stepWrites[s2]; i < rec.stepWrites[s2 + 1]; i++) {
+        const name = cells.get(w[3 * i]);
+        if (name) return name;
+      }
+      return null;
+    };
+    let { k, s } = this.at;
+    const from = { k, s };
+    const next = () => {
+      if (dir > 0) {
+        if (s < this.frameEnd(k)) {
+          s++;
+          return s - 1;
+        }
+        if (k + 1 >= rec.frames) return Number.NaN;
+        k++;
+        s = this.frameStart(k);
+        return null;
+      }
+      if (s > this.frameStart(k)) {
+        s--;
+        return s;
+      }
+      if (k === 0) return Number.NaN;
+      k--;
+      s = this.frameEnd(k);
+      return null;
+    };
+    for (; ; ) {
+      const passed = next();
+      if (Number.isNaN(passed)) break;
+      const here = dir < 0 && passed !== null && k === from.k && passed + 1 === from.s;
+      const name = passed !== null && cells.size && !here ? touches(passed) : null;
+      if (name && passed !== null) {
+        this.moveTo({ k, s: passed });
+        const before = this.watchText(name);
+        this.moveTo({ k, s: passed + 1 });
+        const after = this.watchText(name);
+        if (before !== after) return { kind: "watch", name, before, after };
+      }
+      if (s < this.frameEnd(k)) {
+        const place = this.placeOf(s);
+        if (place && breakpoints.has(key(place))) {
+          this.moveTo({ k, s });
+          return { kind: "breakpoint", place };
+        }
+      } else {
+        const t = this.testLine(k);
+        if (t && breakpoints.has(key(t))) {
+          this.moveTo({ k, s });
+          return { kind: "breakpoint", place: t };
+        }
+      }
+    }
+    if (dir > 0) {
+      this.moveTo({ k: rec.frames - 1, s: this.frameEnd(rec.frames - 1) });
+      return { kind: "end" };
+    }
+    this.moveTo({ k: 0, s: this.frameStart(0) });
+    return { kind: "start" };
+  }
+  /** A watched variable's value as text, at the cursor ("?" where it cannot be read). */
+  watchText(name) {
+    const [prog, v] = name.includes(".") ? name.split(".", 2) : [null, name];
+    for (const p of this.programs()) {
+      if (prog !== null && !p.label.startsWith(prog)) continue;
+      const found = p.values.find((x) => x.name === v);
+      if (found) return show(found.value);
+    }
+    return "?";
+  }
+  /** The reader `programVariables` reads the record's memory through. */
+  reader() {
+    const at = this.rec.memory.at, mem = this.memory, view = this.view;
+    const inside2 = (i, n) => i >= at && i + n <= at + mem.length;
+    const m = {
+      getUint32: (i) => inside2(i, 4) ? view.getUint32(i - at, true) : 0,
+      getInt32: (i) => inside2(i, 4) ? view.getInt32(i - at, true) : 0,
+      getUint16: (i) => inside2(i, 2) ? view.getUint16(i - at, true) : 0,
+      getInt16: (i) => inside2(i, 2) ? view.getInt16(i - at, true) : 0,
+      getUint8: (i) => inside2(i, 1) ? mem[i - at] : 0,
+      getInt8: (i) => inside2(i, 1) ? mem[i - at] << 24 >> 24 : 0
+    };
+    const u8 = new Proxy(mem, {
+      get(t, p) {
+        if (typeof p === "string" && /^\d+$/.test(p)) {
+          const i = Number(p);
+          return i >= at && i < at + t.length ? t[i - at] : 0;
+        }
+        if (p === "length") return at + t.length;
+        if (p === "subarray") return (a2, b) => t.subarray(Math.max(0, a2 - at), Math.max(0, b - at));
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      }
+    });
+    return { m, u8, unitAt: (ptr) => ptr ? { unitSlot: Math.round((ptr - UNITS) / UNIT_BYTES) } : null };
+  }
+  /** Every program's variables at the cursor, as the source names them. */
+  programs() {
+    const map = this.map;
+    if (!map) return [];
+    const out = [];
+    const reader = this.reader();
+    for (const p of map.programs) for (const who of p.perPlayer ? p.owners : [void 0]) {
+      const label = `${p.name ?? `program ${p.index}`}${who !== void 0 ? ` (P${who + 1})` : ""}`;
+      let vars;
+      try {
+        vars = programVariables(reader, map, p.name ?? p.index, who);
+      } catch {
+        continue;
+      }
+      const names = [...new Set([...p.vars.filter((v) => !isTemp(v)).map((v) => v.id), ...p.arrays.map((a2) => a2.id)].map(top))];
+      const values = [];
+      for (const name of names) {
+        let value;
+        try {
+          value = plain(vars[name]);
+        } catch {
+          value = "?";
+        }
+        values.push({ name, value });
+      }
+      out.push({ label, values });
+    }
+    return out;
+  }
+  /**
+   * What each line run so far in the cursor's frame wrote: the variables, by line, with their values at the cursor;
+   * and how many steps of the frame each line took. For the values beside the lines (`label`).
+   */
+  frameLines() {
+    const map = this.map;
+    const { k, s } = this.at;
+    const byLine = /* @__PURE__ */ new Map();
+    const owners = this.cellOwners();
+    const w = this.rec.writes;
+    for (let i = this.frameStart(k); i < s; i++) {
+      const place = this.placeOf(i);
+      if (!place) continue;
+      let entry = byLine.get(key(place));
+      if (!entry) {
+        entry = { place, steps: 0, names: /* @__PURE__ */ new Set() };
+        byLine.set(key(place), entry);
+      }
+      entry.steps++;
+      if (map) for (let j = this.rec.stepWrites[i]; j < this.rec.stepWrites[i + 1]; j++) {
+        const n = owners.get(w[3 * j]);
+        if (n) entry.names.add(n);
+      }
+    }
+    return [...byLine.values()].map((e) => ({ place: e.place, steps: e.steps, names: [...e.names] }));
+  }
+  /** Which variable each cell is (by its name in the source), arrays' cells and growing arrays' blocks included. */
+  cellOwners() {
+    const out = /* @__PURE__ */ new Map();
+    for (const p of this.map?.programs ?? []) {
+      for (const v of p.vars) if (!isTemp(v)) {
+        for (const at of Object.values(v.cells)) if (at != null) for (let r = 0; r < (v.rowed ? 12 : 1); r++) out.set(at + 4 * r, top(v.id));
+      }
+      for (const a2 of p.arrays) for (const [addr] of this.arrayCells(a2)) out.set(addr, top(a2.id));
+    }
+    return out;
+  }
+  /** Each frame's work: the conditions and actions the script's lines ran (eudplib's own not counted). */
+  frameCosts() {
+    const rec = this.rec, out = new Int32Array(rec.frames);
+    for (let k = 0; k < rec.frames; k++) for (let s = rec.frameSteps[k]; s < rec.frameSteps[k + 1]; s++) if (rec.stepLine[s] >= 0) out[k] += rec.stepRecords[s];
+    return out;
+  }
+  /** The record frames a breakpoint line ran in. */
+  hits(place) {
+    const rec = this.rec, out = [];
+    const id = rec.lines.findIndex((l) => l.file === place.file && l.line === place.line);
+    for (let k = 0; k < rec.frames; k++) {
+      let hit = false;
+      if (id >= 0) for (let s = rec.frameSteps[k]; s < rec.frameSteps[k + 1] && !hit; s++) hit = rec.stepLine[s] === id;
+      const t = this.testLine(k);
+      if (!hit && t && t.file === place.file && t.line === place.line) hit = true;
+      if (hit) out.push(k);
+    }
+    return out;
+  }
+  /** What was shown on the text lines up to the cursor's frame: the last `n`. */
+  shown(n = 13) {
+    const f = this.frame();
+    return this.rec.shown.filter((x) => x.frame <= f).slice(-n);
+  }
+};
+function isTemp(v) {
+  return /^\$|^_/.test(v.id);
+}
+var top = (id) => id.replace(/#\d+$/, "").split(".")[0];
+function plain(v) {
+  if (v === null || v === void 0 || typeof v !== "object") return v;
+  if ("unitSlot" in v) return v;
+  return JSON.parse(JSON.stringify(v));
+}
+function show(v, most = 80) {
+  const s = (() => {
+    if (v === null || v === void 0) return String(v);
+    if (typeof v === "string") return JSON.stringify(v);
+    if (typeof v !== "object") return String(v);
+    if ("unitSlot" in v) return `unit ${v.unitSlot}`;
+    if (Array.isArray(v)) return `[${v.map((x) => show(x, most)).join(", ")}]`;
+    return `{ ${Object.entries(v).map(([k, x]) => `${k}: ${show(x, most)}`).join(", ")} }`;
+  })();
+  return s.length > most ? `${s.slice(0, most - 1)}\u2026` : s;
+}
+
+// debugger.ts
+var DEBUG_STYLE = `
+.tsd .tsd-debug:focus { outline: none; }
+.tsd .tsd-debug { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; min-height: 0; font-size: var(--fs-md); }
+.tsd .tsd-debug-bar { flex: none; display: flex; align-items: center; gap: 2px; padding: 2px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; }
+.tsd .tsd-debug-bar .tsd-icon-button { display: inline-flex; }
+.tsd .tsd-debug-bar .tsd-sep { width: 1px; height: 16px; margin: 0 6px; background: var(--border); }
+.tsd .tsd-debug-bar .tsd-where { margin-left: 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); }
+.tsd .tsd-debug-bar .tsd-why { margin-left: 10px; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font-size: var(--fs-sm); }
+.tsd .tsd-debug-bar .tsd-why.tsd-failed { color: var(--danger); }
+.tsd .tsd-debug-bar label { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding-left: 10px; color: var(--text-dim); font-size: var(--fs-sm); cursor: pointer; }
+.tsd .tsd-debug-time { flex: none; height: 40px; margin: 4px 8px 2px; cursor: ew-resize; touch-action: none; }
+.tsd .tsd-debug-time svg { display: block; width: 100%; height: 100%; }
+.tsd .tsd-debug-time .cost { fill: var(--teal); fill-opacity: 0.3; stroke: var(--teal); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.tsd .tsd-debug-time .hit { fill: var(--danger); }
+.tsd .tsd-debug-time .said { fill: var(--gold); }
+.tsd .tsd-debug-time .cut { fill: var(--text-faint); fill-opacity: 0.25; }
+.tsd .tsd-debug-time .now { fill: var(--text); }
+.tsd .tsd-debug-time .end { fill: var(--danger); fill-opacity: 0.6; }
+.tsd .tsd-debug-cols { flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--border); }
+.tsd .tsd-debug-col { flex: 1 1 0; min-width: 0; overflow: auto; border-right: 1px solid var(--border); }
+.tsd .tsd-debug-col:last-child { border-right: none; }
+.tsd .tsd-debug-col h5 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 3px 10px; background: var(--bg-1); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); }
+.tsd .tsd-debug-col ul { margin: 0; padding: 2px 0; list-style: none; }
+.tsd .tsd-debug-col li { display: flex; align-items: baseline; gap: 6px; padding: 1px 10px; line-height: 18px; white-space: nowrap; }
+.tsd .tsd-debug-col li.tsd-click { cursor: pointer; }
+.tsd .tsd-debug-col li.tsd-click:hover { background: var(--bg-3); }
+.tsd .tsd-debug-col li.tsd-here { background: var(--bg-4); }
+.tsd .tsd-debug-col li.tsd-dim { color: var(--text-faint); }
+.tsd .tsd-debug-col li.tsd-program { padding-top: 4px; color: var(--text-dim); font-size: var(--fs-sm); }
+.tsd .tsd-debug-col .k { flex: none; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.tsd .tsd-debug-col .v { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); }
+.tsd .tsd-debug-col .v.tsd-changed { color: var(--gold); }
+.tsd .tsd-debug-col .n { flex: none; margin-left: auto; color: var(--text-faint); font-size: var(--fs-sm); }
+.tsd .tsd-debug-col li .tsd-icon-button { visibility: hidden; flex: none; }
+.tsd .tsd-debug-col li:hover .tsd-icon-button, .tsd .tsd-debug-col li .tsd-icon-button.tsd-on { visibility: visible; }
+.tsd .tsd-debug-col .tsd-icon-button.tsd-on { color: var(--gold); }
+.tsd .tsd-debug-col .tsd-empty { padding: 6px 10px; color: var(--text-faint); white-space: normal; line-height: 1.45; }
+.tsd .tsd-debug-game { flex: 1.3 1 0; display: flex; flex-direction: column; overflow: hidden; }
+.tsd .tsd-debug-game .tsd-view { position: relative; flex: 1; min-height: 0; background: #000; }
+.tsd .tsd-debug-overlay { position: absolute; z-index: 4; display: none; background: #000; }
+.tsd .tsd-debug-overlay > div, .tsd .tsd-debug-overlay iframe { display: block; width: 100%; height: 100%; border: 0; }
+.tsd .tsd-debug-game .tsd-shown { flex: none; max-height: 40%; overflow: auto; padding: 2px 10px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); }
+.tsd .tsd-debug-game .tsd-shown div { white-space: pre-wrap; }
+.trigscript-debug-line { background: rgba(214, 178, 74, 0.18); }
+.trigscript-debug-arrow::before { content: "\\eb89"; font: normal normal normal 14px/18px codicon; color: var(--gold); padding-left: 2px; }
+.trigscript-debug-test { background: rgba(78, 201, 176, 0.12); }
+.trigscript-debug-test-arrow::before { content: "\\eb8a"; font: normal normal normal 14px/18px codicon; color: var(--teal); padding-left: 2px; }
+.trigscript-bp { cursor: pointer; }
+.trigscript-bp::before { content: "\\ea71"; font: normal normal normal 14px/18px codicon; color: #e51400; }
+.trigscript-debug-hint { color: var(--gold) !important; opacity: 0.9; }
+`;
+var NS = "http://www.w3.org/2000/svg";
+var DEBUG_PANEL = 340;
+var PICTURE_MS = 60;
+var Debugger = class {
+  breakpoints = /* @__PURE__ */ new Set();
+  /** Variables watched: a continue stops where one changes ("wave", or "waves.wave"). */
+  watch = [];
+  /** The build's own steps (and the test's, and the unseen) are stopped at too. */
+  everyStep = false;
+  session = null;
+  d;
+  body;
+  bar;
+  time;
+  cols;
+  root;
+  /** The three columns, made once a session (the game's view is a frame: moved, it would load again). */
+  varsCol;
+  stepsCol;
+  gameCol;
+  viewBox;
+  shownBox;
+  /**
+   * Where the game's view lives: over the workspace, laid over `viewBox` while the Debug view shows and hidden
+   * otherwise. The view is a frame, which loads again whenever it is moved or taken out of the page, and the panel
+   * takes a view's body out when another is shown.
+   */
+  overlay;
+  placing = 0;
+  placed = "";
+  constructor(deps) {
+    this.d = deps;
+    const { el, t, shell } = deps;
+    const view = shell.view({ id: "debug", title: t("Debug") });
+    this.body = view.body;
+    this.bar = el("div", { className: "tsd-debug-bar" });
+    this.time = el("div", { className: "tsd-debug-time" });
+    this.cols = el("div", { className: "tsd-debug-cols" });
+    this.varsCol = el("div", { className: "tsd-debug-col" });
+    this.stepsCol = el("div", { className: "tsd-debug-col" });
+    this.viewBox = el("div");
+    this.shownBox = el("div", { className: "tsd-shown", title: t("The text lines up to this frame") });
+    this.gameCol = el("div", { className: "tsd-debug-col tsd-debug-game" }, el("h5", {}, t("The game")), this.viewBox, this.shownBox);
+    this.overlay = el("div", { className: "tsd-debug-overlay" });
+    shell.root.append(this.overlay);
+    this.root = el("div", { className: "tsd-debug", tabIndex: -1 }, this.bar, this.time, this.cols);
+    this.body.append(this.root);
+    this.time.addEventListener("pointerdown", (e) => {
+      if (!this.session) return;
+      e.preventDefault();
+      this.root.focus({ preventScroll: true });
+      this.time.setPointerCapture(e.pointerId);
+      this.scrub(e);
+      const move = (m) => this.scrub(m);
+      const up = () => {
+        this.time.removeEventListener("pointermove", move);
+        this.time.removeEventListener("pointerup", up);
+      };
+      this.time.addEventListener("pointermove", move);
+      this.time.addEventListener("pointerup", up);
+    });
+    this.render();
+  }
+  get active() {
+    return this.session !== null;
+  }
+  /**
+   * Where a view of the game for the next session goes (`DebugStart.view`'s element must be this): in the page from
+   * the start, since a frame made outside it never loads.
+   */
+  gameHost() {
+    const host = this.d.el("div");
+    this.overlay.replaceChildren(host);
+    return host;
+  }
+  /** Keeps the game's view over its place in the Debug view, and out of sight while that is not shown. */
+  place = () => {
+    this.placing = 0;
+    const s = this.session;
+    if (!s || !s.view || typeof s.view === "string") {
+      this.overlay.style.display = "none";
+      this.placed = "";
+      return;
+    }
+    const root = this.d.shell.root, box = this.viewBox;
+    const b = box.isConnected ? box.getBoundingClientRect() : null;
+    let key2 = "none";
+    if (b) {
+      let left = b.left, top2 = b.top, right = b.right, bottom = b.bottom;
+      for (let e = box.parentElement; e && e !== root; e = e.parentElement) {
+        if (getComputedStyle(e).overflow === "visible") continue;
+        const c2 = e.getBoundingClientRect();
+        left = Math.max(left, c2.left);
+        top2 = Math.max(top2, c2.top);
+        right = Math.min(right, c2.right);
+        bottom = Math.min(bottom, c2.bottom);
+      }
+      const o = root.getBoundingClientRect();
+      if (right - left > 0 && bottom - top2 > 0) key2 = `${Math.round(left - o.left)},${Math.round(top2 - o.top)},${Math.round(right - left)},${Math.round(bottom - top2)}`;
+    }
+    if (key2 !== this.placed) {
+      this.placed = key2;
+      if (key2 === "none") this.overlay.style.display = "none";
+      else {
+        const [x, y, w, h] = key2.split(",");
+        Object.assign(this.overlay.style, { display: "block", left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+      }
+    }
+    this.placing = requestAnimationFrame(this.place);
+  };
+  /** A recorded run to walk: the cursor at its start, or at its end when the test failed (where debugging begins). */
+  start(s) {
+    const keep = s.view && typeof s.view !== "string" ? s.view.element : null;
+    this.end(keep);
+    const cursor = new DebugCursor(s.recording, s.variables);
+    this.session = { ...s, cursor, costs: cursor.frameCosts(), last: /* @__PURE__ */ new Map(), stop: null, picture: { timer: null, asked: -1, shown: -1 } };
+    const { el, t } = this.d;
+    this.viewBox.replaceChildren(...keep ? [] : [el("div", { className: "tsd-empty" }, typeof s.view === "string" ? s.view : t("No picture of the game here."))]);
+    this.viewBox.className = keep ? "tsd-view" : "";
+    if (!keep) this.overlay.replaceChildren();
+    if (keep && !this.placing) this.placing = requestAnimationFrame(this.place);
+    this.cols.replaceChildren(this.varsCol, this.stepsCol, this.gameCol);
+    if (s.recording.result.status === "failed" && s.recording.frames) cursor.toFrame(s.recording.frames - 1);
+    else this.firstLine();
+    this.d.shell.showPanel("debug");
+    this.d.shell.growPanel(DEBUG_PANEL);
+    this.moved();
+  }
+  /** The session is over: the engine's game let go, the editor's marks taken away (`keep`: a view made for the next). */
+  end(keep = null) {
+    if (!keep) {
+      this.overlay.replaceChildren();
+      this.overlay.style.display = "none";
+      this.placed = "";
+    }
+    if (this.placing) {
+      cancelAnimationFrame(this.placing);
+      this.placing = 0;
+    }
+    const s = this.session;
+    if (!s) return;
+    if (s.picture.timer) clearTimeout(s.picture.timer);
+    s.pictures?.close();
+    if (s.view && typeof s.view !== "string" && s.view.element !== keep) s.view.dispose();
+    this.viewBox.replaceChildren();
+    this.session = null;
+    this.render();
+    this.d.changed();
+  }
+  /* ── what the person does ── */
+  toggleBreakpoint(file, line) {
+    const k = `${file}:${line}`;
+    if (!this.breakpoints.delete(k)) this.breakpoints.add(k);
+    this.d.changed();
+    if (this.session) this.renderTime();
+  }
+  toggleWatch(name) {
+    const at = this.watch.indexOf(name);
+    if (at >= 0) this.watch.splice(at, 1);
+    else this.watch.push(name);
+    this.render();
+  }
+  continueForward() {
+    this.go((c2) => c2.continueForward(this.breakpoints, this.watch));
+  }
+  continueBack() {
+    this.go((c2) => c2.continueBack(this.breakpoints, this.watch));
+  }
+  stepForward() {
+    this.go((c2) => {
+      c2.stepForward(this.everyStep);
+      return null;
+    });
+  }
+  stepBack() {
+    this.go((c2) => {
+      c2.stepBack(this.everyStep);
+      return null;
+    });
+  }
+  nextFrame() {
+    this.go((c2) => {
+      c2.nextFrame();
+      return null;
+    });
+  }
+  prevFrame() {
+    this.go((c2) => {
+      c2.prevFrame();
+      return null;
+    });
+  }
+  restart() {
+    this.go(() => {
+      this.firstLine();
+      return null;
+    });
+  }
+  /** The run's first line of the script (frames with none run, such as the first, are passed over). */
+  firstLine() {
+    const c2 = this.session.cursor;
+    c2.moveTo({ k: 0, s: c2.frameStart(0) });
+    if (this.everyStep) return;
+    while (!c2.line()) {
+      const was = c2.where;
+      c2.stepForward(false);
+      const now = c2.where;
+      if (now.k === was.k && now.s === was.s) {
+        c2.moveTo({ k: 0, s: c2.frameStart(0) });
+        return;
+      }
+    }
+  }
+  go(move) {
+    const s = this.session;
+    if (!s) return;
+    s.stop = move(s.cursor);
+    this.moved();
+  }
+  scrub(e) {
+    const s = this.session;
+    if (!s || !s.recording.frames) return;
+    const r = this.time.getBoundingClientRect();
+    const k = Math.floor((e.clientX - r.left) / Math.max(1, r.width) * s.recording.frames);
+    s.cursor.toFrame(Math.max(0, Math.min(s.recording.frames - 1, k)));
+    s.stop = null;
+    this.moved();
+  }
+  /** The cursor moved: the editor's line, the view, the picture. */
+  moved() {
+    const s = this.session;
+    if (!s) return;
+    const at = s.cursor.line() ?? s.cursor.testLine();
+    if (at) this.d.reveal(at.file, at.line);
+    this.render();
+    this.d.changed();
+    this.askPicture();
+  }
+  /* ── what goes in the editor ── */
+  /** The editor's marks: breakpoints, the line about to run, the test's line. */
+  marks() {
+    const breakpoints = [...this.breakpoints].map((k) => {
+      const i = k.lastIndexOf(":");
+      return { file: k.slice(0, i), line: Number(k.slice(i + 1)) };
+    });
+    const s = this.session;
+    if (!s || !this.current()) return { breakpoints, at: null, test: null };
+    return { breakpoints, at: s.cursor.line(), test: s.cursor.testLine() };
+  }
+  /** Beside each line run so far in the frame: the variables it wrote, at the cursor, and how often it ran. */
+  hints() {
+    const s = this.session;
+    if (!s || !this.current() || !s.cursor.known) return [];
+    const { t } = this.d;
+    const values = /* @__PURE__ */ new Map();
+    for (const p of s.cursor.programs()) for (const v of p.values) if (!values.has(v.name)) values.set(v.name, show(v.value, 40));
+    return s.cursor.frameLines().map((l) => {
+      const said = l.names.map((n) => `${n} = ${values.get(n) ?? "?"}`);
+      if (l.steps > 1) said.push(`\xD7${l.steps}`);
+      return said.length ? { file: l.place.file, line: l.place.line, label: said.join("  "), note: t("What this line wrote in frame {frame}, as it stands at the debugger's cursor; \xD7n: how many times it ran in the frame so far.", { frame: s.cursor.frame() }) } : null;
+    }).filter((h) => h !== null);
+  }
+  /** The script is as the run was built from: lines mean what they meant. */
+  current() {
+    const s = this.session;
+    return !!s && Object.keys(s.files).length > 0 && this.filesNow !== null && Object.entries(s.files).every(([f, text]) => this.filesNow[f] === text);
+  }
+  filesNow = null;
+  /** The editor's files now (the debugger's marks show only while they are the run's). */
+  setFiles(files) {
+    const was = this.current();
+    this.filesNow = files;
+    if (this.session && was !== this.current()) {
+      this.render();
+      this.d.changed();
+    }
+  }
+  /* ── the picture ── */
+  askPicture() {
+    const s = this.session;
+    if (!s || !s.pictures || !s.view || typeof s.view === "string") return;
+    if (s.picture.timer) clearTimeout(s.picture.timer);
+    s.picture.timer = setTimeout(() => {
+      s.picture.timer = null;
+      const c2 = s.cursor;
+      const frame = c2.atEnd() ? c2.frame() : c2.frame() - 1;
+      if (frame === s.picture.shown || frame === s.picture.asked || s.pictures.closed) return;
+      s.picture.asked = frame;
+      s.pictures.picture(frame).then(
+        (p) => {
+          if (this.session !== s || typeof s.view === "string" || !s.view) return;
+          s.picture.asked = -1;
+          s.picture.shown = p.frame;
+          s.view.show(p);
+          this.askPicture();
+        },
+        (err) => {
+          s.picture.asked = -1;
+          if (this.session === s) this.d.setStatus("error", this.d.t("No picture of the game: {message}", { message: err.message }));
+        }
+      );
+    }, PICTURE_MS);
+  }
+  /* ── the view ── */
+  button(icon, title, run, disabled = false) {
+    const b = this.d.shell.iconButton({ icon, title, run });
+    b.set({ disabled });
+    return b.element;
+  }
+  render() {
+    const focused = this.root.contains(document.activeElement);
+    this.draw();
+    if (focused && !this.root.contains(document.activeElement)) this.root.focus({ preventScroll: true });
+  }
+  draw() {
+    const { el, t } = this.d;
+    const s = this.session;
+    if (!s) {
+      this.bar.replaceChildren(el("span", { className: "tsd-why" }, t("No test is being debugged. Debug one from its row in the Testing view (the bug icon) or with Debug Test at Cursor: it runs once in the game with everything it did written down, and here you walk it, forwards and back.")));
+      this.time.replaceChildren();
+      this.cols.replaceChildren();
+      return;
+    }
+    if (this.cols.childElementCount !== 3) this.cols.replaceChildren(this.varsCol, this.stepsCol, this.gameCol);
+    const c2 = s.cursor, rec = s.recording;
+    const none = !rec.frames;
+    const why = (() => {
+      if (!this.current()) return { text: t("The script changed since this run: its lines may have moved. Debug the test again to walk the script as it is."), failed: true };
+      if (s.stop?.kind === "breakpoint") return { text: t("Stopped at the breakpoint on line {line}.", { line: s.stop.place.line }), failed: false };
+      if (s.stop?.kind === "watch") return { text: t("{name} changed: {before} \u2192 {after}", { name: s.stop.name, before: s.stop.before, after: s.stop.after }), failed: false };
+      if (s.stop?.kind === "start") return { text: t("The start of the run."), failed: false };
+      if (s.stop?.kind === "end") return { text: rec.result.status === "failed" ? t("The end of the run: {message}", { message: rec.result.message ?? t("the test failed") }) : t("The end of the run: the test passed."), failed: rec.result.status === "failed" };
+      if (rec.cut && !c2.known) return { text: t("The record stops at frame {frame} ({why}): the variables are not known past it.", { frame: rec.cut.frame, why: rec.cut.why }), failed: true };
+      return rec.result.status === "failed" ? { text: t("{test} failed: {message}", { test: rec.test.name, message: rec.result.message ?? "" }), failed: true } : { text: t("{test} passed.", { test: rec.test.name }), failed: false };
+    })();
+    const line = c2.line();
+    const where = none ? t("no frames") : `${t("frame {frame}", { frame: c2.frame() })}  ${(c2.frame() / 24).toFixed(2)} s  ${line ? `${line.file}:${line.line}` : c2.atEnd() ? t("end of frame") : t("the build's own triggers")}`;
+    const every = el("input", { type: "checkbox", checked: this.everyStep });
+    every.addEventListener("change", () => {
+      this.everyStep = every.checked;
+      this.render();
+    });
+    this.bar.replaceChildren(
+      this.button("debug-reverse-continue", t("Continue backwards (F6): to the breakpoint or the change of a watched variable before this, or the start"), () => this.continueBack(), none),
+      this.button("debug-step-back", t("Back a line (Shift+F10)"), () => this.stepBack(), none),
+      this.button("debug-step-over", t("On a line (F10)"), () => this.stepForward(), none),
+      this.button("debug-continue", t("Continue (F5): to the next breakpoint or change of a watched variable, or the end"), () => this.continueForward(), none),
+      el("span", { className: "tsd-sep" }),
+      this.button("arrow-left", t("Back a frame (Shift+F11)"), () => this.prevFrame(), none),
+      this.button("arrow-right", t("On a frame (F11): to the end of this one"), () => this.nextFrame(), none),
+      this.button("debug-restart", t("To the start of the run"), () => this.restart(), none),
+      this.button("debug-stop", t("Stop debugging (Shift+F5)"), () => this.end()),
+      el("span", { className: "tsd-where" }, where),
+      el("span", { className: why.failed ? "tsd-why tsd-failed" : "tsd-why", title: why.text }, why.text),
+      el("label", { title: t("Stop at every step, the build's own triggers and what the game wrote by itself included, not only at the script's lines") }, every, t("Every step"))
+    );
+    this.renderTime();
+    this.renderCols();
+  }
+  renderTime() {
+    const s = this.session;
+    if (!s) return;
+    const rec = s.recording, n = Math.max(rec.frames, 1), c2 = s.cursor;
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${n} 100`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    const rect = (x, y, w2, h, cls, title2) => {
+      const r = document.createElementNS(NS, "rect");
+      r.setAttribute("x", String(x));
+      r.setAttribute("y", String(y));
+      r.setAttribute("width", String(w2));
+      r.setAttribute("height", String(h));
+      r.setAttribute("class", cls);
+      if (title2) {
+        const tt = document.createElementNS(NS, "title");
+        tt.textContent = title2;
+        r.append(tt);
+      }
+      svg.append(r);
+    };
+    const top2 = Math.max(1, ...s.costs);
+    const area = document.createElementNS(NS, "path");
+    const pts = [];
+    s.costs.forEach((v, k) => {
+      const y = (100 - v / top2 * 70).toFixed(2);
+      pts.push(`${k},${y} ${k + 1},${y}`);
+    });
+    area.setAttribute("d", `M0,100 L${pts.join(" L")} L${n},100 Z`);
+    area.setAttribute("class", "cost");
+    svg.append(area);
+    const { t } = this.d;
+    if (rec.cut) {
+      const k = rec.cut.frame - rec.first;
+      rect(k, 0, n - k, 100, "cut", t("Not recorded past frame {frame}: {why}", { frame: rec.cut.frame, why: rec.cut.why }));
+    }
+    const w = Math.max(n / 600, 0.6);
+    for (const b of this.marks().breakpoints) for (const k of c2.hits(b)) rect(k, 0, w, 14, "hit", t("Line {line} runs in frame {frame}", { line: b.line, frame: rec.first + k }));
+    for (const x of rec.shown) rect(x.frame - rec.first, 88, w, 12, "said", x.text);
+    if (rec.result.status === "failed") rect(n - w, 0, w, 100, "end", rec.result.message ?? "");
+    rect(c2.where.k, 0, Math.max(w, n / 300), 100, "now");
+    const title = document.createElementNS(NS, "title");
+    title.textContent = t("Frames {from} to {to}: the script's conditions and actions a frame ({peak} at the most). Red: a breakpoint's line runs; gold: a line of text was shown. Click or drag to go to a frame.", { from: rec.first, to: rec.first + rec.frames - 1, peak: shortCount(top2) });
+    svg.prepend(title);
+    this.time.replaceChildren(svg);
+  }
+  renderCols() {
+    const { el, t } = this.d;
+    const s = this.session;
+    const c2 = s.cursor, rec = s.recording;
+    const vars = this.varsCol;
+    vars.replaceChildren(el("h5", {}, t("Variables")));
+    const list = el("ul");
+    const now = /* @__PURE__ */ new Map();
+    if (!c2.known) list.append(el("li", { className: "tsd-empty" }, t("Not known here: the record stops at frame {frame}.", { frame: rec.cut.frame })));
+    else {
+      const programs = c2.programs();
+      if (this.watch.length) {
+        list.append(el("li", { className: "tsd-program" }, t("Watched")));
+        for (const name of this.watch) list.append(this.varRow(name, c2.watchText(name), s.last.get(`watch:${name}`), true, () => this.toggleWatch(name)));
+        for (const name of this.watch) now.set(`watch:${name}`, c2.watchText(name));
+      }
+      if (!programs.length) list.append(el("li", { className: "tsd-empty" }, t("The build did not say where the programs' variables are.")));
+      for (const p of programs) {
+        list.append(el("li", { className: "tsd-program" }, p.label));
+        for (const v of p.values) {
+          const text = show(v.value, 400), id = `${p.label}:${v.name}`;
+          now.set(id, text);
+          const watchName = programs.filter((x) => x.values.some((y) => y.name === v.name)).length > 1 ? `${p.label.split(" ")[0]}.${v.name}` : v.name;
+          list.append(this.varRow(v.name, text, s.last.get(id), this.watch.includes(watchName), () => this.toggleWatch(watchName)));
+        }
+      }
+    }
+    s.last = now;
+    vars.append(list);
+    const steps = this.stepsCol;
+    steps.replaceChildren(el("h5", {}, t("Frame {frame}", { frame: c2.frame() })));
+    const rows = el("ul");
+    const k = c2.where.k;
+    const first = c2.frameStart(k), end = c2.frameEnd(k);
+    const most = 400;
+    for (let i = first; i < Math.min(end, first + most); i++) {
+      const l = rec.stepLine[i], place = c2.placeOf(i);
+      if (!this.everyStep && l === STEP_BUILD && rec.stepWrites[i + 1] === rec.stepWrites[i]) continue;
+      const label = place ? `${place.file === "main.ts" ? "" : `${place.file} `}${t("line {line}", { line: place.line })}` : l === STEP_TEST ? t("the test") : l === STEP_UNSEEN ? t("the game itself") : t("the build's own triggers");
+      const wrote = rec.stepWrites[i + 1] - rec.stepWrites[i];
+      const row = el(
+        "li",
+        { className: `tsd-click${i === c2.where.s ? " tsd-here" : ""}${place ? "" : " tsd-dim"}`, onClick: () => {
+          c2.moveTo({ k, s: i });
+          s.stop = null;
+          this.moved();
+        } },
+        el("span", { className: "k" }, label),
+        el("span", { className: "v" }, wrote ? t("{n, plural, one {# write} other {# writes}}", { n: wrote }) : ""),
+        el("span", { className: "n", title: t("conditions and actions") }, String(rec.stepRecords[i]))
+      );
+      rows.append(row);
+    }
+    if (end - first > most) rows.append(el("li", { className: "tsd-dim" }, t("\u2026 and {n} more steps", { n: end - first - most })));
+    rows.append(el("li", { className: `tsd-click${c2.atEnd() ? " tsd-here" : ""} tsd-dim`, onClick: () => {
+      c2.moveTo({ k, s: end });
+      s.stop = null;
+      this.moved();
+    } }, el("span", { className: "k" }, t("end of frame")), el("span", { className: "n" }, String(s.costs[k] ?? 0))));
+    steps.append(rows);
+    const shown = c2.shown();
+    this.shownBox.replaceChildren(...shown.length ? shown.map((x) => el("div", {}, `${x.frame}  ${x.text}`)) : [el("div", {}, t("Nothing shown yet."))]);
+  }
+  varRow(name, text, before, watched, toggle) {
+    const { el, t } = this.d;
+    const eye = this.d.shell.iconButton({ icon: "eye", title: watched ? t("Stop watching {name}", { name }) : t("Watch {name}: Continue stops where it changes", { name }), run: toggle });
+    if (watched) eye.element.classList.add("tsd-on");
+    return el(
+      "li",
+      { title: text },
+      el("span", { className: "k" }, name),
+      el("span", { className: before !== void 0 && before !== text ? "v tsd-changed" : "v" }, text),
+      eye.element
+    );
+  }
+};
+
+// videoDecode.ts
+var hex2 = (n) => n.toString(16).padStart(2, "0");
+function av1Codec(c2) {
+  if (!c2 || c2.length < 4) return "av01.0.08M.08";
+  const profile = c2[1] >> 5, level = c2[1] & 31, tier = c2[2] >> 7 ? "H" : "M";
+  const high = c2[2] >> 6 & 1, twelve = c2[2] >> 5 & 1;
+  const depth = high ? twelve ? 12 : 10 : 8;
+  return `av01.${profile}.${String(level).padStart(2, "0")}${tier}.${String(depth).padStart(2, "0")}`;
+}
+var avcCodec = (c2) => c2 && c2.length >= 4 ? `avc1.${hex2(c2[1])}${hex2(c2[2])}${hex2(c2[3])}` : "avc1.42001f";
+function hevcCodec(c2, tag = "hvc1") {
+  if (!c2 || c2.length < 13) return `${tag}.1.6.L93.B0`;
+  const space = ["", "A", "B", "C"][c2[1] >> 6], tier = c2[1] >> 5 & 1 ? "H" : "L", idc = c2[1] & 31;
+  let flags = (c2[2] << 24 | c2[3] << 16 | c2[4] << 8 | c2[5]) >>> 0, reversed = 0;
+  for (let i = 0; i < 32; i++) {
+    reversed = reversed << 1 | flags & 1;
+    flags >>>= 1;
+  }
+  const constraints = [...c2.subarray(6, 12)];
+  while (constraints.length && constraints[constraints.length - 1] === 0) constraints.pop();
+  return [`${tag}.${space}${idc}`, (reversed >>> 0).toString(16), `${tier}${c2[12]}`, ...constraints.map((b) => b.toString(16))].join(".");
+}
+var EBML = 440786851;
+var SEGMENT = 408125543;
+var INFO = 357149030;
+var TIMECODE_SCALE = 2807729;
+var TRACKS = 374648427;
+var TRACK_ENTRY = 174;
+var TRACK_NUMBER = 215;
+var TRACK_TYPE = 131;
+var CODEC_ID = 134;
+var CODEC_PRIVATE = 25506;
+var VIDEO = 224;
+var PIXEL_WIDTH = 176;
+var PIXEL_HEIGHT = 186;
+var DEFAULT_DURATION = 2352003;
+var CLUSTER = 524531317;
+var TIMECODE = 231;
+var SIMPLE_BLOCK = 163;
+var BLOCK_GROUP = 160;
+var BLOCK2 = 161;
+var MASTERS = /* @__PURE__ */ new Set([SEGMENT, INFO, TRACKS, TRACK_ENTRY, VIDEO, CLUSTER, BLOCK_GROUP]);
+function demuxMatroska(b) {
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  let at = 0;
+  const vint = (keep) => {
+    if (at >= b.length) return null;
+    const first = b[at];
+    let len = 1;
+    while (len <= 8 && !(first & 128 >> len - 1)) len++;
+    if (len > 8 || at + len > b.length) return null;
+    let v = keep ? first : first & 255 >> len;
+    for (let i = 1; i < len; i++) v = v * 256 + b[at + i];
+    const unknown = !keep && v === 2 ** (7 * len) - 1;
+    at += len;
+    return unknown ? -1 : v;
+  };
+  const uint = (from, size) => {
+    let v = 0;
+    for (let i = 0; i < size; i++) v = v * 256 + b[from + i];
+    return v;
+  };
+  if (view.byteLength < 4 || view.getUint32(0) !== EBML) return null;
+  let scale = 1e6;
+  const tracks = [];
+  let track = null;
+  let videoTrack = -1, cluster = 0;
+  const samples = [];
+  const block2 = (from, end, key2) => {
+    const save = at;
+    at = from;
+    const number = vint(false);
+    if (number === null || number !== videoTrack) {
+      at = save;
+      return;
+    }
+    const rel = view.getInt16(at);
+    const flags = b[at + 2];
+    at += 3;
+    if (flags & 6) {
+      at = save;
+      return;
+    }
+    samples.push({ data: b.subarray(at, end), time: Math.round((cluster + rel) * scale / 1e3), key: key2 ?? !!(flags & 128) });
+    at = save;
+  };
+  while (at < b.length) {
+    const start = at;
+    const id = vint(true), size = vint(false);
+    if (id === null || size === null) break;
+    const end = size < 0 ? b.length : Math.min(b.length, at + size);
+    if (MASTERS.has(id)) {
+      if (id === TRACK_ENTRY) {
+        track = { number: 0, type: 0, codec: "", width: 0, height: 0, duration: 0 };
+        tracks.push(track);
+      }
+      if (id === CLUSTER && videoTrack < 0) {
+        const video2 = tracks.find((t) => t.type === 1);
+        if (!video2) return null;
+        videoTrack = video2.number;
+      }
+      continue;
+    }
+    if (id === TIMECODE_SCALE) scale = uint(at, size);
+    else if (track && id === TRACK_NUMBER) track.number = uint(at, size);
+    else if (track && id === TRACK_TYPE) track.type = uint(at, size);
+    else if (track && id === CODEC_ID) track.codec = new TextDecoder().decode(b.subarray(at, end));
+    else if (track && id === CODEC_PRIVATE) track.priv = b.subarray(at, end);
+    else if (track && id === PIXEL_WIDTH) track.width = uint(at, size);
+    else if (track && id === PIXEL_HEIGHT) track.height = uint(at, size);
+    else if (track && id === DEFAULT_DURATION) track.duration = uint(at, size);
+    else if (id === TIMECODE) cluster = uint(at, size);
+    else if (id === SIMPLE_BLOCK) block2(at, end, null);
+    else if (id === BLOCK2) block2(at, end, false);
+    if (end <= start) break;
+    at = end;
+  }
+  const video = tracks.find((t) => t.number === videoTrack);
+  if (!video || !samples.length) return null;
+  const codec = video.codec === "V_VP8" ? "vp8" : video.codec === "V_VP9" ? "vp09.00.10.08" : video.codec === "V_AV1" ? av1Codec(video.priv) : video.codec === "V_MPEG4/ISO/AVC" ? avcCodec(video.priv) : video.codec === "V_MPEGH/ISO/HEVC" ? hevcCodec(video.priv) : null;
+  if (!codec) return null;
+  samples[0].key = true;
+  const last = samples.reduce((m, s) => Math.max(m, s.time), 0);
+  return { codec, ...video.priv && codec !== "vp8" && !codec.startsWith("vp09") ? { description: video.priv } : {}, width: video.width, height: video.height, samples, end: last + Math.round(video.duration / 1e3) };
+}
+function demuxMp4(b) {
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const type = (at) => String.fromCharCode(b[at + 4], b[at + 5], b[at + 6], b[at + 7]);
+  const boxes = (from, to) => {
+    const out = [];
+    for (let at = from; at + 8 <= to; ) {
+      let size = view.getUint32(at), body2 = at + 8;
+      if (size === 1) {
+        size = Number(view.getBigUint64(at + 8));
+        body2 = at + 16;
+      } else if (size === 0) size = to - at;
+      if (size < 8 || at + size > to) break;
+      out.push({ type: type(at), body: body2, end: at + size });
+      at += size;
+    }
+    return out;
+  };
+  const child = (from, to, name) => boxes(from, to).find((x) => x.type === name);
+  if (b.length < 12 || !["ftyp", "moov", "mdat", "wide", "free", "skip"].includes(type(0))) return null;
+  const moov = child(0, b.length, "moov");
+  if (!moov) return null;
+  for (const trak of boxes(moov.body, moov.end).filter((x) => x.type === "trak")) {
+    const mdia = child(trak.body, trak.end, "mdia");
+    const hdlr = mdia && child(mdia.body, mdia.end, "hdlr");
+    if (!mdia || !hdlr || type(hdlr.body + 4) !== "vide") continue;
+    const mdhd = child(mdia.body, mdia.end, "mdhd");
+    const timescale = view.getUint32(mdhd.body + (b[mdhd.body] === 1 ? 20 : 12));
+    const minf = child(mdia.body, mdia.end, "minf"), stbl = minf && child(minf.body, minf.end, "stbl");
+    if (!stbl) return null;
+    const box = (name) => child(stbl.body, stbl.end, name);
+    const stsd = box("stsd");
+    if (!stsd) return null;
+    const entry = stsd.body + 8, fourcc = type(entry), width = view.getUint16(entry + 32), height = view.getUint16(entry + 34);
+    const config = boxes(entry + 86, entry + view.getUint32(entry));
+    const cfg = (name) => {
+      const c2 = config.find((x) => x.type === name);
+      return c2 ? b.subarray(c2.body, c2.end) : void 0;
+    };
+    const codec = fourcc === "avc1" || fourcc === "avc3" ? avcCodec(cfg("avcC")) : fourcc === "hvc1" || fourcc === "hev1" ? hevcCodec(cfg("hvcC"), fourcc) : fourcc === "av01" ? av1Codec(cfg("av1C")) : fourcc === "vp09" ? "vp09.00.10.08" : fourcc === "vp08" ? "vp8" : null;
+    if (!codec) return null;
+    const description = cfg("avcC") ?? cfg("hvcC") ?? cfg("av1C");
+    const stsz = box("stsz"), fixed = view.getUint32(stsz.body + 4), count = view.getUint32(stsz.body + 8);
+    const sizes = Array.from({ length: count }, (_, i) => fixed || view.getUint32(stsz.body + 12 + 4 * i));
+    const stco = box("stco"), co64 = box("co64");
+    const chunks = stco ? Array.from({ length: view.getUint32(stco.body + 4) }, (_, i) => view.getUint32(stco.body + 8 + 4 * i)) : co64 ? Array.from({ length: view.getUint32(co64.body + 4) }, (_, i) => Number(view.getBigUint64(co64.body + 8 + 8 * i))) : [];
+    const stsc = box("stsc"), runs = Array.from({ length: view.getUint32(stsc.body + 4) }, (_, i) => ({ first: view.getUint32(stsc.body + 8 + 12 * i) - 1, per: view.getUint32(stsc.body + 12 + 12 * i) }));
+    const stts = box("stts"), deltas = [];
+    for (let i = 0, n = view.getUint32(stts.body + 4); i < n; i++) for (let k = 0, c2 = view.getUint32(stts.body + 8 + 8 * i); k < c2; k++) deltas.push(view.getUint32(stts.body + 12 + 8 * i));
+    const ctts = box("ctts"), offsets = [];
+    if (ctts) for (let i = 0, n = view.getUint32(ctts.body + 4); i < n; i++) for (let k = 0, c2 = view.getUint32(ctts.body + 8 + 8 * i); k < c2; k++) offsets.push(view.getInt32(ctts.body + 12 + 8 * i));
+    const stss = box("stss"), keys = stss ? new Set(Array.from({ length: view.getUint32(stss.body + 4) }, (_, i) => view.getUint32(stss.body + 8 + 4 * i) - 1)) : null;
+    const edts = child(trak.body, trak.end, "edts"), elst = edts && child(edts.body, edts.end, "elst");
+    const shift = elst ? b[elst.body] === 1 ? Number(view.getBigInt64(elst.body + 16)) : view.getInt32(elst.body + 12) : 0;
+    const samples = [];
+    let s = 0, dts = 0, end = 0;
+    for (let c2 = 0; c2 < chunks.length && s < count; c2++) {
+      const run = [...runs].reverse().find((r) => r.first <= c2);
+      let at = chunks[c2];
+      for (let k = 0; k < run.per && s < count; k++, s++) {
+        const pts = dts + (offsets[s] ?? 0) - Math.max(0, shift);
+        samples.push({ data: b.subarray(at, at + sizes[s]), time: Math.round(pts * 1e6 / timescale), key: keys ? keys.has(s) : true });
+        end = Math.max(end, Math.round((pts + (deltas[s] ?? 0)) * 1e6 / timescale));
+        at += sizes[s];
+        dts += deltas[s] ?? 0;
+      }
+    }
+    return samples.length ? { codec, ...description ? { description } : {}, width, height, samples, end } : null;
+  }
+  return null;
+}
+function demux(bytes2) {
+  try {
+    return demuxMatroska(bytes2) ?? demuxMp4(bytes2);
+  } catch {
+    return null;
+  }
+}
+async function decodeTrack(d, onFrame, signal) {
+  const W = globalThis;
+  if (!W.VideoDecoder || !W.EncodedVideoChunk) return false;
+  const config = { codec: d.codec, codedWidth: d.width, codedHeight: d.height, ...d.description ? { description: d.description } : {} };
+  try {
+    if (!(await W.VideoDecoder.isConfigSupported(config)).supported) return false;
+  } catch {
+    return false;
+  }
+  let failure = null;
+  const decoder2 = new W.VideoDecoder({ output: (f) => {
+    try {
+      onFrame(f);
+    } catch (e) {
+      failure = e;
+      f.close();
+    }
+  }, error: (e) => {
+    failure = e;
+  } });
+  decoder2.configure(config);
+  try {
+    for (const s of d.samples) {
+      if (signal.aborted) throw new DOMException("cancelled", "AbortError");
+      if (failure) throw failure;
+      decoder2.decode(new W.EncodedVideoChunk({ type: s.key ? "key" : "delta", timestamp: s.time, data: s.data }));
+      while (decoder2.decodeQueueSize > 4) await new Promise((r) => setTimeout(r, 1));
+    }
+    await decoder2.flush();
+    if (failure) throw failure;
+    return true;
+  } finally {
+    if (decoder2.state !== "closed") decoder2.close();
+  }
+}
+
+// soundImport.ts
+var SOUND_FILES = "audio/*,.wav,.mp3,.ogg,.oga,.flac,.m4a,.aac,.opus";
+var isSoundSource = (f) => f.type.startsWith("audio/") || /\.(wav|mp3|ogg|oga|flac|m4a|aac|opus)$/i.test(f.name);
+async function decode(file, rate) {
+  const bytes2 = await file.arrayBuffer();
+  const buffer = await new OfflineAudioContext(1, 1, 44100).decodeAudioData(bytes2);
+  const frames = Math.max(1, Math.ceil(buffer.duration * rate));
+  const ctx = new OfflineAudioContext(1, frames, rate);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ctx.destination);
+  source.start();
+  return (await ctx.startRendering()).getChannelData(0).slice();
+}
+function drawWave(canvas, samples, mark = -1) {
+  const w = canvas.width = 512, h = canvas.height = 96, ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#222";
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = "#9cc8ff";
+  const per = samples.length / w;
+  for (let x = 0; x < w; x++) {
+    let lo = 0, hi = 0;
+    for (let i = Math.floor(x * per); i < Math.floor((x + 1) * per); i++) {
+      lo = Math.min(lo, samples[i]);
+      hi = Math.max(hi, samples[i]);
+    }
+    ctx.fillRect(x, h / 2 * (1 - Math.min(1, hi)), 1, Math.max(1, h / 2 * (Math.min(1, hi) - Math.max(-1, lo))));
+  }
+  if (mark >= 0) {
+    ctx.fillStyle = "#ffd75e";
+    ctx.fillRect(Math.round(mark * w), 0, 1, h);
+  }
+}
+var WAVE_STYLE = "width: 100%; max-width: 512px; height: 96px; display: block; margin: 0 auto 8px; background: #222;";
+function player(samples, rate, canvas) {
+  let ctx = null, source = null, raf = 0;
+  const stop = () => {
+    source?.stop();
+    source = null;
+    cancelAnimationFrame(raf);
+    drawWave(canvas, samples);
+  };
+  const play = () => {
+    stop();
+    ctx ??= new AudioContext();
+    const buffer = ctx.createBuffer(1, Math.max(1, samples.length), rate);
+    buffer.copyToChannel(Float32Array.from(samples), 0);
+    source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    const started = ctx.currentTime, mine = source;
+    source.onended = () => {
+      if (source === mine) stop();
+    };
+    source.start();
+    const tick = () => {
+      if (!ctx || source !== mine) return;
+      drawWave(canvas, samples, (ctx.currentTime - started) / buffer.duration);
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+  };
+  return { play, stop, close: () => {
+    stop();
+    void ctx?.close();
+  } };
+}
+async function importSound(api, t, file, taken, stem) {
+  const w = api.ui.widgets, el = api.ui.el;
+  let rate = 22050, samples;
+  try {
+    samples = await decode(file, rate);
+  } catch (err) {
+    await api.ui.alert(t("{name} could not be opened: {message}", { name: file.name, message: err.message }));
+    return null;
+  }
+  const canvas = el("canvas", {});
+  canvas.setAttribute("style", WAVE_STYLE);
+  const about2 = w.hint(""), status = w.hint("");
+  const name = w.text({ value: `${stem}.sound` });
+  let play = player(samples, rate, canvas);
+  const say = () => {
+    const kb = Math.round(samples.length / 2 / 1024 * 1.4);
+    about2.textContent = t("{seconds} seconds at {rate} Hz, about {kb} KB in the map.", { seconds: (samples.length / rate).toFixed(2), rate: rate.toLocaleString(), kb: kb.toLocaleString() });
+  };
+  const rateField = w.select([
+    { value: "11025", label: t("11 kHz (smallest)") },
+    { value: "22050", label: t("22 kHz") },
+    { value: "44100", label: t("44 kHz (largest)") }
+  ], { value: String(rate), onChange: (v) => {
+    void (async () => {
+      rate = Number(v);
+      play.close();
+      samples = await decode(file, rate);
+      play = player(samples, rate, canvas);
+      drawWave(canvas, samples);
+      say();
+    })();
+  } });
+  let result = null;
+  await new Promise((closed) => {
+    api.ui.dialog({
+      title: t("Import Sound"),
+      size: "md",
+      mount(body2) {
+        body2.append(
+          canvas,
+          w.row(w.button(t("Play"), { onClick: () => play.play() }), w.button(t("Stop"), { onClick: () => play.stop() })),
+          w.form([{ label: t("Rate"), field: rateField }, { label: t("File"), field: name }]),
+          about2,
+          w.hint(t("Kept in mono, as the game's own sounds are. A program plays it with playWav(); clips made from it \u2014 trim, gain, pitch \u2014 are made when the script is built.")),
+          status
+        );
+        drawWave(canvas, samples);
+        say();
+        return () => {
+          play.close();
+          closed();
+        };
+      },
+      buttons: [
+        { label: t("Cancel") },
+        {
+          label: t("Import"),
+          primary: true,
+          run: () => {
+            let path = name.value.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+            if (!path.toLowerCase().endsWith(".sound")) path += ".sound";
+            if (!/^[A-Za-z0-9_\-./]+$/.test(path) || path.split("/").some((p) => p === "." || p === ".." || p === "")) {
+              status.textContent = t("A file name is letters, digits, _ - and ., folders with /.");
+              return false;
+            }
+            if (taken(path)) {
+              status.textContent = t("There is already a {name}.", { name: path });
+              return false;
+            }
+            try {
+              result = { path, text: writeSound({ rate, samples, source: file.name }) };
+            } catch (err) {
+              status.textContent = t("Not imported: {message}", { message: err.message });
+              return false;
+            }
+            return true;
+          }
+        }
+      ]
+    });
+  });
+  return result;
+}
+function showSound(api, t, path, text) {
+  let data;
+  try {
+    data = readSound(text);
+  } catch (err) {
+    void api.ui.alert(`${path}: ${err.message}`);
+    return;
+  }
+  const w = api.ui.widgets, el = api.ui.el;
+  const canvas = el("canvas", {});
+  canvas.setAttribute("style", WAVE_STYLE);
+  const play = player(data.samples, data.rate, canvas);
+  const stem = (path.split("/").pop() ?? path).replace(/\.sound$/i, "");
+  const name = stem.replace(/[^A-Za-z0-9]+(.)?/g, (_m, c2) => c2 ? c2.toUpperCase() : "").replace(/^[^A-Za-z_]+/, "") || "sound";
+  api.ui.dialog({
+    title: path,
+    size: "md",
+    mount(body2) {
+      body2.append(
+        canvas,
+        w.row(w.button(t("Play"), { onClick: () => play.play() }), w.button(t("Stop"), { onClick: () => play.stop() })),
+        w.hint(t('{seconds} seconds at {rate} Hz{from}. Import it with import {name} from "./{file}", play it with playWav({name}).', { seconds: (data.frames / data.rate).toFixed(2), rate: data.rate.toLocaleString(), from: data.source ? ` \xB7 ${data.source}` : "", name, file: path.split("/").pop() ?? path }))
+      );
+      drawWave(canvas, data.samples);
+      return () => play.close();
+    }
+  });
+}
+
+// notesImport.ts
+var MIDI_FILES = ".mid,.midi,audio/midi,audio/x-midi";
+var isMidiSource = (f) => /\.midi?$/i.test(f.name) || f.type === "audio/midi" || f.type === "audio/x-midi";
+var COLORS = ["#9cc8ff", "#ffd75e", "#8ee08e", "#ff9c9c", "#d4a8ff", "#7fe0d8", "#ffb86b", "#c8c8c8"];
+var ROLL_STYLE = "width: 100%; max-width: 640px; height: 160px; display: block; margin: 0 auto 8px; background: #222;";
+function drawRoll(canvas, data, shown, mark = -1) {
+  const w = canvas.width = 640, h = canvas.height = 160, ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#222";
+  ctx.fillRect(0, 0, w, h);
+  const all = data.tracks.flatMap((t, k) => shown(k) ? t.notes : []);
+  if (all.length === 0) return;
+  const end = Math.max(...all.map((n) => n.at + n.beats)), lo = Math.min(...all.map((n) => n.pitch)), hi = Math.max(...all.map((n) => n.pitch));
+  const x = (beat) => beat / end * w, row = h / (hi - lo + 1);
+  data.tracks.forEach((t, k) => {
+    if (!shown(k)) return;
+    ctx.fillStyle = COLORS[k % COLORS.length];
+    for (const n of t.notes) ctx.fillRect(x(n.at), h - (n.pitch - lo + 1) * row, Math.max(1, x(n.beats) - 0.5), Math.max(1, row - 0.5));
+  });
+  if (mark >= 0) {
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(Math.round(x(mark)), 0, 1, h);
+  }
+}
+function player2(data, shown, canvas) {
+  let ctx = null, raf = 0, started = 0, playing = false;
+  const spb = 60 / data.bpm;
+  const stop = () => {
+    playing = false;
+    cancelAnimationFrame(raf);
+    void ctx?.close();
+    ctx = null;
+    drawRoll(canvas, data, shown);
+  };
+  const play = () => {
+    stop();
+    ctx = new AudioContext();
+    const out = ctx.createGain();
+    out.gain.value = 0.15;
+    out.connect(ctx.destination);
+    started = ctx.currentTime + 0.1;
+    let last = 0;
+    data.tracks.forEach((t, k) => {
+      if (!shown(k)) return;
+      for (const n of t.notes) {
+        const at = started + n.at * spb, len = Math.max(0.03, Math.min(n.beats * spb, 4)), osc = ctx.createOscillator(), g = ctx.createGain();
+        osc.type = t.channel === 10 ? "square" : "sine";
+        osc.frequency.value = t.channel === 10 ? 80 + n.pitch % 12 * 40 : 440 * 2 ** ((n.pitch - 69) / 12);
+        const peak = n.velocity / 127 * (t.channel === 10 ? 0.4 : 0.5), tail = t.channel === 10 ? 0.04 : len;
+        g.gain.setValueAtTime(0, at);
+        g.gain.linearRampToValueAtTime(peak, at + 5e-3);
+        g.gain.setValueAtTime(peak, at + Math.max(6e-3, tail - 0.03));
+        g.gain.linearRampToValueAtTime(0, at + tail);
+        osc.connect(g).connect(out);
+        osc.start(at);
+        osc.stop(at + tail + 0.01);
+        last = Math.max(last, n.at + n.beats);
+      }
+    });
+    playing = true;
+    const mine = ctx;
+    const tick = () => {
+      if (!playing || ctx !== mine) return;
+      const beat = (mine.currentTime - started) / spb;
+      if (beat > last) {
+        stop();
+        return;
+      }
+      drawRoll(canvas, data, shown, Math.max(0, beat));
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+  };
+  return { play, stop };
+}
+function about(t, data) {
+  const n = data.tracks.reduce((s, tr2) => s + tr2.notes.length, 0);
+  const end = Math.max(0, ...data.tracks.flatMap((tr2) => tr2.notes.map((x) => x.at + x.beats)));
+  const seconds = Math.round(end * 60 / data.bpm);
+  return t("{tracks} tracks, {notes} notes, {bpm} beats a minute ({time}).", { tracks: data.tracks.length, notes: n.toLocaleString(), bpm: Math.round(data.bpm * 100) / 100, time: `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` }) + (data.tempoChanges ? " " + t("The tempo changes later in the file; a song plays at the first.") : "");
+}
+function trackList(api, t, data) {
+  const el = api.ui.el;
+  const styled = (e, style) => {
+    e.setAttribute("style", style);
+    return e;
+  };
+  return styled(
+    el(
+      "ul",
+      {},
+      ...data.tracks.map((tr2, k) => el(
+        "li",
+        {},
+        styled(el("span", {}), `display: inline-block; width: 10px; height: 10px; margin-right: 6px; background: ${COLORS[k % COLORS.length]};`),
+        tr2.channel === 10 ? t("{name} \u2014 the drums, {n} notes", { name: tr2.name, n: tr2.notes.length }) : t("{name} \u2014 channel {channel}, instrument {program}, {n} notes", { name: tr2.name, channel: tr2.channel, program: tr2.program, n: tr2.notes.length })
+      ))
+    ),
+    "list-style: none; padding: 0; margin: 0 0 8px; font-size: 12px; max-height: 140px; overflow: auto;"
+  );
+}
+async function importNotes(api, t, file, taken, stem) {
+  const w = api.ui.widgets, el = api.ui.el;
+  let data;
+  try {
+    data = readMidi(new Uint8Array(await file.arrayBuffer()), file.name);
+  } catch (err) {
+    await api.ui.alert(t("{name} could not be opened: {message}", { name: file.name, message: err.message }));
+    return null;
+  }
+  const canvas = el("canvas", {});
+  canvas.setAttribute("style", ROLL_STYLE);
+  const status = w.hint("");
+  const name = w.text({ value: `${stem}.notes` });
+  const play = player2(data, () => true, canvas);
+  let result = null;
+  await new Promise((closed) => {
+    api.ui.dialog({
+      title: t("Import MIDI"),
+      size: "md",
+      mount(body2) {
+        body2.append(
+          canvas,
+          w.row(w.button(t("Play"), { onClick: () => play.play() }), w.button(t("Stop"), { onClick: () => play.stop() })),
+          trackList(api, t, data),
+          w.form([{ label: t("File"), field: name }]),
+          w.hint(about(t, data)),
+          w.hint(t("The notes are kept, not the sounds: music.midi(notes, { Piano: keys }) plays each track you name with an instrument of the music library.")),
+          status
+        );
+        drawRoll(canvas, data, () => true);
+        return () => {
+          play.stop();
+          closed();
+        };
+      },
+      buttons: [
+        { label: t("Cancel") },
+        {
+          label: t("Import"),
+          primary: true,
+          run: () => {
+            let path = name.value.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+            if (!path.toLowerCase().endsWith(".notes")) path += ".notes";
+            if (!/^[A-Za-z0-9_\-./]+$/.test(path) || path.split("/").some((p) => p === "." || p === ".." || p === "")) {
+              status.textContent = t("A file name is letters, digits, _ - and ., folders with /.");
+              return false;
+            }
+            if (taken(path)) {
+              status.textContent = t("There is already a {name}.", { name: path });
+              return false;
+            }
+            result = { path, text: writeNotes(data) };
+            return true;
+          }
+        }
+      ]
+    });
+  });
+  return result;
+}
+function showNotes(api, t, path, text) {
+  let data;
+  try {
+    data = readNotes(text);
+  } catch (err) {
+    void api.ui.alert(`${path}: ${err.message}`);
+    return;
+  }
+  const w = api.ui.widgets, el = api.ui.el;
+  const canvas = el("canvas", {});
+  canvas.setAttribute("style", ROLL_STYLE);
+  const play = player2(data, () => true, canvas);
+  const stem = (path.split("/").pop() ?? path).replace(/\.notes$/i, "");
+  const name = stem.replace(/[^A-Za-z0-9]+(.)?/g, (_m, c2) => c2 ? c2.toUpperCase() : "").replace(/^[^A-Za-z_]+/, "") || "notes";
+  api.ui.dialog({
+    title: path,
+    size: "md",
+    mount(body2) {
+      body2.append(
+        canvas,
+        w.row(w.button(t("Play"), { onClick: () => play.play() }), w.button(t("Stop"), { onClick: () => play.stop() })),
+        trackList(api, t, data),
+        w.hint(about(t, data) + (data.source ? ` \xB7 ${data.source}` : "")),
+        w.hint(t('Import it with import {name} from "./{file}", make a song of it with music.midi({name}, { "{track}": music.presets.keys() }).', { name, file: path.split("/").pop() ?? path, track: data.tracks[0]?.name ?? "Track 1" }))
+      );
+      drawRoll(canvas, data, () => true);
+      return () => play.stop();
+    }
+  });
+}
+
+// videoImport.ts
+function areaGrey(image, sw, sh, w, h, canvas) {
+  const k = Math.max(1, Math.min(8, Math.floor(Math.min(sw / w, sh / h))));
+  canvas.width = w * k;
+  canvas.height = h * k;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, 0, 0, w * k, h * k);
+  const px = ctx.getImageData(0, 0, w * k, h * k).data;
+  const out = new Uint8Array(w * h), row = w * k * 4;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) {
+      const i = (y * k + dy) * row + (x * k + dx) * 4;
+      sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    }
+    out[y * w + x] = Math.round(sum / (k * k));
+  }
+  return out;
+}
+function areaRgba(image, sw, sh, w, h, canvas) {
+  const k = Math.max(1, Math.min(8, Math.floor(Math.min(sw / w, sh / h))));
+  canvas.width = w * k;
+  canvas.height = h * k;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.clearRect(0, 0, w * k, h * k);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, 0, 0, w * k, h * k);
+  const px = ctx.getImageData(0, 0, w * k, h * k).data;
+  const out = new Uint8Array(w * h * 4), row = w * k * 4;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let r = 0, g = 0, b = 0, a2 = 0;
+    for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) {
+      const i = (y * k + dy) * row + (x * k + dx) * 4, o2 = px[i + 3];
+      r += px[i] * o2;
+      g += px[i + 1] * o2;
+      b += px[i + 2] * o2;
+      a2 += o2;
+    }
+    const o = (y * w + x) * 4;
+    out[o] = a2 ? Math.round(r / a2) : 0;
+    out[o + 1] = a2 ? Math.round(g / a2) : 0;
+    out[o + 2] = a2 ? Math.round(b / a2) : 0;
+    out[o + 3] = Math.round(a2 / (k * k));
+  }
+  return out;
+}
+async function openSource(file) {
+  const canvas = document.createElement("canvas");
+  if (file.type.startsWith("image/")) {
+    const bitmap = await createImageBitmap(file);
+    return {
+      kind: "image",
+      name: file.name,
+      width: bitmap.width,
+      height: bitmap.height,
+      duration: 0,
+      grey: async (_t, w, h) => areaGrey(bitmap, bitmap.width, bitmap.height, w, h, canvas),
+      rgba: async (w, h) => areaRgba(bitmap, bitmap.width, bitmap.height, w, h, canvas),
+      close: () => bitmap.close()
+    };
+  }
+  const url = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.src = url;
+  await new Promise((done, fail) => {
+    video.onloadeddata = () => done();
+    video.onerror = () => fail(new Error(video.error?.message || "the browser cannot play this file"));
+  });
+  const seek = (time) => new Promise((done) => {
+    if (Math.abs(video.currentTime - time) < 1e-4) {
+      done();
+      return;
+    }
+    video.onseeked = () => done();
+    video.currentTime = time;
+  });
+  return {
+    kind: "video",
+    name: file.name,
+    width: video.videoWidth,
+    height: video.videoHeight,
+    duration: video.duration,
+    file,
+    grey: async (time, w, h) => {
+      await seek(Math.min(time, Math.max(0, video.duration - 1e-3)));
+      return areaGrey(video, video.videoWidth, video.videoHeight, w, h, canvas);
+    },
+    close: () => {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(url);
+    },
+    // (The whole video is read by `decodeAll`, which plays it.)
+    ...{ element: video, canvas }
+  };
+}
+async function decodeAll(src, w, h, frameMs, onProgress, signal) {
+  return await decodeFile(src, w, h, frameMs, onProgress, signal) ?? decodePlaying(src, w, h, frameMs, onProgress, signal);
+}
+async function decodeFile(src, w, h, frameMs, onProgress, signal) {
+  if (!src.file) return null;
+  const track = demux(new Uint8Array(await src.file.arrayBuffer()));
+  if (!track) return null;
+  const { canvas } = src;
+  const total = Math.max(1, Math.floor(Math.max(src.duration * 1e3, track.end / 1e3) / frameMs));
+  const frames = new Array(total);
+  let before = null, next = 0;
+  const done = await decodeTrack(track, (frame) => {
+    let grey, t;
+    try {
+      t = frame.timestamp / 1e3;
+      grey = areaGrey(frame, frame.displayWidth, frame.displayHeight, w, h, canvas);
+    } finally {
+      frame.close();
+    }
+    for (; next < total && next * frameMs < t; next++) frames[next] = before && next * frameMs - before.t <= t - next * frameMs ? before.grey : grey;
+    before = { t, grey };
+    onProgress(next, total);
+  }, signal);
+  if (!done || !before) return null;
+  for (; next < total; next++) frames[next] = before.grey;
+  return frames;
+}
+async function decodePlaying(src, w, h, frameMs, onProgress, signal) {
+  const { element: video, canvas } = src;
+  const total = Math.max(1, Math.floor(src.duration * 1e3 / frameMs));
+  const frames = new Array(total);
+  const answered = new Uint8Array(total);
+  const stop = () => {
+    if (signal.aborted) throw new DOMException("cancelled", "AbortError");
+  };
+  const VideoFrameOf = globalThis.VideoFrame;
+  const rvfc = video.requestVideoFrameCallback?.bind(video);
+  let length = 1e3 / 30;
+  if (rvfc && VideoFrameOf) {
+    await src.grey(0, w, h);
+    video.playbackRate = 2;
+    await new Promise((done, fail) => {
+      let window2 = 0, missed = 0, next = 0;
+      const onFrame = () => {
+        if (signal.aborted) {
+          video.pause();
+          fail(new DOMException("cancelled", "AbortError"));
+          return;
+        }
+        const frame = new VideoFrameOf(video);
+        let t, grey;
+        try {
+          t = frame.timestamp / 1e3;
+          if (frame.duration) length = frame.duration / 1e3;
+          grey = areaGrey(frame, frame.displayWidth, frame.displayHeight, w, h, canvas);
+        } finally {
+          frame.close();
+        }
+        for (let i = Math.max(0, Math.ceil((t - length / 2) / frameMs)); i < total && i * frameMs < t + length / 2; i++) {
+          frames[i] = grey;
+          answered[i] = 1;
+        }
+        const reached = Math.min(total, Math.floor(t / frameMs));
+        for (; next < reached; next++) {
+          window2++;
+          if (!answered[next]) missed++;
+        }
+        if (window2 >= 48) {
+          if (missed > window2 / 10 && video.playbackRate > 0.25) video.playbackRate /= 2;
+          window2 = 0;
+          missed = 0;
+        }
+        onProgress(reached, total);
+        rvfc(onFrame);
+      };
+      video.onended = () => done();
+      rvfc(onFrame);
+      video.play().catch((err) => fail(err instanceof Error ? err : new Error(String(err))));
+    });
+    video.pause();
+  }
+  const missing = [];
+  for (let i = 0; i < total; i++) if (!answered[i]) missing.push(i);
+  for (const [n, i] of missing.entries()) {
+    stop();
+    frames[i] = await src.grey((i * frameMs + length / 2 - 0.5) / 1e3, w, h);
+    onProgress(total - missing.length + n + 1, total);
+  }
+  return frames;
+}
+var ink = (grey, threshold, dark) => {
+  const out = new Uint8Array(grey.length);
+  for (let i = 0; i < grey.length; i++) out[i] = grey[i] >= threshold !== dark ? 1 : 0;
+  return out;
+};
+function paint(canvas, tiles, w, h, mark) {
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const lit = tiles[i] === 1, off = mark && mark[i] !== tiles[i];
+    const v = lit ? 236 : 70;
+    img.data[i * 4] = off ? 230 : v;
+    img.data[i * 4 + 1] = off ? lit ? 120 : 90 : v;
+    img.data[i * 4 + 2] = off ? lit ? 120 : 90 : v + 6;
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function paintPixels(canvas, rgba, w, h, grey = false) {
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  img.data.set(rgba);
+  if (grey) for (let i = 0; i < rgba.length; i += 4) img.data[i] = img.data[i + 1] = img.data[i + 2] = Math.round(0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2]);
+  ctx.putImageData(img, 0, 0);
+}
+var PREVIEW_STYLE = "image-rendering: pixelated; width: 100%; max-width: 512px; background: #222; display: block; margin: 0 auto 8px;";
+function fileStem(name) {
+  const stem = name.replace(/\.[^.]*$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return stem || "video";
+}
+function imageModule(rows, from) {
+  return `// ${from}, imported as rows of tiles: # is ink. fog.picture(\u2026) draws it: import heart from "./heart";
+export default [
+${rows.map((r) => `  ${JSON.stringify(r)},`).join("\n")}
+] as const;
+`;
+}
+async function importMedia(api, t, options) {
+  const file = options.file ?? (await api.ui.pickFiles({ accept: `video/*,image/*,.mkv,.webm,.mp4,.mov,.gif,${SOUND_FILES},${MIDI_FILES}` }))[0];
+  if (!file) return null;
+  if (isMidiSource(file)) {
+    const got = await importNotes(api, t, file, options.taken, fileStem(file.name));
+    return got ? { ...got, kind: "notes" } : null;
+  }
+  if (isSoundSource(file)) {
+    const got = await importSound(api, t, file, options.taken, fileStem(file.name));
+    return got ? { ...got, kind: "sound" } : null;
+  }
+  let src;
+  try {
+    src = await openSource(file);
+  } catch (err) {
+    await api.ui.alert(t("{name} could not be opened: {message}", { name: file.name, message: err.message }));
+    return null;
+  }
+  const w = api.ui.widgets, el = api.ui.el;
+  let keep = src.kind === "image" ? "color" : "rows";
+  const pixels = () => keep !== "rows";
+  const fit = (mw) => Math.max(1, Math.min(pixels() ? MAX_IMAGE_SIDE : 256, Math.round(mw)));
+  const shrink = Math.min(1, 256 / Math.max(src.width, src.height, 1));
+  const defaultWidth = () => pixels() ? fit(src.width * shrink) : fit(Math.min(options.mapWidth, 256));
+  const defaultHeight = (w2) => pixels() ? fit(src.height * shrink) : fit(Math.min(options.mapHeight, w2 * src.height / Math.max(1, src.width)));
+  let width = defaultWidth();
+  let height = defaultHeight(width);
+  let threshold = 128, dark = false, at = 0;
+  let grey = null, rgba = null;
+  const canvas = el("canvas", {});
+  canvas.setAttribute("style", PREVIEW_STYLE);
+  const about2 = w.hint("");
+  const status = w.hint("");
+  const progress = w.progressBar();
+  progress.style.display = "none";
+  const stem = fileStem(src.name);
+  const extension = () => src.kind === "video" ? ".video" : pixels() ? ".image" : ".ts";
+  const name = w.text({ value: `${stem}${extension()}` });
+  const frames = () => Math.max(1, Math.floor(src.duration * 1e3 / FASTEST_FRAME_MS));
+  const say = () => {
+    const seconds = Math.round(src.duration);
+    about2.textContent = src.kind === "video" ? t("{w} \xD7 {h} tiles, {n} frames at the game's speed on Fastest ({time}).", { w: width, h: height, n: frames().toLocaleString(), time: `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` }) : pixels() ? t("{w} \xD7 {h} pixels, a tile each when the fog draws them.", { w: width, h: height }) : t("{w} \xD7 {h} tiles.", { w: width, h: height });
+  };
+  const redraw = () => {
+    if (pixels()) {
+      if (rgba) paintPixels(canvas, rgba, width, height, keep === "grey");
+    } else if (grey) paint(canvas, ink(grey, threshold, dark), width, height);
+  };
+  let pending2 = 0;
+  const refresh = async () => {
+    const mine = ++pending2;
+    if (pixels()) {
+      const got = await src.rgba(width, height);
+      if (mine !== pending2) return;
+      rgba = got;
+    } else {
+      const g = await src.grey(at, width, height);
+      if (mine !== pending2) return;
+      grey = g;
+    }
+    redraw();
+    say();
+  };
+  const sizeField = (value, set) => w.number({ value, min: 1, max: pixels() ? MAX_IMAGE_SIDE : 256, step: 1, onChange: (v) => {
+    set(fit(v));
+    void refresh();
+  } });
+  const slider = (min, max, value, step, onInput) => {
+    const input = el("input", { type: "range" });
+    Object.assign(input, { min: String(min), max: String(max), step: String(step), value: String(value) });
+    input.style.width = "100%";
+    input.addEventListener("input", () => onInput(Number(input.value)));
+    return input;
+  };
+  const across = sizeField(width, (n) => {
+    width = n;
+  }), down = sizeField(height, (n) => {
+    height = n;
+  });
+  const inkForm = w.form([
+    { label: t("Threshold"), field: slider(1, 255, threshold, 1, (v) => {
+      threshold = v;
+      redraw();
+    }) },
+    { label: t("Ink"), field: w.select([{ value: "light", label: t("Light parts") }, { value: "dark", label: t("Dark parts") }], { value: "light", onChange: (v) => {
+      dark = v === "dark";
+      redraw();
+    } }) }
+  ]);
+  const explain = w.hint("");
+  const shown = () => {
+    inkForm.style.display = pixels() ? "none" : "";
+    across.max = down.max = String(pixels() ? MAX_IMAGE_SIDE : 256);
+    explain.textContent = src.kind === "video" ? t("Light tiles are the ink: what fog.light lights. A video's frames are taken at the game's speed on Fastest, a frame of it each frame of the game.") : pixels() ? t("The pixels are kept for the script to work on when it is built \u2014 crop, scale, flip, threshold \u2014 and draw: fog.picture(logo.threshold(128)).") : t("Light tiles are the ink: what fog.light lights. The rows are a .ts file to edit, which fog.picture takes.");
+  };
+  const keepField = w.select([
+    { value: "color", label: t("Pixels in colour (.image)") },
+    { value: "grey", label: t("Pixels in grey (.image)") },
+    { value: "rows", label: t("Rows of ink to edit (.ts)") }
+  ], { value: keep, onChange: (v) => {
+    keep = v;
+    width = defaultWidth();
+    height = defaultHeight(width);
+    across.value = String(width);
+    down.value = String(height);
+    name.value = name.value.replace(/\.(?:image|ts)$/i, "") + extension();
+    shown();
+    void refresh();
+  } });
+  shown();
+  const controller = new AbortController();
+  let result = null;
+  await new Promise((closed) => {
+    api.ui.dialog({
+      title: src.kind === "video" ? t("Import Video") : t("Import Image"),
+      size: "md",
+      mount(body2) {
+        body2.append(
+          canvas,
+          ...src.kind === "video" ? [w.form([{ label: t("Frame"), field: slider(0, Math.max(0, src.duration - 0.05), 0, 0.01, (v) => {
+            at = v;
+            void refresh();
+          }) }])] : [],
+          ...src.kind === "image" ? [w.form([{ label: t("Keep as"), field: keepField }])] : [],
+          w.form([
+            { label: t("Tiles across"), field: across },
+            { label: t("Tiles down"), field: down }
+          ]),
+          inkForm,
+          w.form([{ label: t("File"), field: name }]),
+          about2,
+          explain,
+          progress,
+          status
+        );
+        void refresh();
+        return () => {
+          controller.abort();
+          src.close();
+          closed();
+        };
+      },
+      buttons: [
+        { label: t("Cancel") },
+        {
+          label: t("Import"),
+          primary: true,
+          run: async () => {
+            let path = name.value.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+            const ext = extension();
+            if (!path.toLowerCase().endsWith(ext)) path += ext;
+            if (!/^[A-Za-z0-9_\-./]+$/.test(path) || path.split("/").some((p) => p === "." || p === ".." || p === "")) {
+              status.textContent = t("A file name is letters, digits, _ - and ., folders with /.");
+              return false;
+            }
+            if (options.taken(path)) {
+              status.textContent = t("There is already a {name}.", { name: path });
+              return false;
+            }
+            if (src.kind === "image" && pixels()) {
+              result = { path, text: writeImage({ width, height, rgba: await src.rgba(width, height), grey: keep === "grey", source: src.name }), kind: "image" };
+              return true;
+            }
+            if (src.kind === "image") {
+              const g = await src.grey(0, width, height), tiles = ink(g, threshold, dark);
+              const rows = Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_2, x) => tiles[y * width + x] ? "#" : ".").join(""));
+              result = { path, text: imageModule(rows, src.name), kind: "rows" };
+              return true;
+            }
+            progress.style.display = "";
+            const t0 = performance.now();
+            try {
+              const greys = await decodeAll(src, width, height, FASTEST_FRAME_MS, (done, total) => {
+                progress.set(done / total);
+                status.textContent = t("Decoding: frame {done} of {total}\u2026", { done: done.toLocaleString(), total: total.toLocaleString() });
+              }, controller.signal);
+              const text = writeVideo({ width, height, frameMs: FASTEST_FRAME_MS, frames: greys.map((g) => ink(g, threshold, dark)), source: src.name });
+              result = { path, text, kind: "video" };
+              status.textContent = t("{n} frames in {seconds} s, {kb} KB.", { n: greys.length.toLocaleString(), seconds: ((performance.now() - t0) / 1e3).toFixed(0), kb: Math.round(text.length / 1024).toLocaleString() });
+              return true;
+            } catch (err) {
+              if (err.name === "AbortError") return true;
+              status.textContent = t("Not imported: {message}", { message: err.message });
+              progress.style.display = "none";
+              return false;
+            }
+          }
+        }
+      ]
+    });
+  });
+  return result;
+}
+function showVideo(api, t, path, text) {
+  let video;
+  try {
+    video = readVideo(text);
+  } catch (err) {
+    void api.ui.alert(`${path}: ${err.message}`);
+    return;
+  }
+  const w = api.ui.widgets, el = api.ui.el;
+  const shapes = prepareShapes(FOG_SHAPES);
+  const canvas = el("canvas", {});
+  canvas.setAttribute("style", PREVIEW_STYLE);
+  const info = w.hint("");
+  let frame = 0, asFog = false, timer = null;
+  const scrub = el("input", { type: "range" });
+  Object.assign(scrub, { min: "0", max: String(Math.max(0, video.length - 1)), step: "1", value: "0" });
+  scrub.style.width = "100%";
+  const draw = () => {
+    const tiles = video.tiles(frame);
+    let said = t("Frame {n} of {total}", { n: (frame + 1).toLocaleString(), total: video.length.toLocaleString() });
+    if (asFog) {
+      const brushes = cover(tiles, video.width, video.height, shapes);
+      paint(canvas, covers(brushes, video.width, video.height, shapes), video.width, video.height, tiles);
+      said += ` \xB7 ${t("{n} brushes", { n: brushes.length })}`;
+    } else paint(canvas, tiles, video.width, video.height);
+    info.textContent = said;
+    scrub.value = String(frame);
+  };
+  scrub.addEventListener("input", () => {
+    frame = Number(scrub.value);
+    draw();
+  });
+  const stop = () => {
+    if (timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+  const playButton = w.button(t("Play"), { onClick: () => {
+    if (timer !== null) {
+      stop();
+      playButton.textContent = t("Play");
+      return;
+    }
+    playButton.textContent = t("Pause");
+    timer = window.setInterval(() => {
+      frame = (frame + 1) % Math.max(1, video.length);
+      draw();
+    }, video.frameMs);
+  } });
+  const seconds = Math.round(video.length * video.frameMs / 1e3);
+  api.ui.dialog({
+    title: path,
+    size: "md",
+    mount(body2) {
+      body2.append(
+        canvas,
+        scrub,
+        w.row(playButton, w.select([{ value: "tiles", label: t("The video") }, { value: "fog", label: t("As the fog draws it") }], { value: "tiles", onChange: (v) => {
+          asFog = v === "fog";
+          draw();
+        } })),
+        info,
+        w.hint(t('{w} \xD7 {h} tiles, {n} frames of {ms} ms ({time}){from}. Import it with import name from "./{file}".', {
+          w: video.width,
+          h: video.height,
+          n: video.length.toLocaleString(),
+          ms: video.frameMs,
+          time: `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
+          from: video.source ? ` \xB7 ${video.source}` : "",
+          file: path.split("/").pop() ?? path
+        }))
+      );
+      draw();
+      return stop;
+    }
+  });
+}
+function showImage(api, t, path, text) {
+  let data;
+  try {
+    data = readImage(text);
+  } catch (err) {
+    void api.ui.alert(`${path}: ${err.message}`);
+    return;
+  }
+  const image = makeImage(data);
+  const w = api.ui.widgets, el = api.ui.el;
+  const shapes = prepareShapes(FOG_SHAPES);
+  const canvas = el("canvas", {});
+  canvas.setAttribute("style", PREVIEW_STYLE);
+  const info = w.hint("");
+  const stem = (path.split("/").pop() ?? path).replace(/\.image$/i, "");
+  const name = stem.replace(/[^A-Za-z0-9]+(.)?/g, (_m, c2) => c2 ? c2.toUpperCase() : "").replace(/^[^A-Za-z_]+/, "") || "image";
+  let view = "pixels", level = 128, dark = false;
+  const levelField = el("input", { type: "range" });
+  Object.assign(levelField, { min: "1", max: "255", step: "1", value: String(level) });
+  levelField.style.width = "100%";
+  const draw = () => {
+    levelField.disabled = view !== "threshold";
+    inkField.disabled = view !== "threshold";
+    if (view === "pixels") {
+      paintPixels(canvas, data.rgba, data.width, data.height);
+      info.textContent = "";
+      return;
+    }
+    const ink2 = dark ? `{ ink: "dark" }` : "";
+    const cell = Number(view.replace("halftone", ""));
+    const rows = cell ? image.halftone(cell) : image.threshold(level, { ink: dark ? "dark" : "light" });
+    const call = cell ? `${name}.halftone(${cell})` : `${name}.threshold(${level}${ink2 ? `, ${ink2}` : ""})`;
+    const tiles = Uint8Array.from(rows.join(""), (c2) => c2 === "#" ? 1 : 0);
+    const brushes = cell ? rows.brushes : cover(tiles, data.width, data.height, shapes);
+    paint(canvas, covers(brushes, data.width, data.height, shapes), data.width, data.height, tiles);
+    info.textContent = `fog.picture(${call}) \xB7 ${t("{n} brushes", { n: brushes.length })}`;
+  };
+  levelField.addEventListener("input", () => {
+    level = Number(levelField.value);
+    draw();
+  });
+  const inkField = w.select([{ value: "light", label: t("Light parts") }, { value: "dark", label: t("Dark parts") }], { value: "light", onChange: (v) => {
+    dark = v === "dark";
+    draw();
+  } });
+  api.ui.dialog({
+    title: path,
+    size: "md",
+    mount(body2) {
+      body2.append(
+        canvas,
+        w.form([
+          { label: t("Show"), field: w.select([{ value: "pixels", label: t("The image") }, { value: "threshold", label: t("Threshold, as the fog draws it") }, ...[4, 6, 8].map((c2) => ({ value: `halftone${c2}`, label: t("Halftone, {w} \xD7 {h} cells, as the fog draws it", { w: c2, h: c2 + 1 }) }))], { value: view, onChange: (v) => {
+            view = v;
+            draw();
+          } }) },
+          { label: t("Threshold"), field: levelField },
+          { label: t("Ink"), field: inkField }
+        ]),
+        info,
+        w.hint(t('{w} \xD7 {h} pixels{from}. Import it with import {name} from "./{file}".', { w: data.width, h: data.height, from: data.source ? ` \xB7 ${data.source}` : "", name, file: path.split("/").pop() ?? path }))
+      );
+      draw();
+    }
+  });
 }
 
 // editor.ts
@@ -10224,7 +12931,7 @@ trigger(AllPlayers, [
 // It runs every frame from where it left off, until it sleeps. The underlined parts
 // are computed when the script is applied, everything else runs in the game.
 //
-// A map with a program is built by the eudplib plugin when you save it, and needs
+// A map with a program is built by TrigScript itself when you save it, and needs
 // StarCraft: Remastered to play. trigger() alone plays on every version.
 //
 // program(() => {
@@ -10254,12 +12961,18 @@ var START_LOCATION_UNIT2 = 214;
 var OWNER_COMPUTER2 = 5;
 var OWNER_HUMAN2 = 6;
 var SIMULATE_ROWS = 200;
+var withoutMachineLines = (text) => text.split("\n").filter((l) => !isMachineLine(l)).join("\n");
 var SIMULATE_FAULTS = 20;
 var CHECK_DELAY_MS = 350;
 var OUTPUT_LINES = 2e3;
 var STATUS_MS = 1e4;
 var NOTICE_MS = 8e3;
 var TESTS_SLOW_MS = 2e3;
+var COST_SEEN = 5e5;
+var COST_HINT = 1e4;
+var COST_HINT_MS = 0.3;
+var EUD_TRACE_FRAMES = 3e3;
+var COST_LINES = 3;
 var MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl";
 var PANEL_WIDTH = 760;
 var PANEL_HEIGHT = 540;
@@ -10270,7 +12983,7 @@ var STYLE = `${SHELL_STYLE}
 .tsd .tsd-settings p { margin: 0 0 8px; color: var(--text-dim); line-height: 1.45; }
 .tsd .tsd-settings .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .tsd .tsd-settings input { width: 110px; padding: 2px 6px; font: inherit; font-family: var(--font-mono); color: var(--text); background: var(--bg-1); border: 1px solid var(--border); border-radius: 2px; }
-.tsd .tsd-settings input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+.tsd .tsd-settings input:focus { outline: 1px solid var(--teal); outline-offset: -1px; }
 .tsd .tsd-settings button { padding: 2px 8px; font: inherit; color: var(--text); background: var(--bg-3); border: 1px solid var(--border); border-radius: 2px; cursor: pointer; }
 .tsd .tsd-settings button:disabled { opacity: 0.5; cursor: default; }
 .tsd .tsd-settings .now { color: var(--text-faint); }
@@ -10286,9 +12999,9 @@ var STYLE = `${SHELL_STYLE}
 .tsd .tsd-output { margin: 0; padding: 4px 20px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); }
 .tsd .tsd-list li.tsd-warning .tsd-i { color: var(--warn); }
 .tsd .tsd-rows .tsd-empty { padding: 6px 12px 6px 20px; color: var(--text-faint); white-space: normal; line-height: 1.45; cursor: default; }
-.tsd .tsd-test-passed { color: var(--ok); }
+.tsd .tsd-test-passed, .tsd .tsd-list .tsd-i.tsd-test-passed { color: var(--ok); }
 .tsd .tsd-test-failed { color: var(--danger); }
-.tsd .tsd-test-none, .tsd .tsd-test-skipped { color: var(--text-faint); }
+.tsd .tsd-test-none, .tsd .tsd-test-skipped, .tsd .tsd-list .tsd-i.tsd-test-none, .tsd .tsd-list .tsd-i.tsd-test-skipped { color: var(--text-faint); }
 .${TEST_MARK_CLASS} { cursor: pointer; font: normal normal normal 14px/18px codicon; text-align: center; color: var(--text-faint); }
 .${TEST_MARK_CLASS}::before { content: "\\eabc"; }
 .${TEST_MARK_CLASS}-passed { color: var(--ok); }
@@ -10297,8 +13010,11 @@ var STYLE = `${SHELL_STYLE}
 .${TEST_MARK_CLASS}-failed::before { content: "\\ea87"; }
 .${TEST_MARK_CLASS}-skipped::before { content: "\\eabd"; }
 .${TEST_MARK_CLASS}-note { color: var(--danger); font-style: italic; opacity: 0.9; }
+.tsd .tsd-list li.tsd-cost { align-items: center; }
+.tsd .tsd-cost-graph { flex: 1 1 auto; min-width: 0; max-width: 480px; height: 36px; }
+.tsd .tsd-cost-graph path { fill: var(--teal); fill-opacity: 0.35; stroke: var(--teal); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
-`;
+${DEBUG_STYLE}`;
 function ownerLabel(p, t) {
   return p.owners.map((o) => o === PlayerGroup.AllPlayers ? t("all players") : o >= PlayerGroup.Force1 && o <= PlayerGroup.Force4 ? t("Force {n}", { n: o - PlayerGroup.Force1 + 1 }) : `P${o + 1}`).join(", ");
 }
@@ -10388,7 +13104,6 @@ function createWorkspace(svc, options, mode) {
   let result = null;
   let simulation = null;
   let outline = null;
-  let library = svc.library();
   let testing = false;
   let cancelled = false;
   let renames = [];
@@ -10398,8 +13113,8 @@ function createWorkspace(svc, options, mode) {
     el,
     compact: mode === "panel",
     layout: { ...mode === "panel" ? COMPACT_LAYOUT : DEFAULT_LAYOUT, ...api.storage.get(layoutKey, {}) },
-    onLayout: (layout) => {
-      api.storage.set(layoutKey, layout);
+    onLayout: (layout2) => {
+      api.storage.set(layoutKey, layout2);
     },
     onTabSelect: (id) => openFile(id),
     onTabClose: (id) => closeTab(id),
@@ -10424,9 +13139,11 @@ function createWorkspace(svc, options, mode) {
   const moreAction = shell.action({ icon: "ellipsis", title: t("More actions\u2026"), run: () => shell.menu(moreAction.element, [
     menuItem("save"),
     null,
-    ...["import", "newFile", "newFolder"].map(menuItem),
+    ...["import", "newFile", "newFolder", "importVideo"].map(menuItem),
     null,
-    ...["runTests", "runFailedTests"].map(menuItem),
+    ...["runTests", "runFailedTests", "runTestsInGame"].map(menuItem),
+    null,
+    menuItem("findEudError"),
     null,
     ...["problems", "output", "panel", "explorer", "testing"].map(menuItem),
     null,
@@ -10441,6 +13158,9 @@ function createWorkspace(svc, options, mode) {
     } },
     { icon: "new-folder", title: t("New folder\u2026: a folder is there while a file is in it, so its first file is asked for next"), run: () => {
       void newFolder();
+    } },
+    { icon: "device-camera-video", title: t("Import Video\u2026: a video, a picture, a sound or a MIDI file as a file of the script"), run: () => {
+      void importVideo();
     } }
   ] }).body.append(fileList);
   const programList = el("ul", { className: "tsd-rows" });
@@ -10464,12 +13184,30 @@ function createWorkspace(svc, options, mode) {
     { icon: "run-errors", title: t("Run the tests that failed"), run: () => {
       void runFailedTests();
     } },
+    { icon: "target", title: t("Run all tests in the game (the lifted game of the scm-sim plugin): each gets a second mark"), run: () => {
+      void runTestsInGame();
+    } },
     { icon: "filter", title: t("Show only the tests that fail"), run: () => {
       onlyFailing = !onlyFailing;
       renderTesting();
     } }
   ] });
   testingView.body.append(testingList);
+  const debug = new Debugger({
+    t,
+    el,
+    shell,
+    reveal: (file, line) => {
+      if (!editor) return;
+      openFile(file);
+      editor.editor.revealLineInCenterIfOutsideViewport(line);
+    },
+    changed: () => {
+      editor?.setDebug(debug.marks());
+      refreshLineHints();
+    },
+    setStatus: (kind, text, timeout) => setStatus(kind, text, timeout)
+  });
   function renderSettings() {
     const open = api.document.isOpen();
     const settings = svc.settings();
@@ -10516,8 +13254,8 @@ function createWorkspace(svc, options, mode) {
       { className: "tsd-settings" },
       el("h4", {}, t("Memory for arrays that grow")),
       el("p", {}, t("Arrays a program pushes to share one pool of cells; this is its size. A single array can reach between a quarter and a half of it. When the pool runs out, nothing more is pushed and the game says so once.")),
-      row({ key: "heapCells", min: HEAP_CELLS_MIN, max: HEAP_CELLS_MAX, step: 1024, normal: HEAP_CELLS, fit: heapCells, said: (now) => t("cells \u2014 {size} of the built map", { size: size(now) }) }),
-      el("p", {}, t("{min} to {max} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.", { min: count(HEAP_CELLS_MIN), max: count(HEAP_CELLS_MAX) })),
+      row({ key: "heapCells", min: HEAP_CELLS_MIN, max: HEAP_CELLS_MAX, step: 1024, normal: HEAP_CELLS, fit: heapCells, said: (now) => t("cells \u2014 {size} while the map is played", { size: size(now <= CELL_HEAP_MOST ? now * 19 : now) }) }),
+      el("p", {}, t("{min} to {max} cells. Up to {most}, a cell is 76 bytes while the map is played: four for texts, and 72 for the arrays' own cells, which a loop reads and writes in a few steps. Past that, arrays share the texts' four bytes and a read takes about three times as long. A larger pool does not slow the game and hardly grows the saved file. Kept in the map, so it builds the same on any computer.", { min: count(HEAP_CELLS_MIN), max: count(HEAP_CELLS_MAX), most: count(CELL_HEAP_MOST) })),
       el("h4", {}, t("Recursion depth")),
       el("p", {}, t("How many calls deep a function that calls itself may go. Around each such call the function's variables are kept on a stack, which is only in the built map when some function calls itself. A call past the limit stops the program, and the game says where; Simulate stops at the same call.")),
       row({ key: "stackDepth", min: STACK_DEPTH_MIN, max: STACK_DEPTH_MAX, step: 256, normal: STACK_DEPTH, fit: stackDepth, said: stack }),
@@ -10542,6 +13280,11 @@ function createWorkspace(svc, options, mode) {
   let onlyFailing = false;
   let testsSlow = false;
   let testsRunning = false;
+  let gameResults = /* @__PURE__ */ new Map();
+  let costFiles = null;
+  let gametest = null;
+  let allowlist = null;
+  let eudFound = null;
   let openTabs = [normalizePath(options.file ?? ENTRY_FILE)];
   let output = [];
   let buildState = null;
@@ -10597,6 +13340,10 @@ function createWorkspace(svc, options, mode) {
     if (!editor) return;
     const p = normalizePath(path);
     if (files[p] === void 0) return;
+    if (isMediaFile(p)) {
+      (isImageFile(p) ? showImage : isSoundFile(p) ? showSound : isNotesFile(p) ? showNotes : showVideo)(api, t, p, files[p]);
+      return;
+    }
     if (!openTabs.includes(p)) openTabs.push(p);
     editor.show(p);
     renderFiles();
@@ -10650,6 +13397,20 @@ function createWorkspace(svc, options, mode) {
     });
   };
   acceptDrops(fileList, "");
+  const fromOutside = (e) => !dragged && !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  fileList.addEventListener("dragover", (e) => {
+    if (!fromOutside(e)) return;
+    e.preventDefault();
+    fileList.classList.add("tsd-drop");
+  });
+  fileList.addEventListener("dragleave", () => fileList.classList.remove("tsd-drop"));
+  fileList.addEventListener("drop", (e) => {
+    fileList.classList.remove("tsd-drop");
+    if (!fromOutside(e)) return;
+    e.preventDefault();
+    const file = [...e.dataTransfer?.files ?? []].find((f) => /^(video|image)\//.test(f.type) || /\.(mkv|webm|mp4|mov|gif)$/i.test(f.name) || isSoundSource(f) || isMidiSource(f));
+    if (file) void importVideo(file);
+  });
   const renderFiles = () => {
     const active = editor?.active() ?? openTabs[0] ?? ENTRY_FILE;
     const paths = Object.keys(files);
@@ -10732,8 +13493,9 @@ function createWorkspace(svc, options, mode) {
         const fixed = path === ENTRY_FILE;
         const row = el(
           "li",
-          { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: path, onClick: () => openFile(path) },
-          el("span", { className: "tsd-ts" }, "TS"),
+          { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: isMediaFile(path) ? `${path}
+${describeMedia(path, files[path])}` : path, onClick: () => openFile(path) },
+          isMediaFile(path) ? shell.icon(isImageFile(path) ? "file-media" : isSoundFile(path) ? "unmute" : isNotesFile(path) ? "music" : "device-camera-video") : el("span", { className: "tsd-ts" }, "TS"),
           el("span", { className: broken.has(path) ? "tsd-name tsd-problem" : "tsd-name" }, node.name),
           el(
             "span",
@@ -10790,10 +13552,20 @@ function createWorkspace(svc, options, mode) {
       ))
     ]));
   };
+  const ownWarnings = () => {
+    const refusal2 = result?.ownRefusal;
+    if (!refusal2 || !result?.programs.length) return [];
+    const at = /, line (\d+)(?: of (\S+))?$/.exec(refusal2);
+    const reason = at ? refusal2.slice(0, at.index) : refusal2;
+    const message = t("The programs will not be built: TrigScript does not take this yet ({reason}). The map is saved without them.", { reason });
+    return [{ file: at?.[2] ?? ENTRY_FILE, line: at ? Number(at[1]) : 1, message, source: "build" }];
+  };
+  const allWarnings = () => [...warningsOf(tests, t), ...ownWarnings()];
   const renderProblems = () => {
-    const warnings = warningsOf(tests, t);
-    problemsView.badge(diagnostics.length + warnings.length);
-    if (diagnostics.length + warnings.length === 0) {
+    const warnings = allWarnings();
+    const eud = eudLines(), found = eudFound?.answer;
+    problemsView.badge(diagnostics.length + warnings.length + eud.length);
+    if (diagnostics.length + warnings.length + eud.length === 0) {
       problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? t("No problems have been detected in the script.") : t("Checking\u2026")));
       return;
     }
@@ -10808,12 +13580,20 @@ function createWorkspace(svc, options, mode) {
         el("span", { className: "src" }, d.source === "typescript" ? t("types") : d.source === "script" ? t("script") : t("compiler")),
         el("span", { className: "where" }, t("{file} [Ln {line}, Col {column}]", { file: d.file, line: d.line, column: d.column }))
       )),
+      ...found ? eud.map((l) => el(
+        "li",
+        { title: eudLineNote(found, l), onClick: () => goTo(l.file, l.line) },
+        shell.icon("error"),
+        el("span", { className: "msg" }, `EUD ERROR ${found.code}: ${found.place}`),
+        el("span", { className: "src" }, t("game")),
+        el("span", { className: "where" }, t("{file} [Ln {line}]", { file: l.file, line: l.line }))
+      )) : [],
       ...warnings.map((w2) => el(
         "li",
         { className: "tsd-warning", title: w2.message, onClick: () => goTo(w2.file, w2.line) },
         shell.icon("warning"),
         el("span", { className: "msg" }, w2.message),
-        el("span", { className: "src" }, t("tests")),
+        el("span", { className: "src" }, w2.source === "build" ? t("build") : t("tests")),
         el("span", { className: "where" }, t("{file} [Ln {line}]", { file: w2.file, line: w2.line }))
       ))
     ));
@@ -10861,6 +13641,8 @@ function createWorkspace(svc, options, mode) {
           "li",
           { className: node.kind === "test" && node.info.id === chosenTest ? "tsd-row tsd-active" : "tsd-row", title: result2?.message ?? name, onClick: open },
           stateIcon(state),
+          // (The game's mark next to the simulator's, where a narrow sidebar still shows it.)
+          node.kind === "test" && gameResults.has(node.info.id) ? gameMark(gameResults.get(node.info.id), result2) : void 0,
           el("span", { className: state === "failed" ? "tsd-name tsd-problem" : "tsd-name" }, name),
           result2 && result2.status !== "skipped" ? el("span", { className: "tsd-about" }, t("{ms} ms", { ms: result2.ms })) : void 0,
           el(
@@ -10868,7 +13650,10 @@ function createWorkspace(svc, options, mode) {
             { className: "tsd-row-actions" },
             shell.iconButton({ icon: "play", title: node.kind === "test" ? t("Run this test") : t("Run these tests"), run: () => {
               void runTests2(node.kind === "file" ? { files: [node.path] } : { ids });
-            } }).element
+            } }).element,
+            node.kind === "test" ? shell.iconButton({ icon: "debug-alt", title: t("Debug this test in the game: run it once with everything it did written down, then walk it forwards and back"), run: () => {
+              void debugTest(node.info.id);
+            } }).element : void 0
           )
         );
         row.style.paddingLeft = `${10 + depth * 12}px`;
@@ -10879,6 +13664,313 @@ function createWorkspace(svc, options, mode) {
     walk(testTree(tests.list), 0);
     if (rows.length === 0) rows.push(el("li", { className: "tsd-empty" }, t("No test fails.")));
     testingList.replaceChildren(...rows);
+  };
+  const gameMark = (game, simulated) => {
+    const state = game.status === "failed" ? "failed" : game.status === "passed" ? "passed" : "skipped";
+    const differ = simulated && simulated.status !== "skipped" && game.status !== "skipped" && simulated.status !== game.status;
+    return el(
+      "span",
+      { className: differ ? "tsd-game tsd-game-differs" : "tsd-game", title: differ ? t("In the game: {status}. The simulator and the game disagree: the game is right, so the simulator is wrong here (or the test leans on something it does differently).", { status: game.status === "failed" ? game.message ?? t("failed") : t("passed") }) : game.status === "failed" ? t("In the game: {message}", { message: game.message ?? t("failed") }) : game.status === "skipped" ? game.message ?? t("In the game: not run") : t("In the game: passed") },
+      stateIcon(state)
+    );
+  };
+  const prepareInGame = async (filter, ask) => {
+    const engine = svc.engine();
+    if (!engine?.present || !engine.test || ask === "debug" && !engine.debug) {
+      setStatus("error", ask === "debug" ? t("Debugging in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install, update or turn it on under Plugins \u25B8 Manage Plugins\u2026.") : t("Running tests in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install or turn it on under Plugins \u25B8 Manage Plugins\u2026."));
+      return null;
+    }
+    const notRun = (message) => ask === "debug" ? t("Not debugged in the game: {message}", { message }) : ask === "trace" ? t("Not looked up in the game: {message}", { message }) : t("Not run in the game: {message}", { message });
+    const status2 = await engine.status();
+    if (!status2.available) {
+      setStatus("error", notRun(status2.reason ?? t("the engine cannot run a game now")));
+      return null;
+    }
+    if (!status2.tests) {
+      setStatus("error", t("Not run in the game: the engine's page is from before tests in the game. Reload the editor and try again."));
+      return null;
+    }
+    if (ask === "debug" && !status2.debug) {
+      setStatus("error", t("Not debugged: the engine's page is from before the debugger. Reload the editor and try again."));
+      return null;
+    }
+    if (!await build() || cancelled) return null;
+    const a2 = await compileNow({ world: svc.world(), ...filter });
+    if (!a2 || cancelled) return null;
+    if (!a2.compiled.ok) {
+      setStatus("error", ask === "trace" ? t("Not looked up: {n, plural, one {# problem} other {# problems}} in the script.", { n: a2.compiled.diagnostics.length }) : t("Tests not run: {n, plural, one {# problem} other {# problems}} in the script.", { n: a2.compiled.diagnostics.length }), NOTICE_MS);
+      shell.showPanel("problems");
+      return null;
+    }
+    if (!a2.compiled.modules && ask !== "trace") {
+      setStatus("info", t("The script has no tests."));
+      return null;
+    }
+    if (!a2.compiled.ir.length) {
+      setStatus("info", ask === "trace" ? t("The script has no program, so nothing of it is built into the map and no line of it can touch the game's memory: an EUD error came from the map's other triggers.") : t("Tests run in the game only for a script with a program: without one, nothing of the script is built into the map."));
+      return null;
+    }
+    const names = svc.names()?.names;
+    if (!names) {
+      setStatus("error", t("No map is open."));
+      return null;
+    }
+    setStatus("busy", t("Building the map\u2026"));
+    const built = { ...files };
+    const logged = [];
+    const heard = svc.onBuild((e) => {
+      if (e.kind === "log") logged.push(e.line);
+      else if (e.kind === "done" && !logged.length) logged.push(...e.log.split("\n"));
+    });
+    const file = await svc.withVariableMap(() => api.document.export({ format: "scx" })).finally(() => heard.dispose());
+    if (!file || cancelled) {
+      if (!file) setStatus("error", t("No map is open."));
+      return null;
+    }
+    const variables = readVariableMap(logged), triggers = readTriggerMap(logged);
+    gametest ??= fetch(gametestUrl(svc.dist())).then((r) => {
+      if (!r.ok) throw new Error(`gametest.js: ${r.status}`);
+      return r.text();
+    });
+    const module = await gametest.catch((err) => {
+      gametest = null;
+      throw err;
+    });
+    const bytes2 = new Uint8Array(await file.arrayBuffer());
+    return { engine, status: status2, a: a2, names, variables, triggers, module, bytes: bytes2, built };
+  };
+  const runTestsInGame = async (filter = {}) => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    testsRunning = true;
+    renderTesting();
+    try {
+      const ready2 = await prepareInGame(filter, "tests");
+      if (!ready2 || cancelled) return;
+      const { engine, status: status2, a: a2, names, variables, triggers, module, bytes: bytes2 } = ready2;
+      setStatus("busy", t("Running the tests in the game\u2026"));
+      const report = await engine.test(bytes2, module, { modules: a2.compiled.modules, names, files: filter.files, ids: filter.ids, variables, triggers });
+      if (cancelled) return;
+      if (report.error) {
+        setStatus("error", t("Not run in the game: {message}", { message: report.error }));
+        return;
+      }
+      const several = /* @__PURE__ */ new Map();
+      for (const x of tests.list) {
+        if (x.kind !== "test" || !x.players || filter.files && !filter.files.includes(x.file) || filter.ids && !filter.ids.some((id) => x.id === id || x.id.startsWith(`${id} > `))) continue;
+        const key2 = x.players.join(","), g = several.get(key2) ?? { players: x.players, ids: [] };
+        g.ids.push(x.id);
+        several.set(key2, g);
+      }
+      const notRun = [];
+      if (several.size && (!engine.testCopies || !status2.copies)) {
+        const why = t("Not run: a test of several players runs a copy of the game for each, which needs memory shared between them. This browser does not allow that on the engine's page (Chrome and Edge from version 137 do).");
+        for (const g of several.values()) for (const id of g.ids) notRun.push({ id, status: "skipped", message: why, printed: [], events: [], frames: 0, ms: 0 });
+      } else for (const g of several.values()) {
+        setStatus("busy", t("Running a test of {n} players in the game: a copy of the game for each\u2026", { n: g.players.length }));
+        const out = await engine.testCopies(bytes2, module, { modules: a2.compiled.modules, names, ids: g.ids, variables, triggers }, { players: g.players, triggers });
+        if (cancelled) return;
+        report.results.push(...mergeCopies(g.ids, out));
+      }
+      const ran = report.results.filter((x) => x.status !== "skipped");
+      const asked = new Set(ran.map((x) => x.id));
+      gameResults = new Map([...gameResults].filter(([id]) => !asked.has(id) && tests.list.some((x) => x.id === id)));
+      for (const r of ran) gameResults.set(r.id, r);
+      for (const r of notRun) gameResults.set(r.id, r);
+      costFiles = { ...files };
+      refreshLineHints();
+      const failed2 = ran.filter((x) => x.status === "failed");
+      const differ = ran.filter((x) => {
+        const s = tests.results.get(x.id);
+        return s && s.status !== "skipped" && s.status !== x.status;
+      });
+      if (failed2.length) {
+        chosenTest = failed2[0].id;
+        shell.showPanel("tests");
+      }
+      const said = t("In the game: {passed} of {n, plural, one {# test} other {# tests}} passed.", { passed: ran.length - failed2.length, n: ran.length });
+      const whole2 = notRun.length ? `${said} ${t("{n, plural, one {# test of several players was} other {# tests of several players were}} not run: this browser cannot run copies of the game.", { n: notRun.length })}` : said;
+      setStatus(failed2.length || differ.length ? "error" : notRun.length ? "info" : "ok", differ.length ? `${whole2} ${t("The simulator disagrees on {n, plural, one {# test} other {# tests}}.", { n: differ.length })}` : whole2, NOTICE_MS);
+    } catch (err) {
+      setStatus("error", t("Not run in the game: {message}", { message: err.message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
+  };
+  const debugTest = async (id) => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    const info = tests.list.find((x) => x.id === id);
+    if (!info || info.kind !== "test") {
+      setStatus("info", t("There is no test at the cursor."));
+      return;
+    }
+    if (info.players) {
+      setStatus("info", t("\u201C{test}\u201D is a test of several players: the debugger runs one game, and a test of several players runs as a copy of the game for each. Not yet.", { test: info.name }));
+      return;
+    }
+    testsRunning = true;
+    renderTesting();
+    try {
+      const got = await prepareInGame({ ids: [id] }, "debug");
+      if (!got || cancelled) return;
+      const { engine, a: a2, names, variables, triggers, module, bytes: bytes2, built } = got;
+      setStatus("busy", t("Running \u201C{test}\u201D in the game, writing down everything it does\u2026", { test: info.name }));
+      const session = await engine.debug(bytes2, module, { modules: a2.compiled.modules, names, variables, triggers, test: id });
+      if (cancelled) {
+        session.close();
+        return;
+      }
+      const recording = session.recording;
+      let view = null;
+      if (engine.view) {
+        try {
+          const host = debug.gameHost();
+          const v = engine.view(host);
+          if (typeof v.debug === "function" && typeof v.show === "function") {
+            const shown = await v.debug(bytes2).then(() => null, (err) => err.message);
+            if (shown) {
+              v.dispose();
+              view = shown;
+            } else {
+              v.onError?.((message) => setStatus("error", t("No picture of the game: {message}", { message })));
+              view = { element: host, show: (p) => v.show(p), dispose: () => v.dispose() };
+            }
+          } else {
+            v.dispose();
+            view = t("The scm-sim plugin's view is from before the debugger: update the plugin for a picture of the game.");
+          }
+        } catch (err) {
+          view = err.message;
+        }
+      }
+      debug.start({ recording, variables, pictures: session, view, files: built });
+      debug.setFiles(files);
+      const r = recording.result;
+      setStatus(r.status === "failed" ? "error" : "ok", r.status === "failed" ? t("Debugging \u201C{test}\u201D: it failed in the game at frame {frame}. The debugger stands there; step back to see how it came to that.", { test: info.name, frame: recording.first + recording.frames - 1 }) : t("Debugging \u201C{test}\u201D: {frames, plural, one {# frame} other {# frames}} in the game, recorded in {ms} ms.", { test: info.name, frames: recording.frames, ms: recording.ms }), NOTICE_MS);
+    } catch (err) {
+      setStatus("error", t("Not debugged in the game: {message}", { message: err.message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
+  };
+  const debugTestAtCursor = () => {
+    const at = editor?.cursor();
+    const here = at ? tests.list.filter((x) => x.kind === "test" && x.file === normalizePath(at.file) && x.line <= at.line).sort((a2, b) => b.line - a2.line)[0] : void 0;
+    if (!here) {
+      setStatus("info", t("There is no test at the cursor."));
+      return;
+    }
+    void debugTest(here.id);
+  };
+  const costHints = () => {
+    if (!costFiles) return [];
+    const seen = costFiles;
+    const costs = [...gameResults.values()].flatMap((r) => r.cost ? [{ id: r.id, cost: r.cost }] : []);
+    return costByLine(costs).filter((l) => (l.ms ? l.ms.peak >= COST_HINT_MS : l.peak >= COST_HINT) && seen[normalizePath(l.file)] === files[normalizePath(l.file)]).map((l) => l.ms ? {
+      file: l.file,
+      line: l.line,
+      label: t("{ms} ms a frame", { ms: shortMs(l.ms.peak) }),
+      note: t("In the game, this line took {ms} ms of Remastered's time in one frame at the most ({n} conditions and actions): frame {frame} of the test \u201C{test}\u201D, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran {smooth} ms of triggers a frame with no flicker seen, and slows past {most} ms; a slower computer gets there sooner. This is {share} of the {smooth} ms.", { ms: shortMs(l.ms.peak), n: l.peak.toLocaleString(), frame: l.ms.peakFrame, test: testName({ id: l.test }), frames: l.frames, smooth: SMOOTH_MS, most: Math.round(MOST_MS), share: shareOfMs(l.ms.peak) })
+    } : {
+      file: l.file,
+      line: l.line,
+      label: t("{n} a frame", { n: shortCount(l.peak) }),
+      note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test \u201C{test}\u201D, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran 500 thousand a frame with no visible effect; its screen flickers from a million and the game slows at 5 million. This is {share} of the 500 thousand.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames, share: shareOf(l.peak) })
+    });
+  };
+  const eudLines = () => {
+    if (!eudFound) return [];
+    const seen = eudFound.files;
+    return eudFound.answer.lines.filter((l) => seen[normalizePath(l.file)] === files[normalizePath(l.file)]);
+  };
+  const eudLineNote = (a2, l) => {
+    const did = l.read && l.write ? t("reads and writes") : l.write ? t("writes") : t("reads");
+    const verdict = l.write ? a2.write : a2.read;
+    const said = verdict === "ends" ? t("Remastered ends the game on this.") : verdict === "ignored" ? t("Remastered does nothing with this.") : verdict === "allowed" ? t("Remastered was seen to allow this, so the game that ended did something else to it.") : t("This has not been seen in Remastered.");
+    return l.match === "exact" ? t("In the game, this line {did} {place} ({times, plural, one {# time} other {# times}}). {said}", { did, place: a2.place, times: l.times, said }) : t("In the game, this line {did} the same field of another unit ({times, plural, one {# time} other {# times}}): a unit sits elsewhere in the table from one game to the next. {said}", { did, times: l.times, said });
+  };
+  const eudHints = () => {
+    const a2 = eudFound?.answer;
+    return a2 ? eudLines().map((l) => ({ file: l.file, line: l.line, label: `EUD ERROR ${a2.code}`, note: eudLineNote(a2, l) })) : [];
+  };
+  const lookUpEudError = async () => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    const answer = await api.ui.prompt(t("The code Remastered showed when the game ended (EUD ERROR: 0x\u2026):"), { title: "TrigScript", value: "", placeholder: "EUD ERROR: 0xFFA632E3" });
+    if (answer === null || cancelled) return;
+    const address = addressOfEudError(answer);
+    if (address === null) {
+      setStatus("error", t("\u201C{text}\u201D is not an EUD error code: Remastered shows one as EUD ERROR: 0x and eight digits.", { text: answer.trim() }));
+      return;
+    }
+    testsRunning = true;
+    renderTesting();
+    try {
+      const got = await prepareInGame({}, "trace");
+      if (!got || cancelled) return;
+      const { engine, a: a2, names, variables, triggers, module, bytes: bytes2, built } = got;
+      if (!triggers) {
+        setStatus("error", t("Not looked up: the build did not say where its triggers are. Save once more."));
+        return;
+      }
+      setStatus("busy", t("Playing the map in the game, writing down what each line reads and writes\u2026"));
+      allowlist ??= fetch(allowlistUrl(svc.dist())).then((r) => {
+        if (!r.ok) throw new Error(`allowlist.json: ${r.status}`);
+        return r.json();
+      });
+      const [report, list] = await Promise.all([
+        engine.test(bytes2, module, { modules: a2.compiled.modules ?? [], names, variables, triggers, trace: true, play: EUD_TRACE_FRAMES }),
+        allowlist.catch(() => {
+          allowlist = null;
+          return void 0;
+        })
+      ]);
+      if (cancelled) return;
+      if (report.error) {
+        setStatus("error", t("Not looked up in the game: {message}", { message: report.error }));
+        return;
+      }
+      if (!report.trace) {
+        setStatus("error", t("Not looked up in the game: {message}", { message: report.traceError ?? t("the engine's page sent back no trace") }));
+        return;
+      }
+      const found = findEudError(address, report.trace.rows, list);
+      eudFound = { files: built, answer: found };
+      log(t("EUD ERROR {code}: {place}, at 0x{address}.", { code: found.code, place: found.place, address: found.address.toString(16) }));
+      for (const l of found.lines) log(`  ${l.file}:${l.line} \u2014 ${eudLineNote(found, l)}`, false);
+      const ran = report.results.filter((r) => r.status !== "skipped").length;
+      const where2 = found.lines.slice(0, 3).map((l) => `${l.file}:${l.line}`).join(", ") + (found.lines.length > 3 ? "\u2026" : "");
+      const exact = found.lines.some((l) => l.match === "exact");
+      const head = t("EUD ERROR {code} is {place}.", { code: found.code, place: found.place });
+      const said = found.lines.length ? exact ? t("{n, plural, one {# line touched it} other {# lines touched it}} in the game: {where}.", { n: found.lines.length, where: where2 }) : t("No line touched that very unit, but {n, plural, one {# line touches} other {# lines touch}} the same field of other units, and a unit sits elsewhere in the table from one game to the next: {where}.", { n: found.lines.length, where: where2 }) : found.unlined.exact + found.unlined.field ? t("No line of the script touched it: the build's own triggers did ({n, plural, one {# time} other {# times}}).", { n: found.unlined.exact + found.unlined.field }) : ran ? t("Nothing touched it in {frames} frames of the map played with nobody at it, nor in {tests, plural, one {# test} other {# tests}}: the line that did is one this run did not reach. A test that gets there will find it.", { frames: EUD_TRACE_FRAMES.toLocaleString(), tests: ran }) : t("Nothing touched it in {frames} frames of the map played with nobody at it: the line that did is one this run did not reach. A test that gets there will find it.", { frames: EUD_TRACE_FRAMES.toLocaleString() });
+      setStatus(found.lines.length ? "error" : "info", `${head} ${said}`);
+      const first = found.lines[0];
+      if (first) goTo(first.file, first.line);
+      refreshLineHints();
+    } catch (err) {
+      setStatus("error", t("Not looked up in the game: {message}", { message: err.message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
+  };
+  const shareOf = (n) => `${(n / COST_SEEN * 100).toFixed(n < COST_SEEN / 10 ? 1 : 0)}%`;
+  const shareOfMs = (ms) => `${(ms / SMOOTH_MS * 100).toFixed(ms < SMOOTH_MS / 10 ? 1 : 0)}%`;
+  const costGraph = (cost) => {
+    const series = cost.ms?.perFrame ?? cost.perFrame, peak = cost.ms?.peak ?? cost.peak;
+    const NS2 = "http://www.w3.org/2000/svg", n = Math.max(series.length, 2), top2 = cost.ms ? Math.max(peak, 1e-3) : Math.max(peak, 1);
+    const svg = document.createElementNS(NS2, "svg");
+    svg.setAttribute("class", "tsd-cost-graph");
+    svg.setAttribute("viewBox", `0 0 ${n - 1} 100`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    const points = series.map((v, i) => `${i},${(100 - v / top2 * 96).toFixed(2)}`);
+    const area = document.createElementNS(NS2, "path");
+    area.setAttribute("d", `M0,100 L${points.join(" L")} L${series.length - 1},100 Z`);
+    svg.append(area);
+    const title = document.createElementNS(NS2, "title");
+    title.textContent = cost.ms ? t("Remastered's time a frame, frame {from} to {to}: {ms} ms at the most, at frame {frame}", { from: cost.from, to: cost.from + series.length - 1, ms: shortMs(cost.ms.peak), frame: cost.ms.peakFrame }) : t("Conditions and actions a frame, frame {from} to {to}: {peak} at the most, at frame {frame}", { from: cost.from, to: cost.from + cost.perFrame.length - 1, peak: cost.peak.toLocaleString(), frame: cost.peakFrame });
+    svg.append(title);
+    return svg;
   };
   const renderResults = () => {
     const failed2 = tests.list.filter((x) => x.kind === "test" && tests.results.get(x.id)?.status === "failed");
@@ -10909,6 +14001,50 @@ function createWorkspace(svc, options, mode) {
       ));
       if (r.expected !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("expected")), el("span", { className: "msg" }, r.expected)));
       if (r.actual !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("got")), el("span", { className: "msg" }, r.actual)));
+    }
+    const game = gameResults.get(info.id);
+    if (game && game.status !== "skipped") {
+      const gat = game.at ?? { file: info.file, line: info.line };
+      list.append(el(
+        "li",
+        { className: game.status === "failed" ? "tsd-fault" : "tsd-plain", title: t("Go to where it failed in the game"), onClick: () => goTo(gat.file, gat.line, gat.column ?? 1) },
+        el("span", { className: "frame" }, t("in the game")),
+        el("span", { className: "msg" }, game.status === "failed" ? game.message ?? t("failed") : t("passed")),
+        el("span", { className: "where" }, game.status === "failed" ? where({ file: gat.file, line: gat.line }) : t("{frames, plural, one {# frame} other {# frames}} \xB7 {ms} ms", { frames: game.frames, ms: game.ms }))
+      ));
+      if (game.status === "failed" && game.actual !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("got")), el("span", { className: "msg" }, game.actual)));
+      const cost = game.cost;
+      if (cost) {
+        const ran = cost.perFrame.filter((x) => x > 0), average = ran.length ? Math.round(ran.reduce((a2, b) => a2 + b, 0) / ran.length) : 0;
+        const other = cost.other.slice(3), runtime = other.length ? Math.round(other.reduce((a2, b) => a2 + b, 0) / other.length) : 0;
+        if (cost.ms) {
+          const ranMs = cost.ms.perFrame.filter((x) => x > 0), averageMs = ranMs.length ? ranMs.reduce((a2, b) => a2 + b, 0) / ranMs.length : 0;
+          const otherMs = cost.ms.other.slice(3), runtimeMs = otherMs.length ? otherMs.reduce((a2, b) => a2 + b, 0) / otherMs.length : 0;
+          list.append(el(
+            "li",
+            { className: "tsd-plain", title: t("Counted in the lifted game and weighed by what Remastered was measured spending on each trigger, condition and action on a fast computer (Ryzen 9 7900X): the script's own triggers and the variables they go through, {average} conditions and actions a frame on average and {peak} at the most. The map's other triggers are apart: {ms} ms a frame. Remastered slows past {most} ms of triggers a frame there, and a slower computer sooner.", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), ms: shortMs(runtimeMs), most: Math.round(MOST_MS) }) },
+            el("span", { className: "frame" }, t("cost")),
+            el("span", { className: "msg" }, t("{average} ms a frame on average, {peak} ms at the most (frame {frame}): {share} of the {smooth} ms of triggers a frame Remastered ran with no flicker seen", { average: shortMs(averageMs), peak: shortMs(cost.ms.peak), frame: cost.ms.peakFrame, share: shareOfMs(cost.ms.peak), smooth: SMOOTH_MS }))
+          ));
+        } else {
+          list.append(el(
+            "li",
+            { className: "tsd-plain", title: t("Counted in the lifted game: the script's own triggers and the variables they go through. The map's other triggers are apart: {n} a frame.", { n: runtime.toLocaleString() }) },
+            el("span", { className: "frame" }, t("cost")),
+            el("span", { className: "msg" }, t("{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), frame: cost.peakFrame, share: shareOf(cost.peak) }))
+          ));
+        }
+        if (cost.perFrame.length > 1) list.append(el("li", { className: "tsd-plain tsd-cost" }, el("span", { className: "frame" }), costGraph(cost)));
+        for (const l of cost.lines.slice(0, COST_LINES)) {
+          list.append(el(
+            "li",
+            { title: t("Go to the line"), onClick: () => goTo(l.file, l.line) },
+            el("span", { className: "frame" }),
+            el("span", { className: "msg note" }, l.ms ? t("{ms} ms a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}", { ms: shortMs(l.ms.peak), frame: l.ms.peakFrame, frames: l.frames }) : t("{peak} a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}", { peak: l.peak.toLocaleString(), frame: l.peakFrame, frames: l.frames })),
+            el("span", { className: "where" }, where({ file: l.file, line: l.line }))
+          ));
+        }
+      }
     }
     const printed = [];
     for (const line of r.printed) {
@@ -10988,10 +14124,10 @@ function createWorkspace(svc, options, mode) {
     list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, t("{frames} frames ({seconds} s) for {players}, from the map's placed units. Units are made, given, moved, killed and counted, but nothing walks or fights; scores and the countdown read 0; wait takes no time.", { frames: SIMULATE_FRAMES, seconds: SIMULATE_FRAMES / 24, players: sim.game.players.slots.map((p) => `P${p + 1}`).join(", ") }))));
     const faults = /* @__PURE__ */ new Map();
     for (const f of ps?.faults ?? []) {
-      const key = `${f.at.file}:${f.at.line}:${f.at.column}:${f.message.replace(/\d+/g, "#")}`;
-      const seen = faults.get(key);
+      const key2 = `${f.at.file}:${f.at.line}:${f.at.column}:${f.message.replace(/\d+/g, "#")}`;
+      const seen = faults.get(key2);
       if (seen) seen.times++;
-      else faults.set(key, { first: f, times: 1 });
+      else faults.set(key2, { first: f, times: 1 });
     }
     for (const { first: f, times } of [...faults.values()].slice(0, SIMULATE_FAULTS)) {
       list.append(el(
@@ -11129,13 +14265,16 @@ function createWorkspace(svc, options, mode) {
       title: t("{what}. Click for its log", { what: editedSince ? t("The script changed since this build: the programs in the saved map are the older ones until the next Save") : buildState.title ?? t("The last build of the programs") }),
       onClick: () => shell.showPanel("output")
     } : null);
-    const needsLibrary = programs > 0;
-    const libraryOk = !!library?.contribute && library.state() !== "failed";
-    libraryItem.set(!needsLibrary ? null : {
-      kind: libraryOk ? void 0 : "warn",
-      icon: libraryOk ? void 0 : "warning",
-      text: !library ? t("eudplib plugin not running") : !library.contribute ? t("eudplib plugin older than 0.4") : `eudplib ${library.versions.eudplib} \xB7 ${library.state() === "ready" ? t("runtime ready") : library.state() === "installing" ? t("runtime downloading\u2026") : library.state() === "failed" ? t("runtime failed") : t("runtime downloads on the first save")}`,
-      title: !library ? t("The programs will not be built: install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026") : !library.contribute ? t("Update the eudplib plugin to build the programs") : t("The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time")
+    const whyNotBuilt = programs > 0 ? svc.whyNotBuilt() : null;
+    libraryItem.set(programs === 0 ? null : !whyNotBuilt ? {
+      icon: "package",
+      text: t("built by TrigScript"),
+      title: t("The programs are laid out into the map by TrigScript itself when it is saved or tested: nothing to install, and the map is built in under a second")
+    } : {
+      kind: "warn",
+      icon: "warning",
+      text: t("not built: Magenta's triggers"),
+      title: whyNotBuilt
     });
     programsItem.set(programs ? { text: t("{n, plural, one {# program} other {# programs}} \xB7 Remastered", { n: programs }), title: t("Programs are built into the saved map, which then needs StarCraft: Remastered. Click for the programs and their variables"), onClick: () => {
       shell.toggleSidebar(true);
@@ -11159,7 +14298,7 @@ function createWorkspace(svc, options, mode) {
     if (r.ok && r.tests && asked && !asked.files && !asked.ids) testsSlow = r.tests.ms > TESTS_SLOW_MS;
     if (chosenTest && !tests.results.has(chosenTest)) chosenTest = null;
     if (editor && monaco) {
-      setCompilerMarkers(monaco, files, diagnostics, warningsOf(tests, t));
+      setCompilerMarkers(monaco, files, diagnostics, allWarnings());
       editor.setTests(marksOf(tests, t), notesOf(tests, t));
       editor.decorate(r.buildTime);
       refreshLineHints();
@@ -11200,7 +14339,7 @@ function createWorkspace(svc, options, mode) {
       );
     }, CHECK_DELAY_MS);
   };
-  const compileNow = async (asked = automaticTests()) => {
+  const compileNow = async (asked = automaticTests(), sounds = false) => {
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
@@ -11208,7 +14347,7 @@ function createWorkspace(svc, options, mode) {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (cancelled || !generated) return null;
       try {
-        const a2 = await svc.prepare(files, generated, asked);
+        const a2 = await svc.prepare(files, generated, asked, sounds);
         applyResult(a2.compiled, asked);
         return a2;
       } catch (err) {
@@ -11237,7 +14376,7 @@ function createWorkspace(svc, options, mode) {
     setStatus("busy", t("Running the script\u2026"));
     try {
       for (let attempt = 0; ; attempt++) {
-        const a2 = await compileNow();
+        const a2 = await compileNow(automaticTests(), true);
         if (!a2 || cancelled) return false;
         if (!a2.compiled.ok || diagnostics.length) {
           const n = diagnostics.length || a2.compiled.diagnostics.length;
@@ -11288,10 +14427,6 @@ function createWorkspace(svc, options, mode) {
         setStatus("error", t("Not tested: {message}", { message: failure }));
         return;
       }
-      if (result?.programs.length && !library?.contribute) {
-        setStatus("error", t("Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins \u25B8 Manage Plugins\u2026."));
-        return;
-      }
       const bytes2 = new Uint8Array(await file.arrayBuffer());
       const outcome = await api.document.test(bytes2, file.name);
       const kb = Math.round(bytes2.length / 1024);
@@ -11304,8 +14439,13 @@ function createWorkspace(svc, options, mode) {
       render();
     }
   };
-  const onLibraryBuild = (e) => {
-    if (cancelled || e.kind !== "log" && !e.contributors.includes("trigscript")) return;
+  const onOwnBuild = (e) => {
+    if (cancelled || e.kind !== "log" && e.kind !== "warning" && !e.contributors.includes("trigscript")) return;
+    if (e.kind === "warning") {
+      log(t("Build warning: {message}", { message: e.message }), false);
+      shell.notify({ key: `build-warning:${e.message}`, kind: "warn", text: e.message, actions: [{ label: t("Show the log"), run: () => shell.showPanel("output") }] });
+      return;
+    }
     if (e.kind === "start") {
       streamed = 0;
       shell.dismiss("build");
@@ -11315,14 +14455,14 @@ function createWorkspace(svc, options, mode) {
       if (failing) log(t("{n, plural, one {A test fails} other {# tests fail}}: see the Testing view.", { n: failing }), false);
     } else if (e.kind === "log") {
       streamed++;
-      log(e.line, false);
+      if (!isMachineLine(e.line)) log(e.line, false);
     } else if (e.kind === "done") {
-      if (!streamed && e.log) log(e.log, false);
-      const kb = Math.round(e.chkBytes / 1024), seconds = (e.ms / 1e3).toFixed(1);
-      buildState = { kind: "ok", text: t("Built {kb} KB \xB7 {seconds} s", { kb, seconds }), of: buildState?.of ?? files };
-      log(t("Built: {kb} KB of scenario in {seconds} s", { kb, seconds }));
+      if (!streamed && e.log) log(withoutMachineLines(e.log), false);
+      const kb = Math.round(e.chkBytes / 1024), took = e.ms < 1e3 ? t("{ms} ms", { ms: e.ms }) : t("{seconds} s", { seconds: (e.ms / 1e3).toFixed(1) });
+      buildState = { kind: "ok", text: t("Built {kb} KB \xB7 {took}", { kb, took }), of: buildState?.of ?? files };
+      log(t("Built: {kb} KB of scenario in {took}", { kb, took }));
     } else {
-      if (!streamed && e.log) log(e.log, false);
+      if (!streamed && e.log) log(withoutMachineLines(e.log), false);
       const saved = e.purpose === "save";
       buildState = {
         kind: "error",
@@ -11428,9 +14568,9 @@ function createWorkspace(svc, options, mode) {
     try {
       const { unitStats, ...map } = simulatedMap();
       const owner = r.programs[0]?.owner;
-      const player = owner !== void 0 && owner < 12 && (!map.players || map.players.includes(owner)) ? owner : map.players?.[0] ?? owner;
-      const sim = new Simulation(r.triggers, { strings: r.strings, player, unitStats, everyFrame: r.ir.length > 0, ...map });
-      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, stackDepth: svc.settings().stackDepth, unitStats }) : null;
+      const player3 = owner !== void 0 && owner < 12 && (!map.players || map.players.includes(owner)) ? owner : map.players?.[0] ?? owner;
+      const sim = new Simulation(r.triggers, { strings: r.strings, player: player3, unitStats, everyFrame: r.ir.length > 0, ...map });
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player: player3, heapCells: svc.settings().heapCells, stackDepth: svc.settings().stackDepth, unitStats }) : null;
       for (let i = 0; i < SIMULATE_FRAMES; i++) if (sim.tick()) programs?.step();
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
@@ -11493,13 +14633,13 @@ function createWorkspace(svc, options, mode) {
     setStatus("ok", t("Updated {n, plural, one {# reference} other {# references}}.", { n: count }));
     check();
   };
-  const askName = async (message, value, folder = "") => {
+  const askName = async (message, value, folder = "", ext = ".ts") => {
     for (; ; ) {
       const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: "helpers.ts" });
       if (answer === null) return null;
       let name = normalizePath(answer.trim());
       if (name && folder) name = `${folder}/${name}`;
-      if (name && !/\.ts$/i.test(name)) name += ".ts";
+      if (name && !/\.(?:tsx?|video|image|sound|notes)$/i.test(name)) name += ext;
       if (!FILE_NAME.test(name) || name.split("/").some((p) => p === "." || p === "..")) {
         value = answer;
         message = t("A file name is letters, digits, _ - and ., folders with /, ending in .ts.");
@@ -11526,6 +14666,21 @@ function createWorkspace(svc, options, mode) {
     }
     editor.add(name, isTestFile(name) ? TEST_TEMPLATE : FILE_TEMPLATE);
     openFile(name);
+  };
+  const importVideo = async (file) => {
+    if (!editor) return;
+    const info = api.document.info();
+    const got = await importMedia(api, t, { mapWidth: info?.width ?? 128, mapHeight: info?.height ?? 128, taken: (p) => files[normalizePath(p)] !== void 0, file });
+    if (!got || !editor || cancelled) return;
+    editor.add(got.path, got.text);
+    if (got.kind === "rows") {
+      openFile(got.path);
+      return;
+    }
+    renderFiles();
+    const stem = (got.path.split("/").pop() ?? got.path).replace(/\.(?:video|image|sound|notes)$/i, "");
+    const name = stem.replace(/[^A-Za-z0-9]+(.)?/g, (_m, c2) => c2 ? c2.toUpperCase() : "").replace(/^[^A-Za-z_]+/, "") || got.kind;
+    setStatus("ok", got.kind === "notes" ? t('{path} is in the script: import {name} from "./{path}"; then music.midi({name}, { \u2026 }) makes a song of its tracks.', { path: got.path, name }) : got.kind === "sound" ? t('{path} is in the script: import {name} from "./{path}"; then playWav({name}) plays it inside a program.', { path: got.path, name }) : got.kind === "image" ? t('{path} is in the script: import {name} from "./{path}"; then fog.picture({name}.threshold(128)) makes a picture of it.', { path: got.path, name }) : t('{path} is in the script: import {name} from "./{path}"; then await fog.play(P1, {name}) plays it.', { path: got.path, name }));
   };
   const newFolder = async (parent = "") => {
     if (!editor) return;
@@ -11576,7 +14731,7 @@ function createWorkspace(svc, options, mode) {
   };
   const renameFile = async (path) => {
     if (!editor || path === ENTRY_FILE) return;
-    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path);
+    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path, "", isMediaFile(path) ? isImageFile(path) ? ".image" : isSoundFile(path) ? ".sound" : isNotesFile(path) ? ".notes" : ".video" : ".ts");
     if (!name) return;
     moveTo(path, name);
   };
@@ -11657,7 +14812,20 @@ function createWorkspace(svc, options, mode) {
     if (line) goTo(file ?? ENTRY_FILE, line);
     else if (file) openFile(file);
   };
+  const debugging = () => debug.active;
   const commands = [
+    { id: "debugContinue", label: t("Debug: Continue"), key: { code: "F5" }, when: debugging, run: () => debug.continueForward() },
+    { id: "debugContinueBack", label: t("Debug: Continue Backwards"), key: { code: "F6" }, when: debugging, run: () => debug.continueBack() },
+    { id: "debugStep", label: t("Debug: On a Line"), key: { code: "F10" }, when: debugging, run: () => debug.stepForward() },
+    { id: "debugStepBack", label: t("Debug: Back a Line"), key: { code: "F10", shift: true }, when: debugging, run: () => debug.stepBack() },
+    { id: "debugFrame", label: t("Debug: On a Frame"), key: { code: "F11" }, when: debugging, run: () => debug.nextFrame() },
+    { id: "debugFrameBack", label: t("Debug: Back a Frame"), key: { code: "F11", shift: true }, when: debugging, run: () => debug.prevFrame() },
+    { id: "debugStop", label: t("Debug: Stop"), key: { code: "F5", shift: true }, when: debugging, run: () => debug.end() },
+    { id: "debugTestAtCursor", label: t("Debug Test at Cursor in the Game"), context: true, run: () => debugTestAtCursor() },
+    { id: "toggleBreakpoint", label: t("Toggle Breakpoint"), key: { code: "F9" }, run: () => {
+      const at = editor?.cursor();
+      if (at) debug.toggleBreakpoint(normalizePath(at.file), at.line);
+    } },
     // The editor's own Ctrl+S does not reach a map under a dialog, and a browser would offer to save the page.
     { id: "save", label: t("Save the Map"), key: { code: "KeyS", mod: true }, run: () => {
       void api.document.save();
@@ -11667,6 +14835,12 @@ function createWorkspace(svc, options, mode) {
     } },
     { id: "runTests", label: t("Run All Tests"), run: () => {
       void runTests2();
+    } },
+    { id: "runTestsInGame", label: t("Run All Tests in the Game"), run: () => {
+      void runTestsInGame();
+    } },
+    { id: "findEudError", label: t("Find an EUD Error\u2026"), run: () => {
+      void lookUpEudError();
     } },
     { id: "runTestAtCursor", label: t("Run Test at Cursor"), context: true, run: () => {
       void runTestAtCursor();
@@ -11693,6 +14867,9 @@ function createWorkspace(svc, options, mode) {
     { id: "newFolder", label: t("New Folder\u2026"), run: () => {
       void newFolder();
     } },
+    { id: "importVideo", label: t("Import Video\u2026"), run: () => {
+      void importVideo();
+    } },
     { id: "mode", label: mode === "dialog" ? t("Open Beside the Map") : t("Open in a Window"), run: () => switchMode() },
     { id: "problems", label: t("Show Problems"), key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
     { id: "output", label: t("Show Output"), key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },
@@ -11715,7 +14892,7 @@ function createWorkspace(svc, options, mode) {
   const onKey = (e) => {
     if (e.altKey) return;
     const mod = e.ctrlKey || e.metaKey;
-    const c2 = mod && e.shiftKey && e.code === "KeyP" || !mod && !e.shiftKey && e.code === "F1" ? { run: palette } : commands.find((x) => x.key && x.key.code === e.code && !!x.key.mod === mod && !!x.key.shift === e.shiftKey);
+    const c2 = mod && e.shiftKey && e.code === "KeyP" || !mod && !e.shiftKey && e.code === "F1" ? { run: palette } : commands.find((x) => x.key && x.key.code === e.code && !!x.key.mod === mod && !!x.key.shift === e.shiftKey && (!x.when || x.when()));
     if (!c2) return;
     e.preventDefault();
     e.stopPropagation();
@@ -11727,11 +14904,7 @@ function createWorkspace(svc, options, mode) {
     const loadingCover = w.busy(hostEl, t("Loading the editor\u2026"));
     const releaseWorker = retainCompileWorker();
     const subs = [
-      svc.watchLibrary((s) => {
-        library = s;
-        if (!cancelled) render();
-      }),
-      svc.onBuild(onLibraryBuild),
+      svc.onBuild(onOwnBuild),
       api.events.on("settings", refreshNames),
       api.events.on("locations", refreshNames),
       api.events.on("triggers", refreshNames),
@@ -11744,23 +14917,27 @@ function createWorkspace(svc, options, mode) {
         monaco = m;
         if (generated) setDeclarations(m, generated.decls);
         setHoverVariables(m, () => result?.variables ?? []);
-        setLineHints(m, () => result?.hints ?? []);
+        setLineHints(m, () => [...result?.hints ?? [], ...costHints(), ...eudHints(), ...debug.hints()]);
         setMapRefs(m, mapRefs2);
         loadingCover.done();
         shell.ready();
         editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
           files = { ...files, [path]: text };
           svc.writeFiles(files);
+          debug.setFiles(files);
           check();
         }, (id) => {
           void runTests2({ ids: [id] });
-        });
+        }, (file, line) => debug.toggleBreakpoint(file, line));
+        debug.setFiles(files);
+        editor.setDebug(debug.marks());
         const code = editor.editor;
         for (const c2 of commands) {
           code.addAction({
             id: `trigscript.${c2.id}`,
             label: `TrigScript: ${c2.label}`,
-            keybindings: c2.key ? [(c2.key.mod ? m.KeyMod.CtrlCmd : 0) | (c2.key.shift ? m.KeyMod.Shift : 0) | m.KeyCode[c2.key.code]] : void 0,
+            // (A key that only means something while debugging is the workspace's to hear, not Monaco's.)
+            keybindings: c2.key && !c2.when ? [(c2.key.mod ? m.KeyMod.CtrlCmd : 0) | (c2.key.shift ? m.KeyMod.Shift : 0) | m.KeyCode[c2.key.code]] : void 0,
             ...c2.context ? { contextMenuGroupId: "navigation", contextMenuOrder: 9 } : {},
             run: () => c2.run()
           });
@@ -11803,6 +14980,7 @@ function createWorkspace(svc, options, mode) {
       if (timer !== null) clearTimeout(timer);
       if (statusTimer !== null) clearTimeout(statusTimer);
       root.removeEventListener("keydown", onKey, true);
+      debug.end();
       shell.dispose();
       editor?.dispose();
       editor = null;
@@ -11844,6 +15022,7 @@ var KO = {
   "Beside the map: open the script as a panel, so the map stays in reach": "\uB9F5 \uC606\uC5D0: \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uD328\uB110\uB85C \uC5F4\uC5B4 \uB9F5\uC744 \uACC4\uC18D \uB2E4\uB8F0 \uC218 \uC788\uAC8C \uD569\uB2C8\uB2E4",
   "Build failed": "\uBE4C\uB4DC \uC2E4\uD328",
   "Build failed: {message}": "\uBE4C\uB4DC \uC2E4\uD328: {message}",
+  "Build warning: {message}": "\uBE4C\uB4DC \uACBD\uACE0: {message}",
   "Building for Save\u2026": "\uC800\uC7A5\uC6A9\uC73C\uB85C \uBE4C\uB4DC \uC911\u2026",
   "Building for Test Map\u2026": "\uB9F5 \uD14C\uC2A4\uD2B8\uC6A9\uC73C\uB85C \uBE4C\uB4DC \uC911\u2026",
   "Building for an export\u2026": "\uB0B4\uBCF4\uB0B4\uAE30\uC6A9\uC73C\uB85C \uBE4C\uB4DC \uC911\u2026",
@@ -11851,8 +15030,9 @@ var KO = {
   "Building the programs for Save": "\uC800\uC7A5\uC6A9\uC73C\uB85C \uD504\uB85C\uADF8\uB7A8 \uBE4C\uB4DC",
   "Building the programs for Test Map": "\uB9F5 \uD14C\uC2A4\uD2B8\uC6A9\uC73C\uB85C \uD504\uB85C\uADF8\uB7A8 \uBE4C\uB4DC",
   "Building the programs for an export": "\uB0B4\uBCF4\uB0B4\uAE30\uC6A9\uC73C\uB85C \uD504\uB85C\uADF8\uB7A8 \uBE4C\uB4DC",
-  "Built {kb} KB \xB7 {seconds} s": "\uBE4C\uB4DC\uB428 {kb} KB \xB7 {seconds}\uCD08",
-  "Built: {kb} KB of scenario in {seconds} s": "\uBE4C\uB4DC\uB428: \uC2DC\uB098\uB9AC\uC624 {kb} KB, {seconds}\uCD08",
+  "Built {kb} KB \xB7 {took}": "\uBE4C\uB4DC\uB428 {kb} KB \xB7 {took}",
+  "Built: {kb} KB of scenario in {took}": "\uBE4C\uB4DC\uB428: \uC2DC\uB098\uB9AC\uC624 {kb} KB, {took}",
+  "{seconds} s": "{seconds}\uCD08",
   "Changes not applied": "\uBCC0\uACBD \uC0AC\uD56D \uC801\uC6A9 \uC548 \uB428",
   "Checking\u2026": "\uD655\uC778\uD558\uB294 \uC911\u2026",
   "Clear the output": "\uCD9C\uB825 \uC9C0\uC6B0\uAE30",
@@ -11909,7 +15089,6 @@ var KO = {
   "Not applied: {n, plural, one {# problem} other {# problems}} in the script.": "\uC801\uC6A9\uB418\uC9C0 \uC54A\uC74C: \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uBB38\uC81C\uAC00 {n}\uAC1C \uC788\uC2B5\uB2C8\uB2E4.",
   "Not run yet": "\uC544\uC9C1 \uC2E4\uD589 \uC548 \uB428",
   "Not simulated: {n, plural, one {# problem} other {# problems}} in the script.": "\uC2DC\uBBAC\uB808\uC774\uC158\uD558\uC9C0 \uC54A\uC74C: \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uBB38\uC81C\uAC00 {n}\uAC1C \uC788\uC2B5\uB2C8\uB2E4.",
-  "Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins \u25B8 Manage Plugins\u2026.": "\uD14C\uC2A4\uD2B8\uD558\uC9C0 \uC54A\uC74C: \uD504\uB85C\uADF8\uB7A8\uC744 \uBE4C\uB4DC\uD558\uB824\uBA74 eudplib \uD50C\uB7EC\uADF8\uC778(0.4 \uC774\uC0C1)\uC774 \uD544\uC694\uD569\uB2C8\uB2E4. \uD50C\uB7EC\uADF8\uC778 \u25B8 \uD50C\uB7EC\uADF8\uC778 \uAD00\uB9AC\u2026\uC5D0\uC11C \uC124\uCE58\uD558\uAC70\uB098 \uCF1C\uC138\uC694.",
   "Not tested: {message}": "\uD14C\uC2A4\uD2B8\uD558\uC9C0 \uC54A\uC74C: {message}",
   "Open Beside the Map": "\uB9F5 \uC606\uC5D0 \uC5F4\uAE30",
   "Open Settings": "\uC124\uC815 \uC5F4\uAE30",
@@ -11969,7 +15148,6 @@ var KO = {
   "That location is not in the script's tables yet; try again after the map's names refresh.": "\uADF8 \uB85C\uCF00\uC774\uC158\uC740 \uC544\uC9C1 \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD45C\uC5D0 \uC5C6\uC2B5\uB2C8\uB2E4. \uB9F5\uC758 \uC774\uB984\uC774 \uAC31\uC2E0\uB41C \uB4A4 \uB2E4\uC2DC \uD574 \uBCF4\uC138\uC694.",
   "That unit's type has no name in the script's tables.": "\uADF8 \uC720\uB2DB\uC758 \uC885\uB958\uB294 \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD45C\uC5D0 \uC774\uB984\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
   "The editor failed to load: {message}": "\uD3B8\uC9D1\uAE30\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: {message}",
-  "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time": "eudplib \uD50C\uB7EC\uADF8\uC778\uC740 \uB9F5\uC744 \uC800\uC7A5\uD558\uAC70\uB098 \uD14C\uC2A4\uD2B8\uD560 \uB54C \uD504\uB85C\uADF8\uB7A8\uC744 \uB9F5\uC5D0 \uBE4C\uB4DC\uD569\uB2C8\uB2E4. \uB7F0\uD0C0\uC784\uC740 \uCC98\uC74C \uD55C \uBC88\uB9CC \uB0B4\uB824\uBC1B\uC2B5\uB2C8\uB2E4",
   "The last build of the programs": "\uD504\uB85C\uADF8\uB7A8\uC758 \uB9C8\uC9C0\uB9C9 \uBE4C\uB4DC",
   "The map changed while the script ran; running it again\u2026": "\uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC2E4\uD589\uB418\uB294 \uB3D9\uC548 \uB9F5\uC774 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2E4\uD589\uD558\uB294 \uC911\u2026",
   "The map changed while the script was compiling; save again.": "\uC2A4\uD06C\uB9BD\uD2B8\uB97C \uCEF4\uD30C\uC77C\uD558\uB294 \uB3D9\uC548 \uB9F5\uC774 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC800\uC7A5\uD558\uC138\uC694.",
@@ -11981,7 +15159,6 @@ var KO = {
   "The next Apply leaves them all as hand-made triggers and appends a fresh block.": "\uB2E4\uC74C \uC801\uC6A9\uC740 \uBAA8\uB450 \uC9C1\uC811 \uB9CC\uB4E0 \uD2B8\uB9AC\uAC70\uB85C \uB0A8\uACA8 \uB450\uACE0 \uC0C8 \uBE14\uB85D\uC744 \uB4A4\uC5D0 \uCD94\uAC00\uD569\uB2C8\uB2E4.",
   "The next Apply replaces the {unchanged} and keeps the {changed, plural, one {# edited one} other {# edited ones}} as hand-made triggers right after the new block.": "\uB2E4\uC74C \uC801\uC6A9\uC740 {unchanged}\uAC1C\uB97C \uBC14\uAFB8\uACE0, \uD3B8\uC9D1\uB41C {changed}\uAC1C\uB294 \uC0C8 \uBE14\uB85D \uBC14\uB85C \uB4A4\uC5D0 \uC9C1\uC811 \uB9CC\uB4E0 \uD2B8\uB9AC\uAC70\uB85C \uB0A8\uAE41\uB2C8\uB2E4.",
   "The programs were not built: {message}": "\uD504\uB85C\uADF8\uB7A8\uC774 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4: {message}",
-  "The programs will not be built: install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026": "\uD504\uB85C\uADF8\uB7A8\uC774 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uD50C\uB7EC\uADF8\uC778 \u25B8 \uD50C\uB7EC\uADF8\uC778 \uAD00\uB9AC\u2026\uC5D0\uC11C eudplib \uD50C\uB7EC\uADF8\uC778\uC744 \uC124\uCE58\uD558\uAC70\uB098 \uCF1C\uC138\uC694",
   "The script changed since it was applied: saving or testing the map applies the script by itself. Click to apply it now ({mod}+Shift+B)": "\uC801\uC6A9\uD55C \uB4A4 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB9F5\uC744 \uC800\uC7A5\uD558\uAC70\uB098 \uD14C\uC2A4\uD2B8\uD558\uBA74 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC800\uC808\uB85C \uC801\uC6A9\uB429\uB2C8\uB2E4. \uD074\uB9AD\uD558\uBA74 \uC9C0\uAE08 \uC801\uC6A9\uD569\uB2C8\uB2E4 ({mod}+Shift+B)",
   "The script changed since this build: the programs in the saved map are the older ones until the next Save": "\uC774 \uBE4C\uB4DC \uB4A4\uC5D0 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC74C\uC5D0 \uC800\uC7A5\uD560 \uB54C\uAE4C\uC9C0 \uC800\uC7A5\uB41C \uB9F5\uC758 \uD504\uB85C\uADF8\uB7A8\uC740 \uC774\uC804 \uAC83\uC785\uB2C8\uB2E4",
   'The script has no tests yet. A test is a test(name, (sim) => { \u2026 }) imported from "trigscript", in any file or in one named *.test.ts: it runs here, in the simulator, after every change that compiles.': '\uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uC544\uC9C1 \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uD14C\uC2A4\uD2B8\uB294 "trigscript"\uC5D0\uC11C \uAC00\uC838\uC628 test(name, (sim) => { \u2026 })\uB85C, \uC544\uBB34 \uD30C\uC77C\uC774\uB098 *.test.ts\uB77C\uB294 \uC774\uB984\uC758 \uD30C\uC77C\uC5D0 \uC501\uB2C8\uB2E4. \uCEF4\uD30C\uC77C\uB418\uB294 \uBCC0\uACBD\uC774 \uC788\uC744 \uB54C\uB9C8\uB2E4 \uC5EC\uAE30 \uC2DC\uBBAC\uB808\uC774\uD130\uC5D0\uC11C \uC2E4\uD589\uB429\uB2C8\uB2E4.',
@@ -12014,7 +15191,6 @@ var KO = {
   "Triggers edited outside the script": "\uC2A4\uD06C\uB9BD\uD2B8 \uBC16\uC5D0\uC11C \uD3B8\uC9D1\uB41C \uD2B8\uB9AC\uAC70",
   "Undo": "\uC2E4\uD589 \uCDE8\uC18C",
   "Update references": "\uCC38\uC870 \uC5C5\uB370\uC774\uD2B8",
-  "Update the eudplib plugin to build the programs": "\uD504\uB85C\uADF8\uB7A8\uC744 \uBE4C\uB4DC\uD558\uB824\uBA74 eudplib \uD50C\uB7EC\uADF8\uC778\uC744 \uC5C5\uB370\uC774\uD2B8\uD558\uC138\uC694",
   "Updated {n, plural, one {# reference} other {# references}}.": "\uCC38\uC870 {n}\uAC1C\uB97C \uC5C5\uB370\uC774\uD2B8\uD588\uC2B5\uB2C8\uB2E4.",
   "Views": "\uBCF4\uAE30",
   "What Apply, Play and the builds of the programs report is kept here.": "\uC801\uC6A9, \uD50C\uB808\uC774, \uD504\uB85C\uADF8\uB7A8 \uBE4C\uB4DC\uAC00 \uC54C\uB9AC\uB294 \uB0B4\uC6A9\uC774 \uC5EC\uAE30\uC5D0 \uB0A8\uC2B5\uB2C8\uB2E4.",
@@ -12026,6 +15202,7 @@ var KO = {
   "a number (\u22122 147 483 648 \u2026 2 147 483 647, whole, wrapping at either end as `x | 0` does)": "\uC22B\uC790 (\u22122 147 483 648 \u2026 2 147 483 647, \uC815\uC218, `x | 0`\uCC98\uB7FC \uC591 \uB05D\uC5D0\uC11C \uB118\uC5B4\uAC00\uBA74 \uBC18\uB300\uCABD\uC73C\uB85C \uB3CC\uC544\uAC10)",
   "a text \u2014 `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes": "\uD14D\uC2A4\uD2B8 \u2014 `length`, `s[i]`, `slice`\uB294 \uBB38\uC790(\uCF54\uB4DC \uD3EC\uC778\uD2B8) \uB2E8\uC704\uB85C \uC138\uBA70, \uB9CC\uB4E0 \uD14D\uC2A4\uD2B8\uB294 1 023\uBC14\uC774\uD2B8\uAE4C\uC9C0 \uB2F4\uC2B5\uB2C8\uB2E4",
   "a u32 number (0 \u2026 4 294 967 295, wrapping at either end as `x >>> 0` does)": "u32 \uC22B\uC790 (0 \u2026 4 294 967 295, `x >>> 0`\uCC98\uB7FC \uC591 \uB05D\uC5D0\uC11C \uB118\uC5B4\uAC00\uBA74 \uBC18\uB300\uCABD\uC73C\uB85C \uB3CC\uC544\uAC10)",
+  "a fixed number (\u221232 768 \u2026 32 767.99998, in steps of 1/65 536): a number with a fraction": "fixed \uC22B\uC790 (\u221232 768 \u2026 32 767.99998, 1/65 536 \uB2E8\uC704): \uC18C\uC218\uAC00 \uC788\uB294 \uC22B\uC790",
   "a unit of the game, or none \u2014 checked before every use: once the unit is gone it reads 0 and takes no write": "\uAC8C\uC784\uC758 \uC720\uB2DB \uB610\uB294 \uC5C6\uC74C \u2014 \uC4F8 \uB54C\uB9C8\uB2E4 \uD655\uC778\uD569\uB2C8\uB2E4. \uC720\uB2DB\uC774 \uC0AC\uB77C\uC9C0\uBA74 0\uC73C\uB85C \uC77D\uD788\uACE0 \uC4F0\uAE30\uB294 \uBB34\uC2DC\uB429\uB2C8\uB2E4",
   "a u{bits} number (0 \u2026 {max}, stopping at either end)": "u{bits} \uC22B\uC790 (0 \u2026 {max}, \uC591 \uB05D\uC5D0\uC11C \uBA48\uCDA4)",
   "after": "\uC885\uB8CC \uD6C4",
@@ -12036,13 +15213,11 @@ var KO = {
   "calls deep \u2014 no function of this script calls itself": "\uB2E8\uACC4 \u2014 \uC774 \uC2A4\uD06C\uB9BD\uD2B8\uC5D0\uB294 \uC790\uAE30 \uC790\uC2E0\uC744 \uD638\uCD9C\uD558\uB294 \uD568\uC218\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4",
   "calls deep \u2014 {frame} cells a call here, {size} while the map is played": "\uB2E8\uACC4 \u2014 \uC5EC\uAE30\uC11C\uB294 \uD638\uCD9C\uB2F9 {frame}\uC140, \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 {size}",
   "calls deep \u2014 {frame} cells a call here, {size} while the map is played: more than the {max} a map may use, and it will not build": "\uB2E8\uACC4 \u2014 \uC5EC\uAE30\uC11C\uB294 \uD638\uCD9C\uB2F9 {frame}\uC140, \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 {size}: \uB9F5\uC774 \uC4F8 \uC218 \uC788\uB294 {max}\uBCF4\uB2E4 \uB9CE\uC544\uC11C \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4",
-  "cells \u2014 {size} of the built map": "\uC140 \u2014 \uBE4C\uB4DC\uB41C \uB9F5\uC758 {size}",
+  "cells \u2014 {size} while the map is played": "\uC140 \u2014 \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 {size}",
   "click to run these tests": "\uD074\uB9AD\uD558\uBA74 \uC774 \uD14C\uC2A4\uD2B8\uB4E4\uC744 \uC2E4\uD589\uD569\uB2C8\uB2E4",
   "click to run this test": "\uD074\uB9AD\uD558\uBA74 \uC774 \uD14C\uC2A4\uD2B8\uB97C \uC2E4\uD589\uD569\uB2C8\uB2E4",
   "compiler": "\uCEF4\uD30C\uC77C\uB7EC",
   "edited since": "\uC774\uD6C4 \uD3B8\uC9D1\uB428",
-  "eudplib plugin not running": "eudplib \uD50C\uB7EC\uADF8\uC778\uC774 \uC2E4\uD589 \uC911\uC774 \uC544\uB2D8",
-  "eudplib plugin older than 0.4": "eudplib \uD50C\uB7EC\uADF8\uC778\uC774 0.4\uBCF4\uB2E4 \uC624\uB798\uB428",
   "expected": "\uC608\uC0C1",
   "failed": "\uC2E4\uD328",
   "frame {n}": "{n}\uD504\uB808\uC784",
@@ -12050,10 +15225,6 @@ var KO = {
   "per player": "\uD50C\uB808\uC774\uC5B4\uBCC4",
   "printed": "\uCD9C\uB825",
   "program {n}": "\uD504\uB85C\uADF8\uB7A8 {n}",
-  "runtime downloading\u2026": "\uB7F0\uD0C0\uC784 \uB0B4\uB824\uBC1B\uB294 \uC911\u2026",
-  "runtime downloads on the first save": "\uCCAB \uC800\uC7A5 \uB54C \uB7F0\uD0C0\uC784\uC744 \uB0B4\uB824\uBC1B\uC74C",
-  "runtime failed": "\uB7F0\uD0C0\uC784 \uC2E4\uD328",
-  "runtime ready": "\uB7F0\uD0C0\uC784 \uC900\uBE44\uB428",
   "script": "\uC2A4\uD06C\uB9BD\uD2B8",
   "shared": "\uACF5\uC720",
   "skipped": "\uAC74\uB108\uB700",
@@ -12071,7 +15242,7 @@ var KO = {
   "{from} is now {to}": "{from} \u2192 {to}",
   "{message} (and {n, plural, one {# more time} other {# more times}} at this line)": "{message} (\uC774 \uC904\uC5D0\uC11C {n}\uBC88 \uB354)",
   "{min} to {max} calls. The limit costs nothing until it is reached, but each call deep keeps and brings back every variable of its function, so thousands of calls within one frame make the game stutter. Kept in the map, like the pool above.": "{min}\u2013{max}\uB2E8\uACC4. \uD55C\uB3C4\uB294 \uB2FF\uAE30 \uC804\uAE4C\uC9C0\uB294 \uBE44\uC6A9\uC774 \uC5C6\uC9C0\uB9CC, \uD55C \uB2E8\uACC4 \uAE4A\uC5B4\uC9C8 \uB54C\uB9C8\uB2E4 \uD568\uC218\uC758 \uBAA8\uB4E0 \uBCC0\uC218\uB97C \uBCF4\uAD00\uD588\uB2E4\uAC00 \uB418\uB3CC\uB9AC\uBBC0\uB85C \uD55C \uD504\uB808\uC784 \uC548\uC5D0 \uC218\uCC9C \uBC88 \uD638\uCD9C\uD558\uBA74 \uAC8C\uC784\uC774 \uB04A\uAE41\uB2C8\uB2E4. \uC704\uC758 \uD480\uCC98\uB7FC \uB9F5\uC5D0 \uC800\uC7A5\uB429\uB2C8\uB2E4.",
-  "{min} to {max} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.": "{min}\u2013{max}\uC140, \uC140\uB9C8\uB2E4 4\uBC14\uC774\uD2B8. \uD480\uC774 \uCEE4\uB3C4 \uAC8C\uC784\uC774 \uB290\uB824\uC9C0\uC9C0 \uC54A\uACE0 \uC800\uC7A5 \uD30C\uC77C\uB3C4 \uAC70\uC758 \uCEE4\uC9C0\uC9C0 \uC54A\uC9C0\uB9CC, \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 \uBA54\uBAA8\uB9AC\uB97C \uB354 \uC501\uB2C8\uB2E4. \uB9F5\uC5D0 \uC800\uC7A5\uB418\uBBC0\uB85C \uC5B4\uB290 \uCEF4\uD4E8\uD130\uC5D0\uC11C\uB098 \uB611\uAC19\uC774 \uBE4C\uB4DC\uB429\uB2C8\uB2E4.",
+  "{min} to {max} cells. Up to {most}, a cell is 76 bytes while the map is played: four for texts, and 72 for the arrays' own cells, which a loop reads and writes in a few steps. Past that, arrays share the texts' four bytes and a read takes about three times as long. A larger pool does not slow the game and hardly grows the saved file. Kept in the map, so it builds the same on any computer.": "{min}\u2013{max}\uC140. {most}\uC140\uAE4C\uC9C0\uB294 \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 \uC140\uB9C8\uB2E4 76\uBC14\uC774\uD2B8\uC785\uB2C8\uB2E4. \uD14D\uC2A4\uD2B8\uC5D0 4\uBC14\uC774\uD2B8, \uBC30\uC5F4 \uC790\uC2E0\uC758 \uC140\uC5D0 72\uBC14\uC774\uD2B8\uC774\uBA70, \uB8E8\uD504\uB294 \uC774 \uC140\uC744 \uBA87 \uB2E8\uACC4 \uB9CC\uC5D0 \uC77D\uACE0 \uC501\uB2C8\uB2E4. \uADF8\uBCF4\uB2E4 \uD06C\uBA74 \uBC30\uC5F4\uC774 \uD14D\uC2A4\uD2B8\uC758 4\uBC14\uC774\uD2B8 \uC140\uC744 \uD568\uAED8 \uC4F0\uACE0, \uC77D\uAE30\uAC00 \uC138 \uBC30\uCBE4 \uC624\uB798 \uAC78\uB9BD\uB2C8\uB2E4. \uD480\uC774 \uCEE4\uB3C4 \uAC8C\uC784\uC774 \uB290\uB824\uC9C0\uC9C0 \uC54A\uACE0 \uC800\uC7A5 \uD30C\uC77C\uB3C4 \uAC70\uC758 \uCEE4\uC9C0\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uB9F5\uC5D0 \uC800\uC7A5\uB418\uBBC0\uB85C \uC5B4\uB290 \uCEF4\uD4E8\uD130\uC5D0\uC11C\uB098 \uB611\uAC19\uC774 \uBE4C\uB4DC\uB429\uB2C8\uB2E4.",
   "{ms} ms": "{ms}ms",
   "{n, plural, one {# fault} other {# faults}}: an array read or written past its end, or out of memory \u2014 first in the list.": "\uC624\uB958 {n}\uAC1C: \uBC30\uC5F4\uC758 \uB05D\uC744 \uB118\uC5B4 \uC77D\uAC70\uB098 \uC37C\uAC70\uB098 \uBA54\uBAA8\uB9AC\uAC00 \uBD80\uC871\uD569\uB2C8\uB2E4 \u2014 \uBAA9\uB85D \uB9E8 \uC704\uC5D0 \uC788\uC2B5\uB2C8\uB2E4.",
   "{n, plural, one {# problem} other {# problems}}": "\uBB38\uC81C {n}\uAC1C",
@@ -12090,7 +15261,212 @@ var KO = {
   "{n} renamed": "\uC774\uB984 {n}\uAC1C \uBC14\uB01C",
   "{n} skipped": "{n}\uAC1C \uAC74\uB108\uB700",
   "{what}. Click for its log": "{what}. \uD074\uB9AD\uD558\uBA74 \uB85C\uADF8\uB97C \uBD05\uB2C8\uB2E4",
-  "{what}; {n, plural, one {# import} other {# imports}} rewritten.": "{what}. import {n}\uAC1C\uB97C \uACE0\uCCD0 \uC37C\uC2B5\uB2C8\uB2E4."
+  "{what}; {n, plural, one {# import} other {# imports}} rewritten.": "{what}. import {n}\uAC1C\uB97C \uACE0\uCCD0 \uC37C\uC2B5\uB2C8\uB2E4.",
+  "Run all tests in the game (the lifted game of the scm-sim plugin): each gets a second mark": "\uBAA8\uB4E0 \uD14C\uC2A4\uD2B8\uB97C \uAC8C\uC784\uC5D0\uC11C \uC2E4\uD589\uD569\uB2C8\uB2E4(scm-sim \uD50C\uB7EC\uADF8\uC778\uC758 \uC62E\uACA8 \uC628 \uAC8C\uC784). \uD14C\uC2A4\uD2B8\uB9C8\uB2E4 \uB450 \uBC88\uC9F8 \uD45C\uC2DC\uAC00 \uBD99\uC2B5\uB2C8\uB2E4",
+  "In the game: {status}. The simulator and the game disagree: the game is right, so the simulator is wrong here (or the test leans on something it does differently).": "\uAC8C\uC784\uC5D0\uC11C: {status}. \uC2DC\uBBAC\uB808\uC774\uD130\uC640 \uAC8C\uC784\uC758 \uACB0\uACFC\uAC00 \uB2E4\uB985\uB2C8\uB2E4. \uAC8C\uC784\uC774 \uC633\uC73C\uBBC0\uB85C \uC5EC\uAE30\uC11C\uB294 \uC2DC\uBBAC\uB808\uC774\uD130\uAC00 \uD2C0\uB838\uC2B5\uB2C8\uB2E4(\uB610\uB294 \uD14C\uC2A4\uD2B8\uAC00 \uB458\uC774 \uB2E4\uB974\uAC8C \uD558\uB294 \uC77C\uC5D0 \uAE30\uB300\uACE0 \uC788\uC2B5\uB2C8\uB2E4).",
+  "passed": "\uD1B5\uACFC",
+  "In the game: {message}": "\uAC8C\uC784\uC5D0\uC11C: {message}",
+  "In the game: passed": "\uAC8C\uC784\uC5D0\uC11C: \uD1B5\uACFC",
+  "Not run: a test of several players runs a copy of the game for each, which needs memory shared between them. This browser does not allow that on the engine's page (Chrome and Edge from version 137 do).": "\uC2E4\uD589\uD558\uC9C0 \uC54A\uC74C: \uC5EC\uB7EC \uD50C\uB808\uC774\uC5B4\uC758 \uD14C\uC2A4\uD2B8\uB294 \uD50C\uB808\uC774\uC5B4\uB9C8\uB2E4 \uAC8C\uC784\uC744 \uD558\uB098\uC529 \uC2E4\uD589\uD558\uBA70, \uC774 \uAC8C\uC784\uB4E4\uC740 \uBA54\uBAA8\uB9AC\uB97C \uACF5\uC720\uD574\uC57C \uD569\uB2C8\uB2E4. \uC774 \uBE0C\uB77C\uC6B0\uC800\uB294 \uC5D4\uC9C4 \uD398\uC774\uC9C0\uC5D0\uC11C \uC774\uB97C \uD5C8\uC6A9\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4(Chrome\uACFC Edge\uB294 137 \uBC84\uC804\uBD80\uD130 \uD5C8\uC6A9\uD569\uB2C8\uB2E4).",
+  "Running a test of {n} players in the game: a copy of the game for each\u2026": "{n}\uBA85\uC758 \uD50C\uB808\uC774\uC5B4 \uD14C\uC2A4\uD2B8\uB97C \uAC8C\uC784\uC5D0\uC11C \uC2E4\uD589\uD558\uB294 \uC911: \uD50C\uB808\uC774\uC5B4\uB9C8\uB2E4 \uAC8C\uC784\uC744 \uD558\uB098\uC529\u2026",
+  "{n, plural, one {# test of several players was} other {# tests of several players were}} not run: this browser cannot run copies of the game.": "\uC5EC\uB7EC \uD50C\uB808\uC774\uC5B4\uC758 \uD14C\uC2A4\uD2B8 {n}\uAC1C\uB97C \uC2E4\uD589\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4: \uC774 \uBE0C\uB77C\uC6B0\uC800\uB294 \uAC8C\uC784\uC744 \uC5EC\uB7EC \uAC1C \uC2E4\uD589\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "In the game: not run": "\uAC8C\uC784\uC5D0\uC11C: \uC2E4\uD589\uD558\uC9C0 \uC54A\uC74C",
+  "Running tests in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install or turn it on under Plugins \u25B8 Manage Plugins\u2026.": "\uD14C\uC2A4\uD2B8\uB97C \uAC8C\uC784\uC5D0\uC11C \uC2E4\uD589\uD558\uB824\uBA74 scmjs.dev\uC5D0\uC11C scm-sim \uD50C\uB7EC\uADF8\uC778(0.11 \uC774\uC0C1)\uC774 \uD544\uC694\uD569\uB2C8\uB2E4. \uD50C\uB7EC\uADF8\uC778 \u25B8 \uD50C\uB7EC\uADF8\uC778 \uAD00\uB9AC\u2026\uC5D0\uC11C \uC124\uCE58\uD558\uAC70\uB098 \uCF1C\uC138\uC694.",
+  "Not run in the game: {message}": "\uAC8C\uC784\uC5D0\uC11C \uC2E4\uD589\uD558\uC9C0 \uBABB\uD568: {message}",
+  "the engine cannot run a game now": "\uC5D4\uC9C4\uC774 \uC9C0\uAE08 \uAC8C\uC784\uC744 \uC2E4\uD589\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4",
+  "Not run in the game: the engine's page is from before tests in the game. Reload the editor and try again.": "\uAC8C\uC784\uC5D0\uC11C \uC2E4\uD589\uD558\uC9C0 \uBABB\uD568: \uC5D4\uC9C4 \uD398\uC774\uC9C0\uAC00 \uAC8C\uC784 \uC18D \uD14C\uC2A4\uD2B8\uBCF4\uB2E4 \uC624\uB798\uB41C \uD310\uC785\uB2C8\uB2E4. \uD3B8\uC9D1\uAE30\uB97C \uC0C8\uB85C \uACE0\uCE5C \uB4A4 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
+  "Tests run in the game only for a script with a program: without one, nothing of the script is built into the map.": "\uD14C\uC2A4\uD2B8\uB294 \uD504\uB85C\uADF8\uB7A8\uC774 \uC788\uB294 \uC2A4\uD06C\uB9BD\uD2B8\uB9CC \uAC8C\uC784\uC5D0\uC11C \uC2E4\uD589\uB429\uB2C8\uB2E4. \uD504\uB85C\uADF8\uB7A8\uC774 \uC5C6\uC73C\uBA74 \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uC5B4\uB5A4 \uAC83\uB3C4 \uB9F5\uC5D0 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "Running the tests in the game\u2026": "\uAC8C\uC784\uC5D0\uC11C \uD14C\uC2A4\uD2B8\uB97C \uC2E4\uD589\uD558\uB294 \uC911\u2026",
+  "In the game: {passed} of {n, plural, one {# test} other {# tests}} passed.": "\uAC8C\uC784\uC5D0\uC11C: \uD14C\uC2A4\uD2B8 {n}\uAC1C \uC911 {passed}\uAC1C \uD1B5\uACFC.",
+  "The simulator disagrees on {n, plural, one {# test} other {# tests}}.": "\uD14C\uC2A4\uD2B8 {n}\uAC1C\uC5D0\uC11C \uC2DC\uBBAC\uB808\uC774\uD130\uC758 \uACB0\uACFC\uAC00 \uB2E4\uB985\uB2C8\uB2E4.",
+  "Go to where it failed in the game": "\uAC8C\uC784\uC5D0\uC11C \uC2E4\uD328\uD55C \uACF3\uC73C\uB85C \uC774\uB3D9",
+  "in the game": "\uAC8C\uC784\uC5D0\uC11C",
+  "Run All Tests in the Game": "\uAC8C\uC784\uC5D0\uC11C \uBAA8\uB4E0 \uD14C\uC2A4\uD2B8 \uC2E4\uD589",
+  "{n} a frame": "\uD504\uB808\uC784\uB2F9 {n}",
+  "{ms} ms a frame": "\uD504\uB808\uC784\uB2F9 {ms}ms",
+  "In the game, this line took {ms} ms of Remastered's time in one frame at the most ({n} conditions and actions): frame {frame} of the test \u201C{test}\u201D, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran {smooth} ms of triggers a frame with no flicker seen, and slows past {most} ms; a slower computer gets there sooner. This is {share} of the {smooth} ms.": "\uAC8C\uC784\uC5D0\uC11C \uC774 \uC904\uC740 \uD55C \uD504\uB808\uC784\uC5D0 \uB9AC\uB9C8\uC2A4\uD130\uC758 \uC2DC\uAC04\uC744 \uCD5C\uB300 {ms}ms \uC37C\uC2B5\uB2C8\uB2E4 (\uC870\uAC74\uACFC \uC561\uC158 {n}\uAC1C): \uD14C\uC2A4\uD2B8 \u201C{test}\u201D\uC758 {frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC774\uBA70, \uADF8 \uD14C\uC2A4\uD2B8\uC5D0\uC11C \uC774 \uC904\uC774 \uC2E4\uD589\uB41C \uD504\uB808\uC784\uC740 {frames}\uAC1C\uC785\uB2C8\uB2E4. \uBE60\uB978 \uCEF4\uD4E8\uD130\uC5D0\uC11C \uB9AC\uB9C8\uC2A4\uD130\uB294 \uD504\uB808\uC784\uB2F9 \uD2B8\uB9AC\uAC70 {smooth}ms\uAE4C\uC9C0 \uAE5C\uBE61\uC784 \uC5C6\uC774 \uC2E4\uD589\uD588\uACE0, {most}ms\uB97C \uB118\uC73C\uBA74 \uAC8C\uC784\uC774 \uB290\uB824\uC9D1\uB2C8\uB2E4. \uB290\uB9B0 \uCEF4\uD4E8\uD130\uB294 \uB354 \uC77C\uCC0D \uADF8\uB807\uAC8C \uB429\uB2C8\uB2E4. \uC774\uB294 {smooth}ms \uC911 {share}\uC785\uB2C8\uB2E4.",
+  "Remastered's time a frame, frame {from} to {to}: {ms} ms at the most, at frame {frame}": "\uD504\uB808\uC784\uB2F9 \uB9AC\uB9C8\uC2A4\uD130\uC758 \uC2DC\uAC04, {from}\u2013{to}\uBC88\uC9F8 \uD504\uB808\uC784: {frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC5D0\uC11C \uCD5C\uB300 {ms}ms",
+  "{average} ms a frame on average, {peak} ms at the most (frame {frame}): {share} of the {smooth} ms of triggers a frame Remastered ran with no flicker seen": "\uD504\uB808\uC784\uB2F9 \uD3C9\uADE0 {average}ms, \uCD5C\uB300 {peak}ms ({frame}\uBC88\uC9F8 \uD504\uB808\uC784): \uB9AC\uB9C8\uC2A4\uD130\uAC00 \uAE5C\uBE61\uC784 \uC5C6\uC774 \uC2E4\uD589\uD55C \uD504\uB808\uC784\uB2F9 \uD2B8\uB9AC\uAC70 {smooth}ms \uC911 {share}",
+  "{ms} ms a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}": "\uD504\uB808\uC784\uB2F9 \uCD5C\uB300 {ms}ms ({frame}\uBC88\uC9F8 \uD504\uB808\uC784), {frames}\uAC1C \uD504\uB808\uC784\uC5D0\uC11C \uC2E4\uD589",
+  "In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test \u201C{test}\u201D, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran 500 thousand a frame with no visible effect; its screen flickers from a million and the game slows at 5 million. This is {share} of the 500 thousand.": "\uAC8C\uC784\uC5D0\uC11C \uC774 \uC904\uC740 \uD55C \uD504\uB808\uC784\uC5D0 \uC870\uAC74\uACFC \uC561\uC158\uC744 \uCD5C\uB300 {n}\uAC1C \uC2E4\uD589\uD588\uC2B5\uB2C8\uB2E4: \uD14C\uC2A4\uD2B8 \u201C{test}\u201D\uC758 {frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC774\uBA70, \uADF8 \uD14C\uC2A4\uD2B8\uC5D0\uC11C \uC774 \uC904\uC774 \uC2E4\uD589\uB41C \uD504\uB808\uC784\uC740 {frames}\uAC1C\uC785\uB2C8\uB2E4. \uBE60\uB978 \uCEF4\uD4E8\uD130\uC5D0\uC11C \uB9AC\uB9C8\uC2A4\uD130\uB294 \uD504\uB808\uC784\uB2F9 50\uB9CC \uAC1C\uC5D0\uC11C \uB208\uC5D0 \uB744\uB294 \uC601\uD5A5\uC774 \uC5C6\uC5C8\uACE0, \uBC31\uB9CC \uAC1C\uBD80\uD130 \uD654\uBA74\uC774 \uAE5C\uBC15\uC774\uBA70 5\uBC31\uB9CC \uAC1C\uC5D0\uC11C \uAC8C\uC784\uC774 \uB290\uB824\uC84C\uC2B5\uB2C8\uB2E4. \uC774\uAC83\uC740 50\uB9CC \uAC1C \uC911 {share}\uC785\uB2C8\uB2E4.",
+  "Conditions and actions a frame, frame {from} to {to}: {peak} at the most, at frame {frame}": "\uD504\uB808\uC784\uB2F9 \uC870\uAC74\uACFC \uC561\uC158, {from}\u2013{to}\uBC88\uC9F8 \uD504\uB808\uC784: {frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC5D0\uC11C \uCD5C\uB300 {peak}\uAC1C",
+  "cost": "\uBE44\uC6A9",
+  "{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect": "\uD504\uB808\uC784\uB2F9 \uC870\uAC74\uACFC \uC561\uC158 \uD3C9\uADE0 {average}\uAC1C, \uCD5C\uB300 {peak}\uAC1C ({frame}\uBC88\uC9F8 \uD504\uB808\uC784): \uB9AC\uB9C8\uC2A4\uD130\uAC00 \uB208\uC5D0 \uB744\uB294 \uC601\uD5A5 \uC5C6\uC774 \uC2E4\uD589\uD55C \uD504\uB808\uC784\uB2F9 50\uB9CC \uAC1C \uC911 {share}",
+  "Go to the line": "\uADF8 \uC904\uB85C \uC774\uB3D9",
+  "{peak} a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}": "\uD504\uB808\uC784\uB2F9 \uCD5C\uB300 {peak}\uAC1C ({frame}\uBC88\uC9F8 \uD504\uB808\uC784), {frames}\uAC1C \uD504\uB808\uC784\uC5D0\uC11C \uC2E4\uD589",
+  "Debug": "\uB514\uBC84\uADF8",
+  "The text lines up to this frame": "\uC774 \uD504\uB808\uC784\uAE4C\uC9C0\uC758 \uD14D\uC2A4\uD2B8 \uC904",
+  "The game": "\uAC8C\uC784",
+  "No picture of the game here.": "\uC5EC\uAE30\uC5D0\uB294 \uAC8C\uC784 \uD654\uBA74\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "What this line wrote in frame {frame}, as it stands at the debugger's cursor; \xD7n: how many times it ran in the frame so far.": "{frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC5D0\uC11C \uC774 \uC904\uC774 \uC4F4 \uAC12\uC73C\uB85C, \uB514\uBC84\uAC70 \uCEE4\uC11C \uC704\uCE58 \uAE30\uC900\uC785\uB2C8\uB2E4. \xD7n: \uC774 \uD504\uB808\uC784\uC5D0\uC11C \uC9C0\uAE08\uAE4C\uC9C0 \uC2E4\uD589\uB41C \uD69F\uC218.",
+  "No picture of the game: {message}": "\uAC8C\uC784 \uD654\uBA74 \uC5C6\uC74C: {message}",
+  "No test is being debugged. Debug one from its row in the Testing view (the bug icon) or with Debug Test at Cursor: it runs once in the game with everything it did written down, and here you walk it, forwards and back.": "\uB514\uBC84\uADF8 \uC911\uC778 \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uD14C\uC2A4\uD2B8 \uBCF4\uAE30\uC5D0\uC11C \uD14C\uC2A4\uD2B8 \uC904\uC758 \uBC8C\uB808 \uC544\uC774\uCF58\uC774\uB098 '\uCEE4\uC11C \uC704\uCE58\uC758 \uD14C\uC2A4\uD2B8\uB97C \uAC8C\uC784\uC5D0\uC11C \uB514\uBC84\uADF8'\uB85C \uC2DC\uC791\uD558\uC138\uC694. \uD14C\uC2A4\uD2B8\uAC00 \uAC8C\uC784\uC5D0\uC11C \uD55C \uBC88 \uC2E4\uD589\uB418\uBA74\uC11C \uD55C \uC77C\uC774 \uBAA8\uB450 \uAE30\uB85D\uB418\uACE0, \uC5EC\uAE30\uC11C \uADF8 \uAE30\uB85D\uC744 \uC55E\uB4A4\uB85C \uB530\uB77C\uAC08 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
+  "The script changed since this run: its lines may have moved. Debug the test again to walk the script as it is.": "\uC774 \uC2E4\uD589 \uC774\uD6C4 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uBC14\uB00C\uC5B4 \uC904 \uC704\uCE58\uAC00 \uB2EC\uB77C\uC84C\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uC9C0\uAE08\uC758 \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uB530\uB77C\uAC00\uB824\uBA74 \uD14C\uC2A4\uD2B8\uB97C \uB2E4\uC2DC \uB514\uBC84\uADF8\uD558\uC138\uC694.",
+  "Stopped at the breakpoint on line {line}.": "{line}\uBC88\uC9F8 \uC904\uC758 \uC911\uB2E8\uC810\uC5D0\uC11C \uBA48\uCDC4\uC2B5\uB2C8\uB2E4.",
+  "{name} changed: {before} \u2192 {after}": "{name} \uBC14\uB01C: {before} \u2192 {after}",
+  "The end of the run: {message}": "\uC2E4\uD589\uC758 \uB05D: {message}",
+  "the test failed": "\uD14C\uC2A4\uD2B8 \uC2E4\uD328",
+  "The start of the run.": "\uC2E4\uD589\uC758 \uCC98\uC74C.",
+  "The end of the run: the test passed.": "\uC2E4\uD589\uC758 \uB05D: \uD14C\uC2A4\uD2B8 \uD1B5\uACFC.",
+  "The record stops at frame {frame} ({why}): the variables are not known past it.": "\uAE30\uB85D\uC774 {frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC5D0\uC11C \uB05D\uB0A9\uB2C8\uB2E4({why}). \uADF8 \uB4A4\uC758 \uBCC0\uC218 \uAC12\uC740 \uC54C \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "{test} failed: {message}": "{test} \uC2E4\uD328: {message}",
+  "{test} passed.": "{test} \uD1B5\uACFC.",
+  "no frames": "\uD504\uB808\uC784 \uC5C6\uC74C",
+  "frame {frame}": "{frame}\uBC88\uC9F8 \uD504\uB808\uC784",
+  "end of frame": "\uD504\uB808\uC784 \uB05D",
+  "Continue backwards (F6): to the breakpoint or the change of a watched variable before this, or the start": "\uB4A4\uB85C \uACC4\uC18D (F6): \uC774\uC804\uC758 \uC911\uB2E8\uC810\uC774\uB098 \uC870\uC0AC\uC2DD \uBCC0\uC218\uAC00 \uBC14\uB010 \uACF3, \uC5C6\uC73C\uBA74 \uCC98\uC74C\uC73C\uB85C",
+  "Back a line (Shift+F10)": "\uD55C \uC904 \uB4A4\uB85C (Shift+F10)",
+  "On a line (F10)": "\uD55C \uC904 \uC55E\uC73C\uB85C (F10)",
+  "Continue (F5): to the next breakpoint or change of a watched variable, or the end": "\uACC4\uC18D (F5): \uB2E4\uC74C \uC911\uB2E8\uC810\uC774\uB098 \uC870\uC0AC\uC2DD \uBCC0\uC218\uAC00 \uBC14\uB00C\uB294 \uACF3, \uC5C6\uC73C\uBA74 \uB05D\uC73C\uB85C",
+  "Back a frame (Shift+F11)": "\uD55C \uD504\uB808\uC784 \uB4A4\uB85C (Shift+F11)",
+  "On a frame (F11): to the end of this one": "\uD55C \uD504\uB808\uC784 \uC55E\uC73C\uB85C (F11): \uC774 \uD504\uB808\uC784\uC758 \uB05D\uC73C\uB85C",
+  "To the start of the run": "\uC2E4\uD589\uC758 \uCC98\uC74C\uC73C\uB85C",
+  "Stop debugging (Shift+F5)": "\uB514\uBC84\uAE45 \uC911\uC9C0 (Shift+F5)",
+  "Every step": "\uBAA8\uB4E0 \uB2E8\uACC4",
+  "Not recorded past frame {frame}: {why}": "{frame}\uBC88\uC9F8 \uD504\uB808\uC784 \uC774\uD6C4\uB294 \uAE30\uB85D\uB418\uC9C0 \uC54A\uC74C: {why}",
+  "Line {line} runs in frame {frame}": "{line}\uBC88\uC9F8 \uC904\uC774 {frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC5D0\uC11C \uC2E4\uD589\uB428",
+  "Frames {from} to {to}: the script's conditions and actions a frame ({peak} at the most). Red: a breakpoint's line runs; gold: a line of text was shown. Click or drag to go to a frame.": "{from}~{to}\uBC88\uC9F8 \uD504\uB808\uC784: \uD504\uB808\uC784\uB2F9 \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uC870\uAC74\uACFC \uC561\uC158 \uC218 (\uCD5C\uB300 {peak}\uAC1C). \uBE68\uAC04\uC0C9: \uC911\uB2E8\uC810 \uC904\uC774 \uC2E4\uD589\uB428, \uAE08\uC0C9: \uD14D\uC2A4\uD2B8 \uC904\uC774 \uD45C\uC2DC\uB428. \uD074\uB9AD\uD558\uAC70\uB098 \uB04C\uC5B4\uC11C \uD504\uB808\uC784\uC73C\uB85C \uC774\uB3D9\uD569\uB2C8\uB2E4.",
+  "Variables": "\uBCC0\uC218",
+  "Not known here: the record stops at frame {frame}.": "\uC5EC\uAE30\uC11C\uB294 \uC54C \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: \uAE30\uB85D\uC774 {frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC5D0\uC11C \uB05D\uB0A9\uB2C8\uB2E4.",
+  "Watched": "\uC870\uC0AC\uC2DD",
+  "The build did not say where the programs' variables are.": "\uBE4C\uB4DC\uAC00 \uD504\uB85C\uADF8\uB7A8 \uBCC0\uC218\uC758 \uC704\uCE58\uB97C \uC54C\uB824 \uC8FC\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.",
+  "Frame {frame}": "{frame}\uBC88\uC9F8 \uD504\uB808\uC784",
+  "line {line}": "{line}\uBC88\uC9F8 \uC904",
+  "the test": "\uD14C\uC2A4\uD2B8",
+  "the game itself": "\uAC8C\uC784 \uC790\uCCB4",
+  "{n, plural, one {# write} other {# writes}}": "\uC4F0\uAE30 {n}\uD68C",
+  "conditions and actions": "\uC870\uAC74\uACFC \uC561\uC158",
+  "\u2026 and {n} more steps": "\u2026 \uC678 {n}\uB2E8\uACC4",
+  "Nothing shown yet.": "\uC544\uC9C1 \uD45C\uC2DC\uB41C \uAC83\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "Stop watching {name}": "{name} \uC870\uC0AC\uC2DD \uD574\uC81C",
+  "Watch {name}: Continue stops where it changes": "{name} \uC870\uC0AC: \uACC4\uC18D\uD558\uBA74 \uAC12\uC774 \uBC14\uB00C\uB294 \uACF3\uC5D0\uC11C \uBA48\uCDA5\uB2C8\uB2E4",
+  "Debug this test in the game: run it once with everything it did written down, then walk it forwards and back": "\uC774 \uD14C\uC2A4\uD2B8\uB97C \uAC8C\uC784\uC5D0\uC11C \uB514\uBC84\uADF8: \uD55C \uC77C\uC744 \uBAA8\uB450 \uAE30\uB85D\uD558\uBA70 \uD55C \uBC88 \uC2E4\uD589\uD55C \uB4A4, \uC55E\uB4A4\uB85C \uB530\uB77C\uAC11\uB2C8\uB2E4",
+  "Debugging in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install, update or turn it on under Plugins \u25B8 Manage Plugins\u2026.": "\uAC8C\uC784\uC5D0\uC11C \uB514\uBC84\uADF8\uD558\uB824\uBA74 scmjs.dev\uC758 scm-sim \uD50C\uB7EC\uADF8\uC778(0.11 \uC774\uC0C1)\uC774 \uD544\uC694\uD569\uB2C8\uB2E4. \uD50C\uB7EC\uADF8\uC778 \u25B8 \uD50C\uB7EC\uADF8\uC778 \uAD00\uB9AC\u2026\uC5D0\uC11C \uC124\uCE58\uD558\uAC70\uB098 \uC5C5\uB370\uC774\uD2B8\uD558\uAC70\uB098 \uCF1C\uC138\uC694.",
+  "Not debugged in the game: {message}": "\uAC8C\uC784\uC5D0\uC11C \uB514\uBC84\uADF8\uD558\uC9C0 \uBABB\uD568: {message}",
+  "Not debugged: the engine's page is from before the debugger. Reload the editor and try again.": "\uB514\uBC84\uADF8\uD558\uC9C0 \uBABB\uD568: \uC5D4\uC9C4 \uD398\uC774\uC9C0\uAC00 \uB514\uBC84\uAC70 \uC774\uC804 \uBC84\uC804\uC785\uB2C8\uB2E4. \uD3B8\uC9D1\uAE30\uB97C \uC0C8\uB85C \uACE0\uCE5C \uB4A4 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
+  "\u201C{test}\u201D is a test of several players: the debugger runs one game, and a test of several players runs as a copy of the game for each. Not yet.": "\u201C{test}\u201D\uB294 \uC5EC\uB7EC \uD50C\uB808\uC774\uC5B4\uC758 \uD14C\uC2A4\uD2B8\uC785\uB2C8\uB2E4. \uB514\uBC84\uAC70\uB294 \uAC8C\uC784 \uD558\uB098\uB97C \uC2E4\uD589\uD558\uC9C0\uB9CC, \uC5EC\uB7EC \uD50C\uB808\uC774\uC5B4\uC758 \uD14C\uC2A4\uD2B8\uB294 \uD50C\uB808\uC774\uC5B4\uB9C8\uB2E4 \uAC8C\uC784 \uC0AC\uBCF8\uC744 \uD558\uB098\uC529 \uC2E4\uD589\uD569\uB2C8\uB2E4. \uC544\uC9C1 \uC9C0\uC6D0\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "Running \u201C{test}\u201D in the game, writing down everything it does\u2026": "\u201C{test}\u201D\uB97C \uAC8C\uC784\uC5D0\uC11C \uC2E4\uD589\uD558\uBA70 \uD558\uB294 \uC77C\uC744 \uBAA8\uB450 \uAE30\uB85D\uD558\uB294 \uC911\u2026",
+  "The scm-sim plugin's view is from before the debugger: update the plugin for a picture of the game.": "scm-sim \uD50C\uB7EC\uADF8\uC778\uC758 \uBCF4\uAE30\uAC00 \uB514\uBC84\uAC70 \uC774\uC804 \uBC84\uC804\uC785\uB2C8\uB2E4. \uAC8C\uC784 \uD654\uBA74\uC744 \uBCF4\uB824\uBA74 \uD50C\uB7EC\uADF8\uC778\uC744 \uC5C5\uB370\uC774\uD2B8\uD558\uC138\uC694.",
+  "Debugging \u201C{test}\u201D: it failed in the game at frame {frame}. The debugger stands there; step back to see how it came to that.": "\u201C{test}\u201D \uB514\uBC84\uADF8 \uC911: \uAC8C\uC784\uC5D0\uC11C {frame}\uBC88\uC9F8 \uD504\uB808\uC784\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4. \uB514\uBC84\uAC70\uAC00 \uADF8\uACF3\uC5D0 \uC788\uC2B5\uB2C8\uB2E4. \uB4A4\uB85C \uAC00\uBA70 \uC5B4\uB5BB\uAC8C \uADF8\uB807\uAC8C \uB410\uB294\uC9C0 \uBCF4\uC138\uC694.",
+  "Debugging \u201C{test}\u201D: {frames, plural, one {# frame} other {# frames}} in the game, recorded in {ms} ms.": "\u201C{test}\u201D \uB514\uBC84\uADF8 \uC911: \uAC8C\uC784\uC5D0\uC11C {frames}\uAC1C \uD504\uB808\uC784, {ms}ms\uC5D0 \uAE30\uB85D\uD588\uC2B5\uB2C8\uB2E4.",
+  "Debug: Continue": "\uB514\uBC84\uADF8: \uACC4\uC18D",
+  "Debug: Continue Backwards": "\uB514\uBC84\uADF8: \uB4A4\uB85C \uACC4\uC18D",
+  "Debug: On a Line": "\uB514\uBC84\uADF8: \uD55C \uC904 \uC55E\uC73C\uB85C",
+  "Debug: Back a Line": "\uB514\uBC84\uADF8: \uD55C \uC904 \uB4A4\uB85C",
+  "Debug: On a Frame": "\uB514\uBC84\uADF8: \uD55C \uD504\uB808\uC784 \uC55E\uC73C\uB85C",
+  "Debug: Back a Frame": "\uB514\uBC84\uADF8: \uD55C \uD504\uB808\uC784 \uB4A4\uB85C",
+  "Debug: Stop": "\uB514\uBC84\uADF8: \uC911\uC9C0",
+  "Debug Test at Cursor in the Game": "\uCEE4\uC11C \uC704\uCE58\uC758 \uD14C\uC2A4\uD2B8\uB97C \uAC8C\uC784\uC5D0\uC11C \uB514\uBC84\uADF8",
+  "Toggle Breakpoint": "\uC911\uB2E8\uC810 \uC124\uC815/\uD574\uC81C",
+  "Breakpoint: the debugger's Continue stops before this line runs (a test's line: at the end of the frame it asks for). Click to take it away.": "\uC911\uB2E8\uC810: \uB514\uBC84\uAC70\uC5D0\uC11C \uACC4\uC18D\uD558\uBA74 \uC774 \uC904\uC774 \uC2E4\uD589\uB418\uAE30 \uC804\uC5D0 \uBA48\uCDA5\uB2C8\uB2E4(\uD14C\uC2A4\uD2B8\uC758 \uC904\uC774\uBA74 \uADF8 \uC904\uC774 \uC694\uCCAD\uD55C \uD504\uB808\uC784\uC758 \uB05D\uC5D0\uC11C). \uD074\uB9AD\uD558\uBA74 \uC5C6\uC5B4\uC9D1\uB2C8\uB2E4.",
+  "game": "\uAC8C\uC784",
+  "Not looked up in the game: {message}": "\uAC8C\uC784\uC5D0\uC11C \uCC3E\uC9C0 \uBABB\uD568: {message}",
+  "Not looked up: {n, plural, one {# problem} other {# problems}} in the script.": "\uCC3E\uC9C0 \uC54A\uC74C: \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uBB38\uC81C\uAC00 {n}\uAC1C \uC788\uC2B5\uB2C8\uB2E4.",
+  "The script has no program, so nothing of it is built into the map and no line of it can touch the game's memory: an EUD error came from the map's other triggers.": "\uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uD504\uB85C\uADF8\uB7A8\uC774 \uC5C6\uC5B4 \uB9F5\uC5D0 \uBE4C\uB4DC\uB418\uB294 \uAC83\uC774 \uC5C6\uACE0, \uC5B4\uB5A4 \uC904\uB3C4 \uAC8C\uC784\uC758 \uBA54\uBAA8\uB9AC\uC5D0 \uB2FF\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. EUD \uC624\uB958\uB294 \uB9F5\uC758 \uB2E4\uB978 \uD2B8\uB9AC\uAC70\uC5D0\uC11C \uB0AC\uC2B5\uB2C8\uB2E4.",
+  "reads and writes": "\uC77D\uACE0 \uC501\uB2C8\uB2E4",
+  "writes": "\uC501\uB2C8\uB2E4",
+  "reads": "\uC77D\uC2B5\uB2C8\uB2E4",
+  "Remastered ends the game on this.": "\uB9AC\uB9C8\uC2A4\uD130\uB294 \uC774\uB54C \uAC8C\uC784\uC744 \uB05D\uB0C5\uB2C8\uB2E4.",
+  "Remastered does nothing with this.": "\uB9AC\uB9C8\uC2A4\uD130\uB294 \uC774\uAC83\uC73C\uB85C \uC544\uBB34\uAC83\uB3C4 \uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "Remastered was seen to allow this, so the game that ended did something else to it.": "\uB9AC\uB9C8\uC2A4\uD130\uAC00 \uC774\uB97C \uD5C8\uC6A9\uD558\uB294 \uAC83\uC774 \uD655\uC778\uB418\uC5C8\uC73C\uBBC0\uB85C, \uB05D\uB09C \uAC8C\uC784\uC740 \uC5EC\uAE30\uC5D0 \uB2E4\uB978 \uC77C\uC744 \uD588\uC2B5\uB2C8\uB2E4.",
+  "This has not been seen in Remastered.": "\uB9AC\uB9C8\uC2A4\uD130\uC5D0\uC11C \uD655\uC778\uB41C \uC801\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "In the game, this line {did} {place} ({times, plural, one {# time} other {# times}}). {said}": "\uAC8C\uC784\uC5D0\uC11C \uC774 \uC904\uC740 {place}\uC744(\uB97C) {did} ({times}\uBC88). {said}",
+  "In the game, this line {did} the same field of another unit ({times, plural, one {# time} other {# times}}): a unit sits elsewhere in the table from one game to the next. {said}": "\uAC8C\uC784\uC5D0\uC11C \uC774 \uC904\uC740 \uB2E4\uB978 \uC720\uB2DB\uC758 \uAC19\uC740 \uD544\uB4DC\uB97C {did} ({times}\uBC88). \uC720\uB2DB\uC774 \uD14C\uC774\uBE14\uC5D0\uC11C \uB193\uC774\uB294 \uC790\uB9AC\uB294 \uAC8C\uC784\uB9C8\uB2E4 \uB2E4\uB985\uB2C8\uB2E4. {said}",
+  "The code Remastered showed when the game ended (EUD ERROR: 0x\u2026):": "\uAC8C\uC784\uC774 \uB05D\uB0A0 \uB54C \uB9AC\uB9C8\uC2A4\uD130\uAC00 \uBCF4\uC5EC \uC900 \uCF54\uB4DC (EUD ERROR: 0x\u2026):",
+  "\u201C{text}\u201D is not an EUD error code: Remastered shows one as EUD ERROR: 0x and eight digits.": "\u201C{text}\u201D\uC740(\uB294) EUD \uC624\uB958 \uCF54\uB4DC\uAC00 \uC544\uB2D9\uB2C8\uB2E4. \uB9AC\uB9C8\uC2A4\uD130\uB294 EUD ERROR: 0x \uB4A4\uC5D0 \uC5EC\uB35F \uC790\uB9AC\uB85C \uBCF4\uC5EC \uC90D\uB2C8\uB2E4.",
+  "Playing the map in the game, writing down what each line reads and writes\u2026": "\uAC8C\uC784\uC5D0\uC11C \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uBA70 \uAC01 \uC904\uC774 \uC77D\uACE0 \uC4F0\uB294 \uAC83\uC744 \uAE30\uB85D\uD558\uB294 \uC911\u2026",
+  "the engine's page sent back no trace": "\uC5D4\uC9C4 \uD398\uC774\uC9C0\uAC00 \uAE30\uB85D\uC744 \uB3CC\uB824\uC8FC\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4",
+  "EUD ERROR {code}: {place}, at 0x{address}.": "EUD ERROR {code}: {place}, \uC8FC\uC18C 0x{address}.",
+  "EUD ERROR {code} is {place}.": "EUD ERROR {code}\uC740(\uB294) {place}\uC785\uB2C8\uB2E4.",
+  "{n, plural, one {# line touched it} other {# lines touched it}} in the game: {where}.": "\uAC8C\uC784\uC5D0\uC11C {n}\uAC1C \uC904\uC774 \uC5EC\uAE30\uC5D0 \uB2FF\uC558\uC2B5\uB2C8\uB2E4: {where}.",
+  "No line touched that very unit, but {n, plural, one {# line touches} other {# lines touch}} the same field of other units, and a unit sits elsewhere in the table from one game to the next: {where}.": "\uADF8 \uC720\uB2DB\uC5D0 \uB2FF\uC740 \uC904\uC740 \uC5C6\uC9C0\uB9CC, {n}\uAC1C \uC904\uC774 \uB2E4\uB978 \uC720\uB2DB\uC758 \uAC19\uC740 \uD544\uB4DC\uC5D0 \uB2FF\uC2B5\uB2C8\uB2E4. \uC720\uB2DB\uC774 \uD14C\uC774\uBE14\uC5D0\uC11C \uB193\uC774\uB294 \uC790\uB9AC\uB294 \uAC8C\uC784\uB9C8\uB2E4 \uB2E4\uB985\uB2C8\uB2E4: {where}.",
+  "Nothing touched it in {frames} frames of the map played with nobody at it, nor in {tests, plural, one {# test} other {# tests}}: the line that did is one this run did not reach. A test that gets there will find it.": "\uC544\uBB34\uB3C4 \uC5C6\uC774 \uB9F5\uC744 {frames} \uD504\uB808\uC784 \uD50C\uB808\uC774\uD558\uACE0 \uD14C\uC2A4\uD2B8 {tests}\uAC1C\uB97C \uB3CC\uB9AC\uB294 \uB3D9\uC548 \uC544\uBB34\uAC83\uB3C4 \uB2FF\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uB2FF\uC740 \uC904\uC740 \uC774\uBC88 \uC2E4\uD589\uC774 \uC774\uB974\uC9C0 \uBABB\uD55C \uC904\uC785\uB2C8\uB2E4. \uAC70\uAE30\uAE4C\uC9C0 \uAC00\uB294 \uD14C\uC2A4\uD2B8\uAC00 \uC788\uC73C\uBA74 \uCC3E\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
+  "Nothing touched it in {frames} frames of the map played with nobody at it: the line that did is one this run did not reach. A test that gets there will find it.": "\uC544\uBB34\uB3C4 \uC5C6\uC774 \uB9F5\uC744 {frames} \uD504\uB808\uC784 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 \uC544\uBB34\uAC83\uB3C4 \uB2FF\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uB2FF\uC740 \uC904\uC740 \uC774\uBC88 \uC2E4\uD589\uC774 \uC774\uB974\uC9C0 \uBABB\uD55C \uC904\uC785\uB2C8\uB2E4. \uAC70\uAE30\uAE4C\uC9C0 \uAC00\uB294 \uD14C\uC2A4\uD2B8\uAC00 \uC788\uC73C\uBA74 \uCC3E\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
+  "Find an EUD Error\u2026": "EUD \uC624\uB958 \uCC3E\uAE30\u2026",
+  "Import Video\u2026: a video, a picture, a sound or a MIDI file as a file of the script": "\uB3D9\uC601\uC0C1 \uAC00\uC838\uC624\uAE30\u2026: \uB3D9\uC601\uC0C1, \uADF8\uB9BC, \uC18C\uB9AC \uB610\uB294 MIDI \uD30C\uC77C\uC744 \uC2A4\uD06C\uB9BD\uD2B8 \uD30C\uC77C\uB85C \uB9CC\uB4ED\uB2C8\uB2E4",
+  '{path} is in the script: import {name} from "./{path}"; then await fog.play(P1, {name}) plays it.': '{path}\uC774(\uAC00) \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uB4E4\uC5B4\uAC14\uC2B5\uB2C8\uB2E4: import {name} from "./{path}"; \uB2E4\uC74C await fog.play(P1, {name})\uB85C \uC7AC\uC0DD\uD569\uB2C8\uB2E4.',
+  "Import Video\u2026": "\uB3D9\uC601\uC0C1 \uAC00\uC838\uC624\uAE30\u2026",
+  "{name} could not be opened: {message}": "{name}\uC744(\uB97C) \uC5F4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: {message}",
+  "{w} \xD7 {h} tiles, {n} frames at the game's speed on Fastest ({time}).": "{w} \xD7 {h} \uD0C0\uC77C, \uAC00\uC7A5 \uBE60\uB984 \uAC8C\uC784 \uC18D\uB3C4\uB85C {n} \uD504\uB808\uC784 ({time}).",
+  "{w} \xD7 {h} tiles.": "{w} \xD7 {h} \uD0C0\uC77C.",
+  "Import Video": "\uB3D9\uC601\uC0C1 \uAC00\uC838\uC624\uAE30",
+  "Import Image": "\uADF8\uB9BC \uAC00\uC838\uC624\uAE30",
+  "Frame": "\uD504\uB808\uC784",
+  "Tiles across": "\uAC00\uB85C \uD0C0\uC77C",
+  "Tiles down": "\uC138\uB85C \uD0C0\uC77C",
+  "Threshold": "\uAE30\uC900 \uBC1D\uAE30",
+  "Ink": "\uC789\uD06C",
+  "Light parts": "\uBC1D\uC740 \uBD80\uBD84",
+  "Dark parts": "\uC5B4\uB450\uC6B4 \uBD80\uBD84",
+  "File": "\uD30C\uC77C",
+  "Light tiles are the ink: what fog.light lights. A video's frames are taken at the game's speed on Fastest, a frame of it each frame of the game.": "\uBC1D\uC740 \uD0C0\uC77C\uC774 \uC789\uD06C\uC785\uB2C8\uB2E4: fog.light\uAC00 \uBC1D\uD788\uB294 \uACF3\uC785\uB2C8\uB2E4. \uB3D9\uC601\uC0C1\uC758 \uD504\uB808\uC784\uC740 \uAC00\uC7A5 \uBE60\uB984 \uAC8C\uC784 \uC18D\uB3C4\uB85C \uBF51\uC544, \uAC8C\uC784 \uD55C \uD504\uB808\uC784\uB9C8\uB2E4 \uD55C \uD504\uB808\uC784\uC529 \uC501\uB2C8\uB2E4.",
+  "Cancel": "\uCDE8\uC18C",
+  "Import": "\uAC00\uC838\uC624\uAE30",
+  "A file name is letters, digits, _ - and ., folders with /.": "\uD30C\uC77C \uC774\uB984\uC740 \uBB38\uC790, \uC22B\uC790, _ - . \uB85C \uC774\uB8E8\uC5B4\uC9C0\uACE0, \uD3F4\uB354\uB294 /\uB85C \uB098\uB215\uB2C8\uB2E4.",
+  "Decoding: frame {done} of {total}\u2026": "\uB514\uCF54\uB529 \uC911: {total} \uD504\uB808\uC784 \uC911 {done}\u2026",
+  "{n} frames in {seconds} s, {kb} KB.": "{n} \uD504\uB808\uC784, {seconds}\uCD08, {kb} KB.",
+  "Not imported: {message}": "\uAC00\uC838\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: {message}",
+  "Frame {n} of {total}": "{total} \uD504\uB808\uC784 \uC911 {n}",
+  "{n} brushes": "\uBE0C\uB7EC\uC2DC {n}\uAC1C",
+  "Play": "\uC7AC\uC0DD",
+  "Pause": "\uC77C\uC2DC \uC815\uC9C0",
+  "The video": "\uB3D9\uC601\uC0C1",
+  "As the fog draws it": "\uC548\uAC1C\uAC00 \uADF8\uB9AC\uB294 \uBAA8\uC2B5",
+  '{w} \xD7 {h} tiles, {n} frames of {ms} ms ({time}){from}. Import it with import name from "./{file}".': '{w} \xD7 {h} \uD0C0\uC77C, {ms} ms \uD504\uB808\uC784 {n}\uAC1C ({time}){from}. import name from "./{file}"\uB85C \uAC00\uC838\uC635\uB2C8\uB2E4.',
+  // An image (.image), imported and shown.
+  "Keep as": "\uC800\uC7A5 \uD615\uC2DD",
+  "Pixels in colour (.image)": "\uCEEC\uB7EC \uD53D\uC140 (.image)",
+  "Pixels in grey (.image)": "\uD68C\uC0C9 \uD53D\uC140 (.image)",
+  "Rows of ink to edit (.ts)": "\uD3B8\uC9D1\uD560 \uC789\uD06C \uC904 (.ts)",
+  "{w} \xD7 {h} pixels, a tile each when the fog draws them.": "{w} \xD7 {h} \uD53D\uC140, \uC548\uAC1C\uAC00 \uADF8\uB9B4 \uB54C \uD53D\uC140 \uD558\uB098\uAC00 \uD0C0\uC77C \uD558\uB098\uC785\uB2C8\uB2E4.",
+  "The pixels are kept for the script to work on when it is built \u2014 crop, scale, flip, threshold \u2014 and draw: fog.picture(logo.threshold(128)).": "\uD53D\uC140\uC744 \uADF8\uB300\uB85C \uC800\uC7A5\uD574, \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uBE4C\uB4DC\uD560 \uB54C \uB2E4\uB8E8\uACE0(crop, scale, flip, threshold) \uADF8\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4: fog.picture(logo.threshold(128)).",
+  "Light tiles are the ink: what fog.light lights. The rows are a .ts file to edit, which fog.picture takes.": "\uBC1D\uC740 \uD0C0\uC77C\uC774 \uC789\uD06C\uC785\uB2C8\uB2E4: fog.light\uAC00 \uBC1D\uD788\uB294 \uACF3\uC785\uB2C8\uB2E4. \uC904\uC740 \uD3B8\uC9D1\uD560 \uC218 \uC788\uB294 .ts \uD30C\uC77C\uC774 \uB418\uACE0, fog.picture\uAC00 \uBC1B\uC2B5\uB2C8\uB2E4.",
+  '{path} is in the script: import {name} from "./{path}"; then fog.picture({name}.threshold(128)) makes a picture of it.': '{path}\uC774(\uAC00) \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uB4E4\uC5B4\uAC14\uC2B5\uB2C8\uB2E4: import {name} from "./{path}"; \uB2E4\uC74C fog.picture({name}.threshold(128))\uB85C \uADF8\uB9BC\uC744 \uB9CC\uB4ED\uB2C8\uB2E4.',
+  "Show": "\uBCF4\uAE30",
+  "The image": "\uADF8\uB9BC",
+  "Threshold, as the fog draws it": "\uC784\uACC4\uAC12, \uC548\uAC1C\uAC00 \uADF8\uB9AC\uB294 \uBAA8\uC2B5",
+  "Halftone, {w} \xD7 {h} cells, as the fog draws it": "\uD558\uD504\uD1A4, {w} \xD7 {h} \uCE78, \uC548\uAC1C\uAC00 \uADF8\uB9AC\uB294 \uBAA8\uC2B5",
+  '{w} \xD7 {h} pixels{from}. Import it with import {name} from "./{file}".': '{w} \xD7 {h} \uD53D\uC140{from}. import {name} from "./{file}"\uB85C \uAC00\uC838\uC635\uB2C8\uB2E4.',
+  // A sound (.sound), imported and shown.
+  '{path} is in the script: import {name} from "./{path}"; then playWav({name}) plays it inside a program.': '{path}\uC774(\uAC00) \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uB4E4\uC5B4\uAC14\uC2B5\uB2C8\uB2E4: import {name} from "./{path}"; \uB2E4\uC74C program \uC548\uC5D0\uC11C playWav({name})\uB85C \uC7AC\uC0DD\uD569\uB2C8\uB2E4.',
+  "{seconds} seconds at {rate} Hz, about {kb} KB in the map.": "{seconds}\uCD08, {rate} Hz, \uB9F5\uC5D0\uC11C \uC57D {kb} KB.",
+  "11 kHz (smallest)": "11 kHz (\uAC00\uC7A5 \uC791\uC74C)",
+  "22 kHz": "22 kHz",
+  "44 kHz (largest)": "44 kHz (\uAC00\uC7A5 \uD07C)",
+  "Import Sound": "\uC18C\uB9AC \uAC00\uC838\uC624\uAE30",
+  "Stop": "\uC815\uC9C0",
+  "Rate": "\uC0D8\uD50C\uB9C1 \uC18D\uB3C4",
+  "Kept in mono, as the game's own sounds are. A program plays it with playWav(); clips made from it \u2014 trim, gain, pitch \u2014 are made when the script is built.": "\uAC8C\uC784\uC758 \uC18C\uB9AC\uCC98\uB7FC \uBAA8\uB178\uB85C \uC800\uC7A5\uD569\uB2C8\uB2E4. program\uC5D0\uC11C playWav()\uB85C \uC7AC\uC0DD\uD558\uACE0, \uC774\uAC83\uC73C\uB85C \uB9CC\uB4E0 \uD074\uB9BD(trim, gain, pitch)\uC740 \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uBE4C\uB4DC\uD560 \uB54C \uB9CC\uB4E4\uC5B4\uC9D1\uB2C8\uB2E4.",
+  '{seconds} seconds at {rate} Hz{from}. Import it with import {name} from "./{file}", play it with playWav({name}).': '{seconds}\uCD08, {rate} Hz{from}. import {name} from "./{file}"\uB85C \uAC00\uC838\uC624\uACE0 playWav({name})\uB85C \uC7AC\uC0DD\uD569\uB2C8\uB2E4.',
+  '{path} is in the script: import {name} from "./{path}"; then music.midi({name}, { \u2026 }) makes a song of its tracks.': '{path}\uC774(\uAC00) \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uB4E4\uC5B4\uAC14\uC2B5\uB2C8\uB2E4. import {name} from "./{path}"\uB85C \uAC00\uC838\uC624\uBA74 music.midi({name}, { \u2026 })\uAC00 \uADF8 \uD2B8\uB799\uB4E4\uB85C \uACE1\uC744 \uB9CC\uB4ED\uB2C8\uB2E4.',
+  "{tracks} tracks, {notes} notes, {bpm} beats a minute ({time}).": "\uD2B8\uB799 {tracks}\uAC1C, \uC74C\uD45C {notes}\uAC1C, \uBD84\uB2F9 {bpm}\uBC15 ({time}).",
+  "The tempo changes later in the file; a song plays at the first.": "\uD30C\uC77C \uB4A4\uCABD\uC5D0\uC11C \uD15C\uD3EC\uAC00 \uBC14\uB01D\uB2C8\uB2E4. \uACE1\uC740 \uCC98\uC74C \uD15C\uD3EC\uB85C \uC7AC\uC0DD\uB429\uB2C8\uB2E4.",
+  "{name} \u2014 the drums, {n} notes": "{name} \u2014 \uB4DC\uB7FC, \uC74C\uD45C {n}\uAC1C",
+  "{name} \u2014 channel {channel}, instrument {program}, {n} notes": "{name} \u2014 \uCC44\uB110 {channel}, \uC545\uAE30 {program}, \uC74C\uD45C {n}\uAC1C",
+  "Import MIDI": "MIDI \uAC00\uC838\uC624\uAE30",
+  "The notes are kept, not the sounds: music.midi(notes, { Piano: keys }) plays each track you name with an instrument of the music library.": "\uC18C\uB9AC\uAC00 \uC544\uB2C8\uB77C \uC74C\uD45C\uB97C \uC800\uC7A5\uD569\uB2C8\uB2E4. music.midi(notes, { Piano: keys })\uB294 \uC774\uB984\uC744 \uC900 \uD2B8\uB799\uB9C8\uB2E4 \uC74C\uC545 \uB77C\uC774\uBE0C\uB7EC\uB9AC\uC758 \uC545\uAE30\uB85C \uC5F0\uC8FC\uD569\uB2C8\uB2E4.",
+  'Import it with import {name} from "./{file}", make a song of it with music.midi({name}, { "{track}": music.presets.keys() }).': 'import {name} from "./{file}"\uB85C \uAC00\uC838\uC624\uACE0 music.midi({name}, { "{track}": music.presets.keys() })\uB85C \uACE1\uC744 \uB9CC\uB4ED\uB2C8\uB2E4.',
+  "The map has no script.": "\uB9F5\uC5D0 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "built by TrigScript": "TrigScript\uAC00 \uBE4C\uB4DC",
+  "build": "\uBE4C\uB4DC",
+  "the build's own triggers": "\uBE4C\uB4DC \uC790\uCCB4\uC758 \uD2B8\uB9AC\uAC70",
+  "Stop at every step, the build's own triggers and what the game wrote by itself included, not only at the script's lines": "\uC2A4\uD06C\uB9BD\uD2B8\uC758 \uC904\uBFD0 \uC544\uB2C8\uB77C \uBE4C\uB4DC \uC790\uCCB4\uC758 \uD2B8\uB9AC\uAC70\uC640 \uAC8C\uC784\uC774 \uC2A4\uC2A4\uB85C \uC4F4 \uAC83\uAE4C\uC9C0 \uBAA8\uB4E0 \uB2E8\uACC4\uC5D0\uC11C \uBA48\uCDA5\uB2C8\uB2E4",
+  "The programs will not be built: TrigScript does not take this yet ({reason}). The map is saved without them.": "\uD504\uB85C\uADF8\uB7A8\uC774 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4: TrigScript\uAC00 \uC544\uC9C1 \uC774\uAC83\uC744 \uBC1B\uC9C0 \uBABB\uD569\uB2C8\uB2E4({reason}). \uB9F5\uC740 \uD504\uB85C\uADF8\uB7A8 \uC5C6\uC774 \uC800\uC7A5\uB429\uB2C8\uB2E4.",
+  "Not looked up: the build did not say where its triggers are. Save once more.": "\uCC3E\uC9C0 \uC54A\uC74C: \uBE4C\uB4DC\uAC00 \uD2B8\uB9AC\uAC70\uC758 \uC704\uCE58\uB97C \uC54C\uB824 \uC8FC\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uD55C \uBC88 \uB354 \uC800\uC7A5\uD558\uC138\uC694.",
+  "No line of the script touched it: the build's own triggers did ({n, plural, one {# time} other {# times}}).": "\uC2A4\uD06C\uB9BD\uD2B8\uC758 \uC5B4\uB5A4 \uC904\uB3C4 \uB2FF\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uBE4C\uB4DC \uC790\uCCB4\uC758 \uD2B8\uB9AC\uAC70\uAC00 \uB2FF\uC558\uC2B5\uB2C8\uB2E4 ({n}\uBC88).",
+  "Counted in the lifted game and weighed by what Remastered was measured spending on each trigger, condition and action on a fast computer (Ryzen 9 7900X): the script's own triggers and the variables they go through, {average} conditions and actions a frame on average and {peak} at the most. The map's other triggers are apart: {ms} ms a frame. Remastered slows past {most} ms of triggers a frame there, and a slower computer sooner.": "\uB9AC\uD504\uD2B8\uD55C \uAC8C\uC784\uC5D0\uC11C \uC13C \uC218\uC5D0, \uBE60\uB978 \uCEF4\uD4E8\uD130(Ryzen 9 7900X)\uC5D0\uC11C \uB9AC\uB9C8\uC2A4\uD130\uAC00 \uD2B8\uB9AC\uAC70, \uC870\uAC74, \uC561\uC158\uB9C8\uB2E4 \uC4F0\uB294 \uC2DC\uAC04\uC744 \uC7B0 \uAC12\uC744 \uACF1\uD55C \uAC83\uC785\uB2C8\uB2E4: \uC2A4\uD06C\uB9BD\uD2B8 \uC790\uC2E0\uC758 \uD2B8\uB9AC\uAC70\uC640 \uADF8 \uD2B8\uB9AC\uAC70\uAC00 \uAC70\uCE58\uB294 \uBCC0\uC218, \uD504\uB808\uC784\uB2F9 \uC870\uAC74\uACFC \uC561\uC158 \uD3C9\uADE0 {average}\uAC1C, \uCD5C\uB300 {peak}\uAC1C. \uB9F5\uC758 \uB2E4\uB978 \uD2B8\uB9AC\uAC70\uB294 \uB530\uB85C\uC785\uB2C8\uB2E4: \uD504\uB808\uC784\uB2F9 {ms}ms. \uADF8 \uCEF4\uD4E8\uD130\uC5D0\uC11C \uB9AC\uB9C8\uC2A4\uD130\uB294 \uD504\uB808\uC784\uB2F9 \uD2B8\uB9AC\uAC70\uAC00 {most}ms\uB97C \uB118\uC73C\uBA74 \uB290\uB824\uC9C0\uACE0, \uB290\uB9B0 \uCEF4\uD4E8\uD130\uB294 \uB354 \uC77C\uCC0D \uB290\uB824\uC9D1\uB2C8\uB2E4.",
+  "Counted in the lifted game: the script's own triggers and the variables they go through. The map's other triggers are apart: {n} a frame.": "\uB9AC\uD504\uD2B8\uD55C \uAC8C\uC784\uC5D0\uC11C \uC13C \uC218\uC785\uB2C8\uB2E4: \uC2A4\uD06C\uB9BD\uD2B8 \uC790\uC2E0\uC758 \uD2B8\uB9AC\uAC70\uC640 \uADF8 \uD2B8\uB9AC\uAC70\uAC00 \uAC70\uCE58\uB294 \uBCC0\uC218. \uB9F5\uC758 \uB2E4\uB978 \uD2B8\uB9AC\uAC70\uB294 \uB530\uB85C\uC785\uB2C8\uB2E4: \uD504\uB808\uC784\uB2F9 {n}\uAC1C.",
+  "The programs are laid out into the map by TrigScript itself when it is saved or tested: nothing to install, and the map is built in under a second": "\uB9F5\uC744 \uC800\uC7A5\uD558\uAC70\uB098 \uD14C\uC2A4\uD2B8\uD560 \uB54C TrigScript\uAC00 \uC9C1\uC811 \uD504\uB85C\uADF8\uB7A8\uC744 \uB9F5\uC5D0 \uBC30\uCE58\uD569\uB2C8\uB2E4: \uC124\uCE58\uD560 \uAC83\uC774 \uC5C6\uACE0, 1\uCD08 \uC548\uC5D0 \uBE4C\uB4DC\uB429\uB2C8\uB2E4",
+  "not built: Magenta's triggers": "\uBE4C\uB4DC \uC548 \uD568: Magenta\uC758 \uD2B8\uB9AC\uAC70",
+  "Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map": "TrigScript\uAC00 \uBE4C\uB4DC: \uD504\uB85C\uADF8\uB7A8 {n}\uAC1C\uB97C \uB9F5\uC5D0 \uBC30\uCE58",
+  "The programs were not built: TrigScript does not take this yet ({reason}).": "\uD504\uB85C\uADF8\uB7A8\uC774 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4: TrigScript\uAC00 \uC544\uC9C1 \uC774\uAC83\uC744 \uBC1B\uC9C0 \uBABB\uD569\uB2C8\uB2E4({reason}).",
+  "A contribution holds programs only: its trigger() calls are not written into the map.": "\uAE30\uC5EC\uB294 \uD504\uB85C\uADF8\uB7A8\uB9CC \uB2F4\uC2B5\uB2C8\uB2E4: \uADF8 \uC548\uC758 trigger() \uD638\uCD9C\uC740 \uB9F5\uC5D0 \uC4F0\uC774\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "TrigScript does not take this yet ({reason}).": "TrigScript\uAC00 \uC544\uC9C1 \uC774\uAC83\uC744 \uBC1B\uC9C0 \uBABB\uD569\uB2C8\uB2E4({reason}).",
+  "{label} brought the file {file}, which is not under its own folder ({folder}/).": "{label}\uC774(\uAC00) \uAC00\uC838\uC628 \uD30C\uC77C {file}\uC740(\uB294) \uC790\uAE30 \uD3F4\uB354({folder}/) \uC544\uB798\uC5D0 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "Magenta's triggers are in this map, and this Magenta builds them through eudplib, which rewrites the part of the map TrigScript's programs go into. Update Magenta to the version that builds with TrigScript, or keep the two in different maps.": "\uC774 \uB9F5\uC5D0 Magenta\uC758 \uD2B8\uB9AC\uAC70\uAC00 \uC788\uACE0, \uC774 Magenta\uB294 eudplib\uB85C \uBE4C\uB4DC\uD558\uB294\uB370 \uADF8 \uBE4C\uB4DC\uAC00 TrigScript\uC758 \uD504\uB85C\uADF8\uB7A8\uC774 \uB4E4\uC5B4\uAC00\uB294 \uB9F5\uC758 \uBD80\uBD84\uC744 \uB2E4\uC2DC \uC501\uB2C8\uB2E4. TrigScript\uB85C \uBE4C\uB4DC\uD558\uB294 Magenta\uB85C \uC5C5\uB370\uC774\uD2B8\uD558\uAC70\uB098, \uB458\uC744 \uB2E4\uB978 \uB9F5\uC5D0 \uB450\uC138\uC694.",
+  "{label} brought trigger() calls, and a contribution holds programs only.": "{label}\uC774(\uAC00) trigger() \uD638\uCD9C\uC744 \uAC00\uC838\uC654\uC9C0\uB9CC, \uAE30\uC5EC\uB294 \uD504\uB85C\uADF8\uB7A8\uB9CC \uB2F4\uC2B5\uB2C8\uB2E4.",
+  "Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map, {contributors} among them": "TrigScript\uAC00 \uBE4C\uB4DC: \uD504\uB85C\uADF8\uB7A8 {n}\uAC1C\uB97C \uB9F5\uC5D0 \uBC30\uCE58, \uADF8\uC911 {contributors}\uC758 \uAC83 \uD3EC\uD568",
+  "{label}: TrigScript does not take this yet ({reason}).": "{label}: TrigScript\uAC00 \uC544\uC9C1 \uC774\uAC83\uC744 \uBC1B\uC9C0 \uBABB\uD569\uB2C8\uB2E4({reason})."
 };
 
 // plugin.ts
@@ -12121,7 +15497,11 @@ function activate(api) {
   api.commands.register({ id: "simulate", title: msg("TrigScript: simulate records"), run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
   api.commands.register({ id: "triggerAt", title: msg("TrigScript: trigger at a source line"), run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
   const attached = svc.attach();
-  return () => attached.dispose();
+  const provided = api.services.provide("build", svc.buildService(VERSION5), { version: 1 });
+  return () => {
+    provided.dispose();
+    attached.dispose();
+  };
 }
 var isRecord = (v) => typeof v === "object" && v !== null;
 var str = (v) => typeof v === "string" ? v : void 0;
