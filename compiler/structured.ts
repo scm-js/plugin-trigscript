@@ -9940,21 +9940,25 @@ export class Structured {
     return fn;
   }
 
-  /** A name for a function kept as a value: its own, or what holds it where it is written. */
+  /**
+   * A name for a function kept as a value: its own, or what holds it where it is written. Read from the file the
+   * function is written in, which need not be the body's: a handler written in main.ts reaches a library's body.
+   */
   private functionName(fn: FnValue): string {
     const { ts } = this;
+    const sf = fn.decl.getSourceFile();
     if (fn.name) return fn.name;
     const p = fn.decl.parent;
     if (p && (ts.isVariableDeclaration(p) || ts.isPropertyAssignment(p) || ts.isPropertyDeclaration(p)) && ts.isIdentifier(p.name)) return p.name.text;
-    if (p && ts.isBinaryExpression(p) && p.right === fn.decl) return p.left.getText(this.body.sf);
+    if (p && ts.isBinaryExpression(p) && p.right === fn.decl) return p.left.getText(sf);
     // `return (x) => x + k`: the function its maker returns.
     for (let up: TS.Node | undefined = p; up; up = up.parent) {
       if (ts.isReturnStatement(up) || (ts.isArrowFunction(up) && up.body === fn.decl)) continue;
-      if ((ts.isFunctionDeclaration(up) || ts.isMethodDeclaration(up)) && up.name) return `the function ${up.name.getText(this.body.sf)} returns`;
+      if ((ts.isFunctionDeclaration(up) || ts.isMethodDeclaration(up)) && up.name) return `the function ${up.name.getText(sf)} returns`;
       if (ts.isArrowFunction(up) && ts.isVariableDeclaration(up.parent) && ts.isIdentifier(up.parent.name)) return `the function ${up.parent.name.text} returns`;
       if (!ts.isParenthesizedExpression(up) && !ts.isBlock(up) && !ts.isReturnStatement(up)) break;
     }
-    if (p && ts.isCallExpression(p) && p.arguments.includes(fn.decl as TS.Expression)) return `the function handed to ${p.expression.getText(this.body.sf)}`;
+    if (p && ts.isCallExpression(p) && p.arguments.includes(fn.decl as TS.Expression)) return `the function handed to ${p.expression.getText(sf)}`;
     return "the function";
   }
 
@@ -9982,7 +9986,7 @@ export class Structured {
       for (const p of fn.parameters) {
         const k = this.valueKind(this.c.checker.getTypeAtLocation(p.name));
         if (p.dotDotDotToken || !ts.isIdentifier(p.name) || !k) {
-          this.c.error(p, `${name} is kept as a value, so it is called through its number, and its parameters are numbers, booleans, texts, units or other functions — ${p.name.getText(this.body.sf)} is not one of those.`);
+          this.c.error(p, `${name} is kept as a value, so it is called through its number, and its parameters are numbers, booleans, texts, units or other functions — ${p.name.getText(p.getSourceFile())} is not one of those.`);
           return null;
         }
         params.push(k);
@@ -9990,7 +9994,8 @@ export class Structured {
       const returned = this.c.checker.getReturnTypeOfSignature(signature);
       const result: ValueKind | "void" = (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 ? "void" : this.valueKind(returned) ?? "void";
       if (result === "void" && (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never)) === 0) {
-        this.c.error(node, `${name} is kept as a value, so it is called through its number, and it returns a number, a boolean, a text, a unit, another function or nothing — not ${this.c.checker.typeToString(returned)}.`);
+        // (Said at the function itself: where it is kept may be a library's line, far from the code to change.)
+        this.c.error(fn.decl, `${name} is kept as a value, so it is called through its number, and it returns a number, a boolean, a text, a unit, another function or nothing — not ${this.c.checker.typeToString(returned)}.`);
         return null;
       }
       const target = fn.target as Body;
