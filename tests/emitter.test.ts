@@ -1618,6 +1618,24 @@ describe("a map of our own, units", () => {
     ].join("\n"), UNITS, HOME);
   });
 
+  it("reads a location's size into consts and writes its edges from them, as Magenta's put-back row does", () => {
+    same([
+      "  const b = bounds(1 as Location);",
+      "  const w = b.right - b.left;",
+      "  const h = b.bottom - b.top;",
+      "  b.left = 576; b.top = 256;",
+      "  b.right = 576 + w; b.bottom = 256 + h;",
+      "  print(`${b.left} ${b.top} ${b.right} ${b.bottom}`);",
+      "  const c = bounds(1 as Location);",
+      "  c.left += 64; c.right += 64;",
+      "  print(`${c.left} ${c.right}`);",
+      "  const d = bounds(1 as Location);",
+      "  const w2 = d.right - d.left;",
+      "  d.left = 100; d.right = 100 + w2;",
+      "  print(`${d.left} ${d.right}`);",
+    ].join("\n"), UNITS, HOME);
+  });
+
   it("walks a table every place of which has been handed out once, place 0 among them, one place a turn and two", () => {
     const full: SimUnitInit[] = Array.from({ length: 1700 }, (_, i) => ({ type: i % 3 ? 0 : 37, owner: i % 3 ? 0 : 1, x: 100 + (i % 50), y: 100 + Math.floor(i / 50) }));
     same([
