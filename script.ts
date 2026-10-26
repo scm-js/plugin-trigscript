@@ -20,6 +20,7 @@
 import { cloneTrigger, encodeTriggers, type TriggerRecord } from "./vendor/triggers";
 import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 import { HEAP_CELLS, STACK_DEPTH, heapCells, stackDepth } from "./compiler/ir";
+import { LIBRARY_ID, LIBRARY_PATH, libraryPath, type ScriptLibraries } from "./compiler/libraries";
 
 /** The archive folder the script's files live in, next to `staredit\`. */
 export const SCRIPT_FOLDER = "trigscript\\";
@@ -132,9 +133,9 @@ export function memberOf(path: string): string {
   return `${SCRIPT_FOLDER}${normalizePath(path).replace(/\//g, "\\")}`;
 }
 
-/** The script path of a member under the folder, or null for anything else (the manifest included). */
+/** The script path of a member under the folder, or null for anything else (the manifest and the libraries' copies included). */
 export function pathOf(member: string): string | null {
-  if (!isScriptMember(member)) return null;
+  if (!isScriptMember(member) || isLibraryMember(member)) return null;
   const rest = member.replace(/\//g, "\\").slice(SCRIPT_FOLDER.length);
   return SCRIPT_FILE.test(rest) ? rest.replace(/\\/g, "/") : null;
 }
@@ -167,6 +168,69 @@ export function readFiles(extras: Extras): ScriptFiles {
     if (path) out[path] = decoder.decode(bytes);
   }
   return out;
+}
+
+/**
+ * Where the map keeps its copy of each library of another plugin's the script imports: `trigscript\@libraries\<id>\`,
+ * the modules at their paths and `library.json` saying which library it is. No file of the script's can be there: "@"
+ * is not in a file name. The copy is what the map builds with, wherever it is opened — the plugin that provides the
+ * library is only where a copy comes from, and a newer one (`ScriptService.updateLibraries`).
+ */
+export const LIBRARIES_FOLDER = `${SCRIPT_FOLDER}@libraries\\`;
+const LIBRARY_INFO = "library.json";
+
+/** A library as the map keeps it: which one, the version it was copied at, and its modules by path. */
+export interface LibraryCopy {
+  id: string;
+  /** What the editor calls it ("Stamp Library"). */
+  label: string;
+  version: string;
+  modules: Record<string, string>;
+}
+
+export const isLibraryMember = (name: string): boolean => memberKey(name).startsWith(memberKey(LIBRARIES_FOLDER));
+
+/** The libraries the map keeps copies of, by id; a folder with no module in it, or an id no library has, is passed over. */
+export function readLibraries(extras: Extras): Record<string, LibraryCopy> {
+  const out: Record<string, LibraryCopy> = {};
+  for (const [name, bytes] of extras) {
+    if (!isLibraryMember(name)) continue;
+    const [id, ...rest] = name.replace(/\//g, "\\").slice(LIBRARIES_FOLDER.length).split("\\");
+    if (!LIBRARY_ID.test(id) || rest.length === 0) continue;
+    const path = rest.join("/");
+    const copy = (out[id] ??= { id, label: id, version: "", modules: {} });
+    if (path === LIBRARY_INFO) {
+      try {
+        const info = JSON.parse(decoder.decode(bytes)) as { label?: unknown; version?: unknown } | null;
+        if (typeof info?.label === "string" && info.label) copy.label = info.label;
+        if (typeof info?.version === "string") copy.version = info.version;
+      } catch { /* A broken library.json leaves the id for its name. */ }
+    } else if (LIBRARY_PATH.test(path)) copy.modules[path] = decoder.decode(bytes);
+  }
+  for (const id of Object.keys(out)) if (Object.keys(out[id].modules).length === 0) delete out[id];
+  return out;
+}
+
+/** The members with the map's copies of the libraries replaced by these: a library not among them is removed. A member whose text is the same keeps its bytes. */
+export function withLibraries(extras: Extras, libraries: Readonly<Record<string, LibraryCopy>>): Map<string, Uint8Array> {
+  const next = new Map<string, Uint8Array>();
+  const was = new Map<string, Uint8Array>();
+  for (const [name, bytes] of extras) (isLibraryMember(name) ? was.set(memberKey(name), bytes) : next.set(name, bytes));
+  const put = (name: string, text: string) => {
+    const old = was.get(memberKey(name));
+    next.set(name, old && decoder.decode(old) === text ? old : encoder.encode(text));
+  };
+  for (const lib of Object.values(libraries)) {
+    const folder = `${LIBRARIES_FOLDER}${lib.id}\\`;
+    put(`${folder}${LIBRARY_INFO}`, JSON.stringify({ label: lib.label, version: lib.version }, null, 2));
+    for (const [path, text] of Object.entries(lib.modules)) put(`${folder}${path.replace(/\//g, "\\")}`, text);
+  }
+  return next;
+}
+
+/** The copies as the compiler takes them: each library's modules by id. */
+export function librarySources(libraries: Readonly<Record<string, LibraryCopy>>): ScriptLibraries {
+  return Object.fromEntries(Object.values(libraries).map((l) => [l.id, l.modules]));
 }
 
 /** The members with the script's files replaced by these (a file not in `files` is removed). */
@@ -226,6 +290,18 @@ export function hashFiles(files: ScriptFiles): string {
   return hashText(paths.map((p) => `${p}\0${files[p] ?? ""}\0`).join(""));
 }
 
+/**
+ * `hashFiles` over the files and the libraries they were compiled with, so that a library updated in the map counts as
+ * a change of the script's. With no libraries it is `hashFiles` itself: a manifest from before libraries still matches.
+ */
+export function hashSources(files: ScriptFiles, libraries: Readonly<Record<string, LibraryCopy>> = {}): string {
+  const libs = Object.values(libraries);
+  if (libs.length === 0) return hashFiles(files);
+  const all: ScriptFiles = { ...files };
+  for (const lib of libs) for (const [path, text] of Object.entries(lib.modules)) all[libraryPath(lib.id, path)] = text;
+  return hashFiles(all);
+}
+
 /** Where the manifest's block actually is in the list, or null when its records are gone. */
 export function findBlock(list: TriggerRecord[], manifest: ScriptManifest): ScriptBlock | null {
   const { start, count } = manifest;
@@ -274,17 +350,20 @@ export interface ScriptState {
   unbuilt: boolean;
   /** The script had programs when it was last applied: the saved map is built with them and needs StarCraft: Remastered. */
   programs: number;
+  /** The libraries of other plugins' the map keeps a copy of: what the script builds with. */
+  libraries: { id: string; label: string; version: string }[];
 }
 
 export function scriptState(triggers: TriggerRecord[] | null, extras: Extras): ScriptState {
   const read = readFiles(extras);
   const files = Object.keys(read).length ? read : null;
+  const libraries = readLibraries(extras);
   const manifest = readManifest(extras);
   const block = triggers && manifest ? findBlock(triggers, manifest) : null;
-  const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
+  const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashSources(files, libraries));
   const stale = !!manifest && !block;
   const parts = stale && triggers ? staleRecords(triggers, manifest!) : null;
-  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, programs: manifest?.programs ?? 0 };
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, programs: manifest?.programs ?? 0, libraries: Object.values(libraries).map(({ id, label, version }) => ({ id, label, version })) };
 }
 
 export function isGenerated(state: ScriptState, index: number): boolean {
@@ -343,6 +422,11 @@ export interface BuildOptions {
    * the old records all stay.
    */
   replaceStale?: boolean;
+  /**
+   * The libraries the compile used, to keep as the map's copies in place of the ones there (a library the script no
+   * longer imports goes). Absent: the copies stay as they are, and the files are taken to have been compiled with them.
+   */
+  libraries?: Readonly<Record<string, LibraryCopy>>;
 }
 
 export interface BuildPlan {
@@ -384,8 +468,9 @@ export function buildScript(triggers: TriggerRecord[], extras: Extras, files: Sc
   } else {
     start = triggers.length; before = triggers.slice(); after = [];
   }
-  const manifest: ScriptManifest = { version: 2, programs: compiled.ir.length, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
-  return { list: [...before, ...records, ...after], extras: withSounds(withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), compiled.sounds ?? []), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
+  const manifest: ScriptManifest = { version: 2, programs: compiled.ir.length, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashSources(files, options.libraries ?? readLibraries(extras)), records: records.map(hashRecord) };
+  const stored = options.keepFiles ? extras : options.libraries ? withLibraries(withFiles(extras, files), options.libraries) : withFiles(extras, files);
+  return { list: [...before, ...records, ...after], extras: withSounds(withManifest(stored, manifest), compiled.sounds ?? []), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
 }
 
 /** Which trigger a source line of a file belongs to (the trigger whose source starts at or before the line), if any. */

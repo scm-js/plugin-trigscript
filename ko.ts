@@ -468,4 +468,11 @@ export const KO: Record<string, string> = {
   "{label} brought trigger() calls, and a contribution holds programs only.": "{label}이(가) trigger() 호출을 가져왔지만, 기여는 프로그램만 담습니다.",
   "Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map, {contributors} among them": "TrigScript가 빌드: 프로그램 {n}개를 맵에 배치, 그중 {contributors}의 것 포함",
   "{label}: TrigScript does not take this yet ({reason}).": "{label}: TrigScript가 아직 이것을 받지 못합니다({reason}).",
+  "{label} {version} (installed: {provided})": "{label} {version} (설치된 버전: {provided})",
+  "The map builds with its own copy of {n, plural, one {a library} other {# libraries}}, and the plugin installed here has another version: {list}. The copy stays until you update it.": "이 맵은 라이브러리 {n}개를 맵 안의 사본으로 빌드하는데, 여기에 설치된 플러그인은 다른 버전입니다: {list}. 업데이트하기 전까지 사본은 그대로 남습니다.",
+  "Keep the map's copy": "맵의 사본 유지",
+  "Update": "업데이트",
+  "Update all": "모두 업데이트",
+  "TrigScript: libraries": "TrigScript: 라이브러리",
+  "TrigScript: update libraries": "TrigScript: 라이브러리 업데이트",
 };

@@ -21,6 +21,7 @@
  */
 import type { CompileResult, OwnCheck, ScriptFiles } from "./compiler/compiler";
 import type { OwnBuildInput, OwnBuildOutcome } from "./compiler/backend/build";
+import type { ScriptLibraries } from "./compiler/libraries";
 import { ENTRY_URL } from "./compiler/entry";
 import type { ScriptNames } from "./compiler/names";
 import type { TestRunOptions } from "./compiler/testing";
@@ -81,6 +82,8 @@ export interface CompileInput {
   own?: OwnCheck;
   /** Files that run as entries after `main.ts`, in order: what another plugin contributes to the build (`CompileOptions.entries`). */
   entries?: readonly string[];
+  /** Other plugins' libraries the script may import, by id (`CompileOptions.libraries`). */
+  libraries?: ScriptLibraries;
 }
 
 interface CompileRequest extends CompileInput {
@@ -111,7 +114,7 @@ importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests, own, entries, build } = e.data;
+  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests, own, entries, libraries, build } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
@@ -130,7 +133,7 @@ self.onmessage = async (e) => {
       lib = await r.text();
     }
     // A check names the script's clips and makes none of them; a build makes them, the long ones encoded below.
-    const result = mod.compileScript(self.ts, files, names, { lib, tests, sounds: Boolean(vorbisUrl), own, entries });
+    const result = mod.compileScript(self.ts, files, names, { lib, tests, sounds: Boolean(vorbisUrl), own, entries, libraries });
     // A build's long clips encoded as Ogg Vorbis; a check's left as names, their samples not sent.
     if (typeof mod.finishSounds === "function") {
       const encoder = vorbisUrl && result.sounds.some((s) => s.vorbis) ? await mod.loadVorbis(vorbisUrl) : null;
@@ -297,7 +300,7 @@ export function compileInBackground(input: CompileInput, dist: string = DEFAULT_
   return new Promise<CompileResult>((resolve, reject) => {
     const ms = input.sounds ? BUILD_TIMEOUT_MS : COMPILE_TIMEOUT_MS;
     pending.set(id, { resolve: (r) => resolve(r as CompileResult), reject, timer: setTimeout(() => timeOut(id, ms), ms), build: false });
-    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}), ...(input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}), ...(input.own ? { own: input.own } : {}), ...(input.entries ? { entries: input.entries } : {}) };
+    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}), ...(input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}), ...(input.own ? { own: input.own } : {}), ...(input.entries ? { entries: input.entries } : {}), ...(input.libraries ? { libraries: input.libraries } : {}) };
     w.postMessage(req);
   }).catch((err: Error) => {
     if (err.message === RETRY) return compileInBackground(input, dist);

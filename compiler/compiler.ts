@@ -24,6 +24,7 @@ import { isScriptClass, isScriptFunction, scriptArrow, isTopListener, libraryCal
 import { locate, resolveModule, runModules, STDLIB_DIR, type LinkedFile } from "./link";
 import { isMediaFile, mediaValue } from "./media";
 import { STDLIB, stdlibImports, stdlibPath } from "./stdlib";
+import { LIBRARY_DIR, LIBRARY_ID, libraryImports, type ScriptLibraries } from "./libraries";
 import { checkProgram } from "./check";
 import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
@@ -215,6 +216,11 @@ export interface CompileOptions {
    * files is an error.
    */
   entries?: readonly string[];
+  /**
+   * Other plugins' libraries the script may import, by id (`libraries.ts`): "stamps/patrol" is the module `patrol.ts`
+   * of the library "stamps". Only the modules something imports join the files.
+   */
+  libraries?: ScriptLibraries;
 }
 
 export { LowerError };
@@ -225,6 +231,16 @@ function renamedUnit(message: string): string {
   return /type 'Unit' is not assignable to (parameter of )?type 'UnitType/.test(message) || /type 'UnitType<\d+>' is not assignable to (parameter of )?type 'Unit'/.test(message)
     ? `${message}\nA unit type (units.*) is a UnitType; Unit is a unit on the map, inside program().`
     : message;
+}
+
+/** An import of a library nobody has here: TypeScript says it cannot find the module; this says where one comes from. */
+function missingLibrary(message: string, libraries: ScriptLibraries): string {
+  const m = /^Cannot find module '([^'./][^']*)'/.exec(message);
+  if (!m || m[1] === MODULE_NAME || m[1].startsWith(`${MODULE_NAME}/`)) return message;
+  const id = m[1].split("/")[0];
+  return id in libraries
+    ? `${message}\nThe library "${id}" has no such module: it has ${Object.keys(libraries[id]).map((p) => `"${id}/${p.replace(/\.tsx?$/, "")}"`).join(", ")}.`
+    : `${message}\nA name without ./ in front imports a library another plugin provides ("${id}/…"): no plugin provides "${id}" here, and the map keeps no copy of it.`;
 }
 
 export function normalizePath(path: string): string {
@@ -252,6 +268,9 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   for (const [path, text] of Object.entries(files)) (isMediaFile(path) ? media : scripts).set(normalizePath(path), text);
   // The standard library's modules the script imports ("trigscript/fog"), as files of its own: only those, since one
   // may hold a program of its own.
+  // Other plugins' libraries the script imports, the same way — before the standard library, which a library may import.
+  const libraries: ScriptLibraries = Object.fromEntries(Object.entries(options.libraries ?? {}).filter(([id]) => id !== MODULE_NAME && LIBRARY_ID.test(id)));
+  for (const [path, text] of Object.entries(libraryImports([...scripts.values()], libraries).files)) scripts.set(path, text);
   for (const name of stdlibImports([...scripts.values()])) scripts.set(stdlibPath(name), STDLIB[name]);
   const entry = entryOf(scripts.keys());
   if (!scripts.has(entry)) {
@@ -265,7 +284,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const compilerOptions: TS.CompilerOptions = {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, moduleResolution: ts.ModuleResolutionKind.Bundler,
     strict: true, types: [], sourceMap: true, noLib: false,
-    paths: { [`${MODULE_NAME}/*`]: [`./${STDLIB_DIR}/*`] },
+    paths: { [`${MODULE_NAME}/*`]: [`./${STDLIB_DIR}/*`], ...Object.fromEntries(Object.keys(libraries).flatMap((id) => [[`${id}/*`, [`./${LIBRARY_DIR}/${id}/*`]], [id, [`./${LIBRARY_DIR}/${id}/index`]]])) },
     // JSX (in a .tsx file) is a text the game shows: elements are calls of __jsx, which the structured compiler lowers in a program.
     jsx: ts.JsxEmit.React, jsxFactory: "__jsx", jsxFragmentFactory: "__fragment",
   };
@@ -328,7 +347,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const pos = sf && d.start !== undefined ? position(sf, d.start, d.start + (d.length ?? 0)) : { line: 1, column: 1, endLine: 1, endColumn: 1 };
     const file = sf ? sf.fileName : ENTRY_FILE;
     const where = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
-    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), source: "typescript" });
+    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + missingLibrary(renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), libraries), source: "typescript" });
   }
   if (diagnostics.length) return result();
 

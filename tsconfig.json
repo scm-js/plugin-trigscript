@@ -27,6 +27,7 @@
     "compiler/*.ts",
     "compiler/generated/*.ts",
     "vendor/*.ts",
+    "examples/library/*.ts",
     "tests"
   ]
 }

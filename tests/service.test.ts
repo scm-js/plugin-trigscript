@@ -13,7 +13,7 @@ import { compileScript } from "../compiler/compiler";
 import { buildOwnMap } from "../compiler/backend/build";
 import { Sections, readFacts, writeChunks } from "../compiler/backend/chk";
 import { firstFault, MAGENTA_MEMBER, positionIn, refusalAt, ScriptService, type BuildContribution, type Compiler } from "../service";
-import { readFiles, readManifest, scriptState } from "../script";
+import { LIBRARIES_FOLDER, readFiles, readLibraries, readManifest, scriptState } from "../script";
 import type { OwnBuildEvent } from "../service";
 import { defaultLib } from "../bundle/lib.mjs";
 
@@ -87,7 +87,7 @@ function host() {
 /** The real compiler, at once — with a hook to run something between the compile starting and its result landing. */
 function compiler(during: () => void = () => {}): Compiler {
   return async (input) => {
-    const r = compileScript(ts, input.files, input.names, { lib: LIB, ...(input.own ? { own: input.own } : {}), ...(input.entries ? { entries: input.entries } : {}) });
+    const r = compileScript(ts, input.files, input.names, { lib: LIB, ...(input.own ? { own: input.own } : {}), ...(input.entries ? { entries: input.entries } : {}), ...(input.libraries ? { libraries: input.libraries } : {}) });
     during();
     return r;
   };
@@ -430,5 +430,92 @@ describe("service: what other plugins contribute to the build", () => {
     await expect(run(h)).resolves.toBeInstanceOf(Uint8Array);
     handle.dispose();
     expect(svc.whyNotBuilt()).not.toBeNull();
+  });
+});
+
+describe("service: libraries other plugins provide", () => {
+  const STAMPS = { id: "stamps", label: "Stamp Library", version: "1.0.0", modules: { "say.ts": `import { twice } from "./twice";\nexport function say(n: number) { displayText(\`stamps \${twice(n)}\`); }`, "twice.ts": "export const twice = (n: number) => n * 2;", "unused.ts": "export const x = 1;" } };
+  const MAIN = `import { say } from "stamps/say";\n${SRC}\nprogram(() => { let k = 2; say(k); });`;
+  const kept = (d: { extras: Map<string, Uint8Array> }) => [...d.extras.keys()].filter((n) => n.startsWith(LIBRARIES_FOLDER)).sort();
+
+  it("applying copies the modules the script imports into the map, and the map builds with the copy once the plugin is gone", async () => {
+    const h = host();
+    const d = h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler(), builder);
+    svc.attach();
+    const handle = svc.buildService("4.1.0").provideLibrary(STAMPS);
+    const out = await svc.build(MAIN);
+    expect(out.compiled.diagnostics).toEqual([]);
+    expect(kept(d)).toEqual([`${LIBRARIES_FOLDER}stamps\\library.json`, `${LIBRARIES_FOLDER}stamps\\say.ts`, `${LIBRARIES_FOLDER}stamps\\twice.ts`, `${LIBRARIES_FOLDER}stamps\\unused.ts`]);
+    // The copy is none of the script's files, and the state says which library it is.
+    expect(Object.keys(readFiles(d.extras))).toEqual(["main.ts"]);
+    expect(scriptState(d.triggers, d.extras)).toMatchObject({ unbuilt: false, libraries: [{ id: "stamps", label: "Stamp Library", version: "1.0.0" }] });
+    handle.dispose();
+    expect(svc.libraryStatus()).toEqual([{ id: "stamps", label: "Stamp Library", version: "1.0.0", provided: null, update: false }]);
+    expect((await svc.compile(MAIN)).diagnostics).toEqual([]);
+    const built = await h.steps[0].run({ map: chk(), fileName: "x.scx", purpose: "save", signal: new AbortController().signal });
+    expect(new Sections(built).get("TRIG")!.length).toBeGreaterThan(0);
+  });
+
+  it("without the plugin and with no copy, the import is a problem that says so", async () => {
+    const h = host();
+    h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler());
+    const r = await svc.compile(MAIN);
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics[0].message).toMatch(/no plugin provides "stamps" here/);
+  });
+
+  it("a newer version is offered, not taken: updating replaces the copy and the script reads as changed", async () => {
+    const h = host();
+    const d = h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler());
+    const heard: number[] = [];
+    svc.onLibraries(() => heard.push(1));
+    const first = svc.provideLibrary(STAMPS);
+    await svc.build(MAIN);
+    first.dispose();
+    const newer = { ...STAMPS, version: "1.1.0", modules: { ...STAMPS.modules, "twice.ts": "export const twice = (n: number) => n * 2 + 1;" } };
+    svc.provideLibrary(newer);
+    expect(svc.libraryStatus()).toEqual([{ id: "stamps", label: "Stamp Library", version: "1.0.0", provided: "1.1.0", update: true }]);
+    // The map's copy is what a compile takes until the update.
+    expect(svc.librariesFor({ "main.ts": MAIN }).stamps.version).toBe("1.0.0");
+    expect(svc.state()?.unbuilt).toBe(false);
+    expect(svc.updateLibraries()).toEqual(["stamps"]);
+    expect(readLibraries(d.extras).stamps).toMatchObject({ version: "1.1.0", modules: newer.modules });
+    expect(svc.state()?.unbuilt).toBe(true);
+    expect(svc.libraryStatus()[0].update).toBe(false);
+    expect(svc.updateLibraries()).toEqual([]);
+    expect(heard.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("a library the script no longer imports leaves the map with the next apply", async () => {
+    const h = host();
+    const d = h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler());
+    svc.provideLibrary(STAMPS);
+    await svc.build(MAIN);
+    expect(kept(d).length).toBe(4);
+    await svc.build(SRC);
+    expect(kept(d)).toEqual([]);
+    expect(svc.state()?.unbuilt).toBe(false);
+  });
+
+  it("a contribution may import a library too", async () => {
+    const h = host();
+    h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler());
+    svc.provideLibrary(STAMPS);
+    const r = await svc.check({ "magenta/main.ts": `import { twice } from "stamps/twice";\nprogram(() => { let k = 1; k = twice(k); });` }, ["magenta/main.ts"]);
+    expect(r).toEqual({ problems: [], programs: 1 });
+  });
+
+  it("refuses a library it cannot take", () => {
+    const h = host();
+    h.open(1);
+    const svc = new ScriptService(h.api, () => {}, compiler());
+    expect(() => svc.provideLibrary({ ...STAMPS, id: "trigscript" })).toThrow(/keeps for itself/);
+    expect(() => svc.provideLibrary({ ...STAMPS, id: "Bad Id" })).toThrow(/not a library id/);
+    expect(() => svc.provideLibrary({ ...STAMPS, modules: { "say.test.ts": "" } })).toThrow(/test file/);
   });
 });

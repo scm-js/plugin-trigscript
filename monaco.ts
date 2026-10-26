@@ -19,6 +19,7 @@ import type * as Monaco from "monaco-editor";
 import { DECLARATIONS_FILE } from "./compiler/declarations";
 import { MODULE_NAME } from "./compiler/api";
 import { STDLIB, STDLIB_EXT } from "./compiler/stdlib";
+import type { ScriptLibraries } from "./compiler/libraries";
 import type { LineHint, ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
 import { describeVariable, normalizePath } from "./compiler/compiler";
 import { isMediaFile } from "./compiler/media";
@@ -159,12 +160,14 @@ export function loadMonaco(base: string = DEFAULT_DIST): Promise<MonacoApi> {
 /**
  * Point the language service at a fresh declaration file (the map's names changed), and at the standard library's
  * modules, where `import { fog } from "trigscript/fog"` finds them by the bundler's rules — so a hover and go to
- * definition show the library's own TrigScript.
+ * definition show the library's own TrigScript. Other plugins' libraries (`libraries`, by id) sit beside it the same
+ * way: "stamps/patrol" is `node_modules/stamps/patrol.ts`.
  */
-export function setDeclarations(monaco: MonacoApi, content: string) {
+export function setDeclarations(monaco: MonacoApi, content: string, libraries: ScriptLibraries = {}) {
   tsLanguage(monaco).typescriptDefaults.setExtraLibs([
     { content, filePath: `file:///${DECLARATIONS_FILE}` },
     ...Object.entries(STDLIB).map(([name, source]) => ({ content: source, filePath: `file:///node_modules/${MODULE_NAME}/${name}${STDLIB_EXT[name] ?? ".ts"}` })),
+    ...Object.entries(libraries).filter(([id]) => id !== MODULE_NAME).flatMap(([id, modules]) => Object.entries(modules).map(([path, source]) => ({ content: source, filePath: `file:///node_modules/${id}/${path}` }))),
   ]);
 }
 
