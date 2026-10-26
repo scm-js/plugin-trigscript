@@ -1,0 +1,13 @@
+{
+  "name": "Waves (example TrigScript library)",
+  "id": "waves",
+  "version": "1.0.0",
+  "description": "An example of a plugin that provides a TrigScript library: scripts import it as \"waves\" — spawnWave, waveSize, announce. Copy it to make a library of your own.",
+  "author": "Jeany",
+  "homepage": "https://github.com/scm-js/plugin-trigscript/tree/main/examples/library",
+  "entry": "plugin.ts",
+  "api": 1,
+  "requires": [
+    "github:scm-js/plugin-trigscript"
+  ]
+}

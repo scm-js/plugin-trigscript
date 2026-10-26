@@ -109,3 +109,22 @@ describe("the compile worker", () => {
     expect(posted.at(-1)).toEqual({ id: 1, result: "compiled" });
   });
 });
+
+describe("the worker's own source", () => {
+  it("hands the compiler what a request carries, the libraries among it", async () => {
+    vi.resetModules();
+    const { WORKER_SOURCE } = await import("../compile");
+    const seen: unknown[] = [];
+    const posted: unknown[] = [];
+    // The compiler the worker imports (a dynamic import, which a Function here cannot make): it keeps the options it was called with.
+    const mod = { compileScript: (_ts: unknown, _files: unknown, _names: unknown, options: unknown) => { seen.push(options); return { sounds: [] }; } };
+    expect(WORKER_SOURCE).toContain("import(moduleUrl)");
+    const self: { ts: unknown; onmessage?: (e: { data: unknown }) => Promise<void> } = { ts: {} };
+    const run = new Function("self", "importScripts", "postMessage", "fetch", "__import", WORKER_SOURCE.replace("import(moduleUrl)", "__import(moduleUrl)"));
+    run(self, () => {}, (m: unknown) => posted.push(m), async () => ({ ok: true, text: async () => "lib" }), async () => mod);
+    const libraries = { stamps: { "say.ts": "export const a = 1;" } };
+    await self.onmessage!({ data: { id: 1, moduleUrl: "compiler.js", libUrl: "lib.d.ts", files: { "main.ts": "" }, names: {}, entries: ["x.ts"], libraries } });
+    expect(posted).toEqual([{ id: 1, result: { sounds: [] } }]);
+    expect(seen).toEqual([{ lib: "lib", tests: undefined, sounds: false, own: undefined, entries: ["x.ts"], libraries }]);
+  });
+});

@@ -26,9 +26,11 @@ import { simulate, type SimulationEvent } from "./compiler/simulate";
 import type { TestResult, TestRunOptions, TestWorld } from "./compiler/testing";
 import { DEFAULT_DIST, DIST_STORAGE_KEY } from "./monaco";
 import {
-  DEFAULT_SETTINGS, buildScript, findBlock, hashFiles, hashText, isBuiltSound, isScriptMember, readManifest, readSettings, relocateManifest, scriptState, triggerAtLine, withFiles, withSettings, type ScriptSettings,
-  type BuildOptions, type Extras, type ScriptBlock, type ScriptState,
+  DEFAULT_SETTINGS, buildScript, findBlock, hashFiles, hashSources, hashText, isBuiltSound, isScriptMember, librarySources, readLibraries, readManifest, readSettings, relocateManifest, scriptState, triggerAtLine, withFiles,
+  withLibraries, withSettings, type ScriptSettings, type BuildOptions, type Extras, type LibraryCopy, type ScriptBlock, type ScriptState,
 } from "./script";
+import { libraryImports, libraryProblem } from "./compiler/libraries";
+import { MODULE_NAME } from "./compiler/api";
 import { english, msg, type Translate } from "./i18n";
 import { SCM_SIM_SERVICE, type ScmSimEngine } from "./vendor/scmSim";
 
@@ -56,6 +58,8 @@ export interface ScriptArtifact {
   context: string;
   /** `hashFiles` of the archive's files when the compile started: what the build may overwrite. */
   archived: string;
+  /** The libraries of other plugins' the files import, as the compile had them: what applying keeps as the map's copies. */
+  libraries: Record<string, LibraryCopy>;
 }
 
 /** Why an artifact was not installed. */
@@ -164,13 +168,44 @@ export interface ContributedScript { files: ScriptFiles; entries: string[] }
 /** What `check` says of a contribution's source, as a build would compile it: each problem at its file and line. */
 export interface ContributionCheck { problems: { file: string; line: number; column: number; message: string }[]; programs: number }
 
+/**
+ * A library another plugin provides (`provideLibrary`): TrigScript modules a script imports by the id —
+ * `import { patrol } from "stamps/patrol"` is the module `patrol.ts`, `"stamps"` alone is `index.ts`.
+ */
+export interface ProvidedLibrary {
+  /** What a script imports it by: lower-case letters, digits and "-", starting with a letter; never "trigscript". */
+  id: string;
+  /** What the editor calls it. */
+  label: string;
+  /** The library's version: a map keeps the copy it took until someone updates it. */
+  version: string;
+  /** The modules' TrigScript source by path in the library ("patrol.ts", "ai/waves.tsx"); no tests. */
+  modules: Record<string, string>;
+}
+
+/** A library as the open map has it, and as a plugin provides it. */
+export interface LibraryStatus {
+  id: string;
+  label: string;
+  /** The version the map keeps a copy of; null when it keeps none. */
+  version: string | null;
+  /** The version a plugin provides now; null when none does. */
+  provided: string | null;
+  /** The provided library differs from the map's copy: `updateLibraries` would take it. */
+  update: boolean;
+}
+
 /** The service other plugins reach as `trigscript.build` (`contract.d.ts` is its published shape). */
 export interface BuildService {
   versions: { plugin: string };
   contribute(contribution: BuildContribution): { dispose(): void };
   onBuild(listener: (event: OwnBuildEvent) => void): { dispose(): void };
   check(files: ScriptFiles, entries: string[]): Promise<ContributionCheck>;
+  provideLibrary(library: ProvidedLibrary): { dispose(): void };
 }
+
+/** The version of `trigscript.build` (`ServiceInfo.version`): 2 has `provideLibrary`. */
+export const BUILD_SERVICE_VERSION = 2;
 
 /**
  * What a build of the programs says as it goes (`onBuild`): its start, each line of its log, its end or its failure —
@@ -213,6 +248,9 @@ export class ScriptService {
   private readonly ownListeners = new Set<(event: OwnBuildEvent) => void>();
   /** The other plugins' parts of the build (`contribute`), by id. */
   private readonly contributions = new Map<string, BuildContribution>();
+  /** The libraries other plugins provide (`provideLibrary`), by id, and who hears when they come and go. */
+  private readonly provided = new Map<string, LibraryCopy>();
+  private readonly libraryListeners = new Set<() => void>();
   private lastManifest: Uint8Array | null | undefined;
   /** The last compile, for a save that comes right after an apply: the same files against the same names need no second compile. */
   private lastArtifact: ScriptArtifact | null = null;
@@ -310,7 +348,76 @@ export class ScriptService {
       contribute: (c) => this.contribute(c),
       onBuild: (l) => this.onBuild(l),
       check: (files, entries) => this.check(files, entries),
+      provideLibrary: (library) => this.provideLibrary(library),
     };
+  }
+
+  /**
+   * Another plugin's library, for scripts to import while the handle lives; the second of one id replaces the first.
+   * Throws, in a sentence, for a library that cannot be taken (an id or a path it may not have, a test file).
+   */
+  provideLibrary(library: ProvidedLibrary): { dispose(): void } {
+    const modules = Object.fromEntries(Object.entries(library.modules ?? {}).map(([path, text]) => [path.replace(/\\/g, "/").replace(/^\.\//, ""), text]));
+    const problem = libraryProblem(library.id, modules, [MODULE_NAME]);
+    if (problem) throw new Error(problem);
+    const copy: LibraryCopy = { id: library.id, label: library.label || library.id, version: String(library.version ?? ""), modules };
+    this.provided.set(copy.id, copy);
+    this.librariesChanged();
+    return { dispose: () => { if (this.provided.get(copy.id) === copy) { this.provided.delete(copy.id); this.librariesChanged(); } } };
+  }
+
+  /** Hear when a plugin provides a library or withdraws one, and when the map's copies change. */
+  onLibraries(listener: () => void): { dispose(): void } {
+    this.libraryListeners.add(listener);
+    return { dispose: () => { this.libraryListeners.delete(listener); } };
+  }
+
+  private librariesChanged(): void {
+    for (const l of this.libraryListeners) l();
+  }
+
+  /** The map's copies of the libraries; none with no map. */
+  private mapLibraries(): Record<string, LibraryCopy> {
+    return this.api.document.isOpen() ? readLibraries(snapshotExtras(this.api)) : {};
+  }
+
+  /** Every library a script of the open map can import: the map's copy where it keeps one, else what a plugin provides. */
+  libraries(): Record<string, LibraryCopy> {
+    return { ...Object.fromEntries(this.provided), ...this.mapLibraries() };
+  }
+
+  /** The libraries these files import (and those import in turn), as a compile of them takes them. */
+  librariesFor(files: ScriptFiles): Record<string, LibraryCopy> {
+    const all = this.libraries();
+    const { used } = libraryImports(Object.values(files), librarySources(all));
+    return Object.fromEntries(used.map((id) => [id, all[id]]));
+  }
+
+  /** The libraries the map keeps and the plugins provide, side by side, by id. */
+  libraryStatus(): LibraryStatus[] {
+    const kept = this.mapLibraries();
+    const ids = [...new Set([...Object.keys(kept), ...this.provided.keys()])].sort();
+    return ids.map((id) => {
+      const copy = kept[id], offer = this.provided.get(id);
+      const differs = !!copy && !!offer && (copy.version !== offer.version || hashSources({}, { [id]: copy }) !== hashSources({}, { [id]: offer }));
+      return { id, label: (copy ?? offer)!.label, version: copy?.version ?? null, provided: offer?.version ?? null, update: differs };
+    });
+  }
+
+  /**
+   * Replace the map's copies of these libraries (all that have one, by default) with what their plugins provide now.
+   * The map is modified and the script reads as changed, so the next save applies it with them. Returns the ids updated.
+   */
+  updateLibraries(ids?: readonly string[]): string[] {
+    if (!this.api.document.isOpen()) return [];
+    const wanted = this.libraryStatus().filter((l) => l.update && (!ids || ids.includes(l.id))).map((l) => l.id);
+    if (wanted.length === 0) return [];
+    const before = snapshotExtras(this.api);
+    const kept = readLibraries(before);
+    for (const id of wanted) kept[id] = this.provided.get(id)!;
+    commitExtras(this.api, before, withLibraries(before, kept));
+    this.librariesChanged();
+    return wanted;
   }
 
   /**
@@ -322,7 +429,8 @@ export class ScriptService {
     const at = entries[0] ?? Object.keys(files)[0] ?? ENTRY_FILE;
     if (!map) return { problems: [{ file: at, line: 1, column: 1, message: this.t("No map is open.") }], programs: 0 };
     const own = this.ownCheck();
-    const r = await this.compiler({ files: { [ENTRY_FILE]: "", ...files }, names: map.names, entries, ...(own ? { own } : {}) }, this.dist());
+    const libraries = librarySources(this.librariesFor(files));
+    const r = await this.compiler({ files: { [ENTRY_FILE]: "", ...files }, names: map.names, entries, ...(own ? { own } : {}), ...(Object.keys(libraries).length ? { libraries } : {}) }, this.dist());
     const problems: ContributionCheck["problems"] = r.diagnostics.map((d) => ({ file: d.file, line: d.line, column: d.column, message: d.message }));
     if (r.ok && r.triggers.length) problems.push({ file: at, line: 1, column: 1, message: this.t("A contribution holds programs only: its trigger() calls are not written into the map.") });
     if (r.ok && r.ownRefusal) {
@@ -405,7 +513,7 @@ export class ScriptService {
       let compiled: CompileResult | null = null;
       if (state?.files) {
         const cached = this.lastArtifact;
-        const fresh = cached && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
+        const fresh = cached && cached.context === map.context && cached.document === this.documentId() && hashSources(cached.files, cached.libraries) === hashSources(state.files, readLibraries(snapshotExtras(this.api))) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
         const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : undefined);
         if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
         if (guard) this.guardTests(artifact.compiled);
@@ -414,7 +522,8 @@ export class ScriptService {
       // With contributions: the script and what they bring, compiled together, their entries after the script's.
       if (brought.entries.length) {
         const files = { ...(state?.files ?? { [ENTRY_FILE]: "" }), ...brought.files };
-        compiled = await this.compiler({ files, names: map.names, entries: brought.entries }, this.dist());
+        const libraries = librarySources(this.librariesFor(files));
+        compiled = await this.compiler({ files, names: map.names, entries: brought.entries, ...(Object.keys(libraries).length ? { libraries } : {}) }, this.dist());
         if (!compiled.ok) {
           const fault = compiled.diagnostics[0];
           const c = fault && brought.of.get(fault.file);
@@ -592,8 +701,11 @@ export class ScriptService {
     const archived = hashFiles(this.state()?.files ?? {});
     // (And whether TrigScript's own build takes the programs for this map: the apply writes the answer into the manifest.)
     const own = this.ownCheck();
-    const compiled = await this.compiler({ files, names: map.names, ...(tests ? { tests } : {}), ...(sounds ? { sounds } : {}), ...(own ? { own } : {}) }, this.dist());
-    const artifact = { files, compiled, document, context: map.context, archived };
+    // The libraries the files import: the map's copies, and what a plugin provides of one the map has no copy of yet.
+    const libraries = this.librariesFor(files);
+    const sources = librarySources(libraries);
+    const compiled = await this.compiler({ files, names: map.names, ...(tests ? { tests } : {}), ...(sounds ? { sounds } : {}), ...(own ? { own } : {}), ...(Object.keys(sources).length ? { libraries: sources } : {}) }, this.dist());
+    const artifact = { files, compiled, document, context: map.context, archived, libraries };
     this.lastArtifact = artifact;
     return artifact;
   }
@@ -607,7 +719,7 @@ export class ScriptService {
    * `takeOver` replaces the whole trigger list with the script's.
    */
   install(artifact: ScriptArtifact, options: BuildOptions = {}): ScriptBuildResult {
-    const { compiled, files } = artifact;
+    const { compiled, files, libraries } = artifact;
     const refuse = (refused: BuildRefusal): ScriptBuildResult => ({ compiled, block: null, refused });
     if (!this.api.document.isOpen()) return refuse("closed");
     if (this.documentId() !== artifact.document) return refuse("switched");
@@ -618,16 +730,19 @@ export class ScriptService {
     const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
     let block: ScriptBlock | null = null;
     let replaced: ScriptBuildResult["replaced"];
+    const keptBefore = JSON.stringify(this.libraryStatus());
     this.api.document.update("Apply TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
       const intern = (text: string) => tx.strings.intern(text);
-      const plan = buildScript(tx.triggers.list(), before, files, compiled, intern, { ...options, keepFiles });
+      // The libraries the script was compiled with become the map's copies: it builds with them wherever it is opened.
+      const plan = buildScript(tx.triggers.list(), before, files, compiled, intern, { ...options, keepFiles, libraries });
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block = plan.block;
       replaced = plan.replaced;
     });
     this.claim.refresh();
+    if (JSON.stringify(this.libraryStatus()) !== keptBefore) this.librariesChanged();
     if (block) {
       const b: ScriptBlock = block;
       const n = compiled.ir.length;

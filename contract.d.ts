@@ -1,7 +1,8 @@
 /**
  * The `trigscript.build` service, as other plugins see it (TrigScript 4): TrigScript as the library other plugins
  * build their programs through. Types only: take this file with `import type` and reach the object through
- * `api.services.watch("trigscript.build", …)`. The provider's `ServiceInfo.version` is 1 for this shape.
+ * `api.services.watch("trigscript.build", …)`. The provider's `ServiceInfo.version` is 2 for this shape (1 had no
+ * `provideLibrary`).
  *
  * A plugin whose rows need code in the map writes them as TrigScript source — `program(() => { … })` bodies, the
  * language the guide describes — and *contributes* them: on Save, Test Map and an export TrigScript compiles them with
@@ -47,6 +48,28 @@ export type TrigScriptBuildEvent =
   /** What the map maker should hear of beyond the log: a trigger of the map's own left out or never run. */
   | { kind: "warning"; message: string };
 
+/**
+ * A library for scripts to import (service version 2): TrigScript modules by path, imported by the library's id —
+ * `import { patrol } from "stamps/patrol"` is the module `patrol.ts`, `import { … } from "stamps"` is `index.ts`. A
+ * module may import the library's other modules (`./waves`), another library ("other/x") and the standard library
+ * ("trigscript/…"). It joins a script's files only when something imports it, so a `program()` at its top level runs
+ * in the maps that import it and no others.
+ *
+ * A map copies the modules it imports when its script is applied, and builds with that copy from then on, wherever
+ * it is opened and whether this plugin is installed there or not. A newer version provided later is offered to the
+ * map maker as an update; it never replaces the copy by itself.
+ */
+export interface TrigScriptLibrary {
+  /** What a script imports it by: lower-case letters, digits and "-", starting with a letter, up to 40; never "trigscript". */
+  id: string;
+  /** What the editor calls it ("Stamp Library"). */
+  label: string;
+  /** The library's version, as the map maker reads it ("1.2.0"). */
+  version: string;
+  /** Each module's TrigScript source by its path in the library, ending in .ts or .tsx: "patrol.ts", "ai/waves.tsx". No test files. */
+  modules: Record<string, string>;
+}
+
 export interface TrigScriptBuildService {
   /** The plugin's version. */
   versions: { plugin: string };
@@ -56,6 +79,11 @@ export interface TrigScriptBuildService {
   onBuild(listener: (event: TrigScriptBuildEvent) => void): { dispose(): void };
   /** Compile a contribution's source against the open map without building: for a contributor's own preflight. */
   check(files: Record<string, string>, entries: string[]): Promise<TrigScriptContributionCheck>;
+  /**
+   * Hold a library out for scripts to import while the handle lives; the second of one id replaces the first. Throws
+   * an `Error` saying what is wrong with a library it cannot take. Service version 2.
+   */
+  provideLibrary(library: TrigScriptLibrary): { dispose(): void };
 }
 
 /** The service name, as `api.services.get` / `watch` take it. */

@@ -51,6 +51,17 @@ export const STDLIB_DIR = "__trigscript__";
 /** A module of the standard library among the script's files: its extension is `.tsx` when it has JSX in it (`stdlib.ts#STDLIB_EXT`). */
 export const stdlibFile = (name: string, ext: ".ts" | ".tsx" = ".ts") => `${STDLIB_DIR}/${name}${ext}`;
 
+/** Where another plugin's libraries sit among a script's files: "stamps/patrol" is `__libraries__/stamps/patrol.ts` (`libraries.ts`). */
+export const LIBRARY_DIR = "__libraries__";
+
+/** The file a bare specifier ("stamps/patrol", "stamps") names among a library's files: `.ts`, `.tsx`, `/index.ts(x)`. Null when none. */
+export function libraryModule(files: ReadonlySet<string>, spec: string): string | null {
+  if (spec.startsWith(".") || spec.startsWith("/")) return null;
+  const path = `${LIBRARY_DIR}/${spec}`;
+  for (const candidate of [path, `${path}.ts`, `${path}.tsx`, `${path}/index.ts`, `${path}/index.tsx`]) if (files.has(candidate)) return candidate;
+  return null;
+}
+
 /**
  * Run the entry module with the library in scope. Resolves to null when the script ran
  * to the end, else to the error it threw, located when possible.
@@ -76,11 +87,14 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
       // A video, an image or a sound (`media.ts`): the value its file gives, by the path the import names.
       const asMedia = spec.startsWith(".") && options.media ? options.media(resolvePath(file, spec)) : undefined;
       if (asMedia !== undefined) return { __esModule: true, default: asMedia };
+      // Another plugin's library ("stamps/patrol"): among the files when imported, as the standard library is.
+      const ofLibrary = libraryModule(names, spec);
+      if (ofLibrary) return load(ofLibrary);
       const target = resolveModule(names, file, spec);
       if (!target) {
         throw new Error(spec.startsWith(".")
           ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.`
-          : `Cannot import "${spec}": a script imports its own files (./name), "${moduleName}" and the standard library ("${moduleName}/fog").`);
+          : `Cannot import "${spec}": a script imports its own files (./name), "${moduleName}", the standard library ("${moduleName}/fog") and the libraries other plugins provide ("name/module").`);
       }
       return load(target);
     };

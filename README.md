@@ -454,7 +454,7 @@ passed over in silence.
 | `enum`, `const enum`, `namespace` | Same | Their members are numbers and constants known when the script is built. |
 | `try` / `catch` / `finally` / `throw` | Mostly | `throw` takes an `Error`, a `RangeError`, a `TypeError` or an instance of a class that extends one. An error nothing catches is said in the game in red, and the program stops. A caught error is not kept in a variable, an array or a field. |
 | `async` / `await`, promises, generators | Mostly | `await` of `sleep()`, `until()`, an async call, a task, `Promise.all`, `race` and `any`; `.then`; `function*`, `yield*`, `for await`. A race's losers stop where they are, where JavaScript lets them run on. No `setTimeout` or `setInterval`: `trigscript/timers` has `after` and `every`. |
-| Modules | Same | `import` between the script's files, from `"trigscript"` and from the standard library (`"trigscript/math"`, …), and of videos, images, sounds and MIDI notes the Explorer imported; nothing from npm. |
+| Modules | Same | `import` between the script's files, from `"trigscript"`, from the standard library (`"trigscript/math"`, …) and from [libraries other plugins provide](#libraries-from-other-plugins) (`"waves"`), and of videos, images, sounds and MIDI notes the Explorer imported; nothing from npm. |
 | The standard library | Some | `Math.min`, `max`, `abs`, `sqrt`, `hypot`, `sin`, `cos`, `tan`, `atan`, `atan2`, `floor`, `ceil`, `round`, `trunc`, `sign`, `log2`, `pow` by a known power; `String(n)`, `n.toString()`, `parseInt`, `isNaN`, `Array.from`, `new Array(n).fill(v)`. For `console.log` there is `print()`, for `Math.random()` there is `random(n)`. Inside a program `Math.random()`, `Date.now()` and `new Date()` are refused, since they would be worked out once when the map is built; game time is `elapsed()` or `memory.game.frame`. No `JSON`, `Date` or `RegExp`. |
 | — | Added | What TypeScript has no word for: `sleep`, `rose` and `once`; reads of the game (`minerals(p)`); `Unit` objects and loops over units; events (`on.died`, …); `stats()` and `memory`; `keyPressed`, `keyHeld`, `clicked`, `mouse`, `chatted`, `local` and `sync()`; `shared()` and per-player programs. |
 
@@ -1995,6 +1995,43 @@ and `cutscene` each take one of the map's first 63 locations that the map does n
 with `reserveLocation(why)`. A script of your own can call it too: the location is chosen
 when the script is built, and the reason is what the map's requirements show.
 
+#### Libraries from other plugins
+
+Another plugin can provide a library of its own: TrigScript modules a script imports by
+the library's name, the way it imports the standard library by `trigscript/…`.
+`import { spawnWave } from "waves/spawn"` is the module `spawn` of the library `waves`, and
+`import { spawnWave } from "waves"` is its `index`. While the plugin is on, the editor
+completes the library's names and its hovers show the library's own source and comments.
+
+```typescript
+import { announce, spawnWave } from "waves";
+
+program(() => {
+  for (let wave = 1; wave <= 5; wave++) {
+    announce(`Wave ${wave}`);
+    spawnWave(P2, units.ZergZergling, wave, locations.Spawn);
+    sleep(seconds(20));
+  }
+});
+```
+
+**The map keeps its own copy.** When the script is applied (saving does it), each library
+the script imports is copied into the map, under `trigscript\@libraries\<name>\` beside
+the script's files, and from then on the map builds with that copy. A map opened where the
+plugin is not installed still builds, and so does a map shared with someone who has a
+different version of the plugin. A library the script stops importing leaves the map with
+the next apply.
+
+**A newer version is offered, not taken.** When the plugin installed here has a different
+version from the map's copy, the editor says so and offers *Update*, which replaces the
+copy. The script then reads as changed, and the next save builds with the new copy. *Keep
+the map's copy* leaves it as it is.
+
+A library is TrigScript like the script's own files, and runs with the same rights: a
+library in a map from someone else is no different from that map's own script. A module of
+a library joins the build only when something imports it, so a `program()` written at the
+top of a module runs only in the maps that import that module.
+
 #### What a program does not have
 
 Outside `program()` the script is all of TypeScript, since it simply runs. Inside one, what
@@ -2212,12 +2249,14 @@ as they are) or an object of every file by path.
 
 | Command | |
 | --- | --- |
-| `trigscript.state()` | `{ files, source, manifest, block, stale, edited, unbuilt, programs }`: the map's script files, `main.ts` on its own, where the script's block sits in the trigger list (null when the records were edited by hand: `stale`, with `edited` counting how many are still the script's and how many changed, when that can be told), whether the files differ from what was last applied, and how many programs the script had then (any means the saved map has programs built into it and needs StarCraft: Remastered). Null with no map. |
+| `trigscript.state()` | `{ files, source, manifest, block, stale, edited, unbuilt, programs, libraries }`: the map's script files, `main.ts` on its own, where the script's block sits in the trigger list (null when the records were edited by hand: `stale`, with `edited` counting how many are still the script's and how many changed, when that can be told), whether the files differ from what was last applied, and how many programs the script had then (any means the saved map has programs built into it and needs StarCraft: Remastered), and the libraries the map keeps a copy of (`{ id, label, version }`). Null with no map. |
 | `trigscript.declarations({ compact? })` | The generated `.d.ts` the script type-checks against: the whole vocabulary for this map. `compact` is the shorter variant meant for a language model. Empty with no map. |
 | `trigscript.compile(source)` | A promise of a `CompileResult`: `ok`, `diagnostics` (`file`, 1-based `line` / `column`, `message`, `source: "typescript"`, `"compiler"` or `"script"` for an error the script threw), the `trigger()` records, `sources` (per record, the file and line it came from), the `programs` and their `variables`, `ir` (the programs as IR, what the build lays out), `hints` per line, and `refs`: every `locations.X` / `switches.X` the files mention, resolved by the checker, present even when the script does not type-check. A newer compile supersedes an unfinished one, which rejects with `CompileSuperseded`. |
 | `trigscript.build(source, { takeOver?, replaceStale? })` | Apply: compile and, when clean, write the `trigger()` records as the block and store the files with the map (the programs are built into the file when the map is saved): a promise of `{ compiled, block, refused?, replaced? }`. The build lands only on the map it was compiled for: `block` is null and `refused` says why when there were `"errors"`, the map `"closed"` or another one `"switched"` to the front while the script ran, or the map's names `"changed"` under it (that one is compiled again, twice at most, before it is reported). Files edited in the archive while the script ran are kept, and the state then reads as unbuilt. When the old block was edited by hand, the new one is appended, or with `replaceStale` put in the old one's place with its unchanged records removed and the edited ones kept after it (`replaced` counts both). `takeOver` replaces the whole trigger list with the script's. A settings-style transaction: not undoable, marks the map modified. |
 | `trigscript.print(triggers, { imports?, header? })` | Records as `trigger()` calls in the script language: what Import map triggers writes. `imports` starts the text with an import of the names it uses. |
 | `trigscript.simulate(triggers, cycles, { player? })` | The interpreter: `{ cycles, events, switches }`. |
+| `trigscript.libraries()` | The [libraries](#libraries-from-other-plugins) the open map keeps a copy of and the ones plugins provide, side by side: `{ id, label, version, provided, update }`, with `version` the map's copy (null when it keeps none), `provided` what a plugin has now (null when none does), and `update` true when the two differ. |
+| `trigscript.updateLibraries(ids?)` | Replace the map's copies of these libraries (every one with a newer version provided, by default) with what their plugins provide now; the ids it updated. The map is modified and the script reads as changed. |
 | `trigscript.triggerAt(file, line)` | Which trigger (index in the map's list) a 1-based line of a file generated; null when none did or the block is stale. |
 | `trigscript.open({ file?, line? })` | Open the editor, on a file and line. |
 
@@ -2252,6 +2291,37 @@ only; a `trigger()` in it fails the build, since nothing would write it into the
 the plugin's own preflight: the problems at their file and line, and how many programs.
 `onBuild` says how each build went, with `from` naming the contribution a failure was in.
 Magenta's build rows reach the map this way.
+
+### Providing a library
+
+A plugin can give scripts a library to import ([Libraries from other
+plugins](#libraries-from-other-plugins)) through the same service, from version 2 of it
+on: `provideLibrary` takes the library's id, which is what scripts import it by, a label
+and version for the editor to show, and each module's TrigScript source by its path in the
+library.
+
+```typescript
+api.services.watch<TrigScriptBuildService>("trigscript.build", (build, info) => {
+  held?.dispose();
+  held = build && (info?.version ?? 1) >= 2
+    ? build.provideLibrary({ id: "waves", label: "Waves", version: "1.0.0", modules: { "index.ts": INDEX, "spawn.ts": SPAWN } })
+    : null;
+});
+```
+
+- **The id** is lower-case letters, digits and `-`, starting with a letter. `trigscript` is
+  taken. A second library with the same id replaces the first.
+- **A module** ends in `.ts` (or `.tsx` for JSX) and may sit in folders (`ai/waves.ts`). It
+  imports the library's other modules by a relative path (`./spawn`), another library by its
+  id, and `"trigscript"` and the standard library as a script does. Test files are refused:
+  the script's tests would run them.
+- **The version** is what the map maker sees beside the map's copy. Change it with every
+  release, so a map with an older copy is offered the update.
+
+A plugin cannot import a `.ts` file as text, so the modules travel as strings.
+[`examples/library`](examples/library) is a complete library plugin to copy: its TrigScript
+is in `lib/`, `node embed.mjs` writes it into `modules.ts`, and `plugin.ts` provides it. It
+installs as it is from `github:scm-js/plugin-trigscript/examples/library`.
 
 ## Development
 

@@ -6581,6 +6581,48 @@ Ship order for every release, as for 3.x: plugin commit and tag → scm-js pin, 
 guide and catalogue note → registry → ai-server prompt. Anything scm-sim needs (A0's
 build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
 
+## Libraries from other plugins (built 2026-10-25)
+
+The user (2026-10-25): "if someone makes another plugin they can offer libraries/etc people can import easily into
+trigscript". Branch `libraries`.
+
+**As built.** A library is TrigScript source, not JavaScript: a program's code is compiled, so a function of another
+plugin's could never run in the game. A plugin provides one through `trigscript.build` (service version 2):
+`provideLibrary({ id, label, version, modules })`, modules by path (`.ts`/`.tsx`, folders, no test files; the id lower
+case, never `trigscript`). A script imports `"<id>/<module>"`, or `"<id>"` for `index`.
+
+- *Compiler* (`compiler/libraries.ts`): `CompileOptions.libraries` by id; `libraryImports` follows the imports from the
+  script's files (bare `<id>/…`, and relative ones inside a library) and only those modules join the files, at
+  `__libraries__/<id>/…`, before the standard library's scan (a library may import `trigscript/…`). `paths` gets
+  `<id>/*` and `<id>`; the linker resolves a bare specifier among `__libraries__/`; a missing library or module is
+  TypeScript's "Cannot find module" plus a line saying where one comes from.
+- *The map's copy* (`script.ts`): `trigscript\@libraries\<id>\` holds the whole library and `library.json`
+  (label, version); "@" keeps it out of the script's own files (`pathOf`). Applying writes exactly the libraries the
+  compile used (a library no longer imported goes); the manifest's `sourceHash` is `hashSources(files, libraries)`,
+  which is `hashFiles` when there are none, so every older manifest still matches. A compile takes the map's copy
+  first, then what a plugin provides: a map builds with its copy wherever it is opened, plugin or not.
+- *Updates* never happen by themselves: the editor's notice (*Keep the map's copy* / *Update*) when a provided
+  version differs; `updateLibraries` replaces the copy and the script reads as changed. Commands `trigscript.libraries`
+  and `trigscript.updateLibraries`; `state()` lists the copies.
+- *Editor*: each library's modules are Monaco extra libs at `node_modules/<id>/…` (completion, hovers, go to
+  definition), refreshed when a plugin provides or withdraws one.
+- *Example*: `examples/library` ("waves"), installable as `github:scm-js/plugin-trigscript/examples/library`.
+- Played in the editor (dev server with this branch as the built-in TrigScript, the compiler bundle served
+  locally): import → 0 problems and the library's hover; Apply; Save As → the archive holds
+  `trigscript\@libraries\waves\…`; reopened with the example at 1.1.0 → the notice, *Update* → "Changes not
+  applied"; reopened with the example not installed → 0 problems, still built.
+
+**Open:**
+- *A Libraries view* in the workspace: what is installed, what the map keeps, each module's exports with their doc
+  comments, Update per library. Today only the notice and the two commands say it.
+- *A library's cost* in the cost report, by library: a module with a `program()` costs every frame once imported.
+- *Media in a library* (`.image`, `.sound`, `.video`, `.notes`): refused by the module path rule today; the compiler
+  already takes them as script files, so it is the copy and `libraryImports` that would grow.
+- *A template repository* to copy instead of `examples/library`, and a way for a library's own repository to run
+  TrigScript's checks and tests on it (the compiler as a package, or `check()` from a script).
+- *Libraries without a plugin* (a GitHub folder of `.ts` files read the same way as the map's copy): not started.
+- *scm-js*: the guide's TrigScript page and `docs/plugins.md` say nothing of libraries until a release pins this.
+
 ## Work outside this repository
 
 - **scm-sim:** the EUD-permitting module build (A0); the trigger hooks (A1); `run(…)` with

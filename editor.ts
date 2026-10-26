@@ -44,7 +44,7 @@ import {
   type LocationRef, type MonacoApi, type ScriptEditor, type ScriptWarning,
 } from "./monaco";
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
-import { FILE_NAME } from "./script";
+import { FILE_NAME, librarySources } from "./script";
 import { isMachineLine, readTriggerMap, readVariableMap } from "./compiler/gameVariables";
 import { mergeCopies } from "./compiler/gameCopies";
 import { costByLine, shortCount, shortMs, type TestCost } from "./compiler/gameCost";
@@ -1276,6 +1276,21 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     ] });
   };
 
+  /** A plugin provides a newer version of a library than the map keeps: said once per state, until the map maker chooses. */
+  let librariesShown = "";
+  const showLibraries = () => {
+    const newer = svc.libraryStatus().filter((l) => l.update);
+    if (newer.length === 0) { librariesShown = ""; shell.dismiss("libraries"); return; }
+    const signature = JSON.stringify(newer);
+    if (signature === librariesShown) return;
+    librariesShown = signature;
+    const list = newer.map((l) => t("{label} {version} (installed: {provided})", { label: l.label, version: l.version || "?", provided: l.provided || "?" })).join(", ");
+    shell.notify({ key: "libraries", kind: "info", text: t("The map builds with its own copy of {n, plural, one {a library} other {# libraries}}, and the plugin installed here has another version: {list}. The copy stays until you update it.", { n: newer.length, list }), actions: [
+      { label: t("Keep the map's copy"), run: () => {} },
+      { label: newer.length === 1 ? t("Update") : t("Update all"), primary: true, run: () => { svc.updateLibraries(newer.map((l) => l.id)); } },
+    ] });
+  };
+
   const renamedNow = () => renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} → ${r.object}.${x.to}`));
   let renamesShown = "";
   const showRenames = (again = false) => {
@@ -1350,6 +1365,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     renderSimulation();
     showStale();
     showRenames();
+    showLibraries();
   };
 
   const applyResult = (r: CompileResult, asked?: TestRunOptions) => {
@@ -1881,7 +1897,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         else renames.push({ object, list });
       }
     }
-    if (monaco && generated) setDeclarations(monaco, generated.decls);
+    if (monaco && generated) setDeclarations(monaco, generated.decls, librarySources(svc.libraries()));
+    render();
+    check();
+  };
+
+  /** A plugin provided a library or withdrew one, or the map's copies changed: what the script can import is different. */
+  const refreshLibraries = () => {
+    if (cancelled) return;
+    if (monaco && generated) setDeclarations(monaco, generated.decls, librarySources(svc.libraries()));
     render();
     check();
   };
@@ -1961,6 +1985,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const releaseWorker = retainCompileWorker();
     const subs = [
       svc.onBuild(onOwnBuild),
+      svc.onLibraries(refreshLibraries),
       api.events.on("settings", refreshNames),
       api.events.on("locations", refreshNames),
       api.events.on("triggers", refreshNames),
@@ -1971,7 +1996,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       (m) => {
         if (cancelled) return;
         monaco = m;
-        if (generated) setDeclarations(m, generated.decls);
+        if (generated) setDeclarations(m, generated.decls, librarySources(svc.libraries()));
         setHoverVariables(m, () => result?.variables ?? []);
         setLineHints(m, () => [...(result?.hints ?? []), ...costHints(), ...eudHints(), ...debug.hints()]);
         setMapRefs(m, mapRefs);

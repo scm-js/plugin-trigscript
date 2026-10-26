@@ -13,7 +13,7 @@ import { openScriptEditor, relabelScriptEditor } from "./editor";
 import { msg } from "./i18n";
 import { KO } from "./ko";
 import { VERSION } from "./version";
-import { ScriptService, type ScriptInput } from "./service";
+import { BUILD_SERVICE_VERSION, ScriptService, type ScriptInput } from "./service";
 
 export default function activate(api: PluginApi) {
   // The plugin's words in the editor's language. Menu labels and command titles stay English, marked with msg(): the editor translates them where it draws them.
@@ -40,12 +40,15 @@ export default function activate(api: PluginApi) {
   api.commands.register({ id: "build", title: msg("TrigScript: build"), run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true, replaceStale: isRecord(options) && options.replaceStale === true }) });
   api.commands.register({ id: "print", title: msg("TrigScript: print records as script"), run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : undefined) });
   api.commands.register({ id: "simulate", title: msg("TrigScript: simulate records"), run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : undefined }) });
+  api.commands.register({ id: "libraries", title: msg("TrigScript: libraries"), run: () => svc.libraryStatus() });
+  api.commands.register({ id: "updateLibraries", title: msg("TrigScript: update libraries"), run: (ids) => svc.updateLibraries(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : undefined) });
   api.commands.register({ id: "triggerAt", title: msg("TrigScript: trigger at a source line"), run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
 
   // Save, Test Map and export apply the script first and build its programs — the other plugins' parts too
-  // (`trigscript.build`, the service Magenta contributes its rows through; `contract.d.ts`).
+  // (`trigscript.build`, the service Magenta contributes its rows through and other plugins provide libraries through;
+  // `contract.d.ts`).
   const attached = svc.attach();
-  const provided = api.services.provide("build", svc.buildService(VERSION), { version: 1 });
+  const provided = api.services.provide("build", svc.buildService(VERSION), { version: BUILD_SERVICE_VERSION });
   return () => { provided.dispose(); attached.dispose(); };
 }
 
