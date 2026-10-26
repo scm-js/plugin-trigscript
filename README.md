@@ -2065,10 +2065,17 @@ a message that says so; none is passed over in silence:
 
 ### Coming from 4.0
 
-Nothing of the language has changed. 4.0.1 builds a script with a long list known when it
-is built, such as a video played in the fog: 4.0.0 refused one of more than 16,384 values
-wider than six bits ("arrays and stacks of … cells, past the 65536"), and now reads it
-where it is in the map, four bytes a value.
+A 4.0 script builds into the same map. What 4.1 changed:
+
+- **Libraries from other plugins.** A plugin can provide TrigScript modules that a script
+  imports by id (`import { spawnWave } from "waves"`), and the map keeps a copy of each one
+  it imports, so it still builds where that plugin is missing or at another version
+  ([Libraries from other plugins](#libraries-from-other-plugins), [Providing a
+  library](#providing-a-library)). `trigscript.build` is service version 2.
+- **Long lists known when the script is built** are built, such as a video played in the
+  fog: 4.0 refused one of more than 16,384 values wider than six bits ("arrays and stacks
+  of … cells, past the 65536"), and now reads it where it is in the map, four bytes a
+  value.
 
 ### Coming from 3.12
 
