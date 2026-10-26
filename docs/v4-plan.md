@@ -5937,6 +5937,20 @@ Left out, on purpose: `{rest:text}` chat capture (Magenta's `^…$` patterns sta
 noclip / cooldownUpgrade (a cloak write showed nothing; the others are not in the renderer's list), the camera and the
 bgm (the renderer's: `centerView` each frame, and the sound library).
 
+**Part C merged (#67), B merged (plugin-magenta#1), D built (2026-10-25, plugin-magenta PR `probe-maps-ts`).** The
+renderer takes every row: hallucinate, the speed upgrade, a matrix, build time and rank writes, the has-target /
+in-transport / speed / build-time reads; a slide by an offset, and every moved location, mouse-over and nearest pick
+read `bounds()` in play; the camera is a gliding program of each human's own (`clamp((target − cam) / inertia, ±max)`,
+`reserveLocation` + `centerView`), the music a per-human `playWav(path, ms); sleep(frames(len · 24))` loop. Probe maps
+6, 7, 11 and a new 12 (the two options) are built by `scripts/make-probe-maps.mts --build` through this repository's
+compiler and `buildOwnMap` (TRIGSCRIPT_DIR), each with an answer sheet, and ran 1,500 frames in the lifted game with
+no access Remastered ends a game on; map 10 is gone (terrain rewrite and tint failed in Remastered and left Magenta's
+model). Plays in Remastered decide: the matrix write (250 points at +0x112, timer at +0x114), the speed-upgrade and
+hallucination flags, rank (+0x8E), build time (+0xAC), the in-transport and has-target reads, the camera's glide and
+the loop's seams. Cost to look at: a map with any input carries ~6,800 triggers a frame (map 7), the input machinery's
+— the perf slice's business. Open in C: `{rest:text}` chat capture; cloak / noclip / cooldownUpgrade writes. After the
+plays: the 4.0 tag, Magenta's release on it, eudplib out of scm-js's defaults/registry/docs, the repository archived.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
