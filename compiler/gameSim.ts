@@ -206,7 +206,9 @@ class GameUnit implements SimUnit {
   get hasTarget() { return this.read("hasTarget", () => this.m.getUint32(this.at + 0x5c, true) !== 0); }
   get inTransport() { return this.read("inTransport", () => this.flag(0x00000040)); }
   // Not read from the game yet: the spell timers and whether the unit is under attack.
-  stim = 0; ensnare = 0; plague = 0; lockdown = 0; maelstrom = 0; irradiate = 0; stasis = 0; underAttack = false;
+  stim = 0; ensnare = 0; plague = 0; lockdown = 0; maelstrom = 0; irradiate = 0; stasis = 0;
+  /** The attack-notify timer (+0x87) running: the game raised its under-attack alert for the unit within the last second or so. */
+  get underAttack() { return this.read("underAttack", () => this.game.u8[this.at + 0x87] !== 0); }
 }
 
 export class GameSim implements TestWorldLike {

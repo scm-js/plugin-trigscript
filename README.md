@@ -1456,11 +1456,14 @@ if (target) target.order("move", locations.Exit);
 
 A unit has `hp`, `shields` and `energy` in whole points, `maxHp` / `maxShields` of its
 type, `owner`, `type`, `x`, `y`, `kills`, `orderId`, `cooldown`, `resources` (a mineral
-field's), `buildTime` (frames left of its making), `rank`, `matrix` (frames left of a
+field's), `buildTime` (frames left of its making; a building finished early keeps the hit
+points it had reached, and a Terran one under a third burns, so heal it after), `rank`, `matrix` (frames left of a
 defensive matrix), `speed` (how fast it is moving now, in 256ths of a pixel a frame), the
 timers `stim` `ensnare` `plague` `lockdown` `maelstrom` `irradiate` `stasis` in the game's
 own ticks, and the booleans `invincible`, `hallucinated`, `speedUpgrade`, `cloaked`,
-`burrowed`, `underAttack`, `hasTarget` (its order is aimed at a unit) and `inTransport`.
+`burrowed`, `underAttack` (the game raised its under-attack alert for it within the last
+second or so, which it does for a hit out of the player's view, not one on screen),
+`hasTarget` (its order is aimed at a unit) and `inTransport`.
 Hit points, shields, energy, kills, the cooldown (the ground weapon's, the air weapon's and
 the spells' at once), the resources, the build time, the rank, the matrix (a write gives
 250 points of matrix for that many frames; 0 takes it away), the timers, `invincible`,

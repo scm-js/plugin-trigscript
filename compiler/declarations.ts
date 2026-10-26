@@ -147,7 +147,11 @@ ${kw}interface Unit {
   readonly orderId: Order;
   /** Frames until the unit can attack or cast again, 0 … 255; writing it holds the unit's fire that long (the ground weapon's, the air weapon's and the spells' alike). */
   cooldown: number;
-  /** Frames left of a unit's or building's making, 0 … 65535; 0 once complete. Writing it lengthens or shortens the making. */
+  /**
+   * Frames left of a unit's or building's making, 0 … 65535; 0 once complete. Writing it lengthens or shortens the making.
+   * A building finished early keeps the hit points it had reached, and a Terran one under a third of its full hit points
+   * burns down (Remastered, played): heal it after.
+   */
   buildTime: number;
   /** The unit's rank, added to the type's (the one shown on its panel: Private, Corporal …), 0 … 255. */
   rank: number;
@@ -173,7 +177,10 @@ ${kw}interface Unit {
   speedUpgrade: boolean;
   readonly cloaked: boolean;
   readonly burrowed: boolean;
-  /** True for about a second after something hit the unit. */
+  /**
+   * True for about a second after the game raised its "under attack" alert for the unit: a hit out of the player's view.
+   * A unit hit on the player's screen does not count — the game keeps no other "recently hit" mark a map may read.
+   */
   readonly underAttack: boolean;
   /** True while the unit's order is aimed at another unit (attacking, following, repairing …). */
   readonly hasTarget: boolean;

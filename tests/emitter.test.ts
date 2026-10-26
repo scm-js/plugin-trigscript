@@ -1481,6 +1481,7 @@ describe("a map of our own, units", () => {
       put(at + 0x38, u.speed ?? 0);
       put(at + 0x5c, u.hasTarget ? 0x700000 + 4 : 0);
       put(at + 0x8e, u.rank ?? 0, 1);
+      if (u.underAttack) put(at + 0x87, 12, 1);
       put(at + 0xac, u.buildTime ?? 0, 2);
       put(at + 0x114, u.matrix ?? 0, 1);
       put(at + 0xdc, (u.invincible ? 0x04000000 : 0) | (u.hallucinated ? 0x40000000 : 0) | (u.speedUpgrade ? 0x10000000 : 0) | (u.inTransport ? 0x40 : 0) | (u.burrowed ? 0x10 : 0));
@@ -1586,7 +1587,7 @@ describe("a map of our own, units", () => {
     const units: SimUnitInit[] = [
       { type: 106, owner: 0, x: 400, y: 300, buildTime: 900, rank: 2, speed: 0 },
       { type: 0, owner: 0, x: 420, y: 340, speed: 1024, hasTarget: true, speedUpgrade: true, matrix: 100 },
-      { type: 0, owner: 0, x: 430, y: 330, inTransport: true, hallucinated: true },
+      { type: 0, owner: 0, x: 430, y: 330, inTransport: true, hallucinated: true, underAttack: true },
     ];
     same([
       "  const cc = first({ type: units.TerranCommandCenter })!;",
@@ -1595,7 +1596,7 @@ describe("a map of our own, units", () => {
       "  let second: Unit | null = null;",
       "  for (const u of unitsOf(P1, { type: units.TerranMarine })) second = u;",
       "  print(`${cc.buildTime} ${cc.rank} ${cc.speed} ${m.speed} ${m.hasTarget} ${m.speedUpgrade} ${m.matrix} ${m.inTransport} ${m.hallucinated}`);",
-      "  if (second) print(`${second.inTransport} ${second.hallucinated} ${second.hasTarget} ${second.speedUpgrade}`);",
+      "  if (second) print(`${second.inTransport} ${second.hallucinated} ${second.hasTarget} ${second.speedUpgrade} ${second.underAttack} ${m.underAttack}`);",
       "  cc.buildTime = 60; cc.rank = 7; m.matrix = 40; m.speedUpgrade = false; m.hallucinated = true; cc.rank += 1;",
       "  print(`${cc.buildTime} ${cc.rank} ${m.matrix} ${m.speedUpgrade} ${m.hallucinated}`);",
       "  m.matrix = 0; cc.buildTime = 70000; m.rank = 300;",
@@ -1614,6 +1615,24 @@ describe("a map of our own, units", () => {
       "  let n = 0;",
       "  for (const u of unitsAt(1 as Location)) n += 1;",
       "  print(`${n}`);",
+    ].join("\n"), UNITS, HOME);
+  });
+
+  it("reads a location's size into consts and writes its edges from them, as Magenta's put-back row does", () => {
+    same([
+      "  const b = bounds(1 as Location);",
+      "  const w = b.right - b.left;",
+      "  const h = b.bottom - b.top;",
+      "  b.left = 576; b.top = 256;",
+      "  b.right = 576 + w; b.bottom = 256 + h;",
+      "  print(`${b.left} ${b.top} ${b.right} ${b.bottom}`);",
+      "  const c = bounds(1 as Location);",
+      "  c.left += 64; c.right += 64;",
+      "  print(`${c.left} ${c.right}`);",
+      "  const d = bounds(1 as Location);",
+      "  const w2 = d.right - d.left;",
+      "  d.left = 100; d.right = 100 + w2;",
+      "  print(`${d.left} ${d.right}`);",
     ].join("\n"), UNITS, HOME);
   });
 

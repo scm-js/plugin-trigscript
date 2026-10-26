@@ -67,7 +67,15 @@ const FIELDS: Partial<Record<UnitNumField, Bits>> = {
   stim: word(0x115, 1), ensnare: word(0x116, 1), lockdown: word(0x117, 1), irradiate: word(0x118, 1), stasis: word(0x119, 1), plague: word(0x11a, 1), maelstrom: word(0x124, 1),
   buildTime: word(0xac, 2), rank: word(0x8e, 1), matrix: word(0x114, 1), speed: word(0x38, 4),
 };
-const HP = 0x08 >> 2, SHIELDS = 0x60 >> 2, ENERGY = word(0xa2, 2), STATUS = 0xdc >> 2, ATTACKED = word(0x87, 1), USER_ACTION = word(0x93, 1);
+const HP = 0x08 >> 2, SHIELDS = 0x60 >> 2, ENERGY = word(0xa2, 2), STATUS = 0xdc >> 2, USER_ACTION = word(0x93, 1);
+/**
+ * "Under attack": the attack-notify timer (+0x87), which the game starts when it raises its "under attack" alert for the
+ * unit — a hit out of the player's view — and runs for about a second. A unit hit on screen in a game played alone does
+ * not show it (Remastered, Magenta probe 6, 2026-10-25). The last-event bytes BWAPI reads instead (+0x8A timer, +0x8B
+ * 174 = was hit) are in a dword Remastered's EUD emulator ends the game on (data/allowlist.json, +0x88), so this is the
+ * one "recently hit" signal a map may read.
+ */
+const ATTACKED = word(0x87, 1);
 /** The status bits a flag is (cloaked: both of two). */
 const FLAG_BITS: Partial<Record<UnitFlag, number>> = { invincible: 0x04000000, hallucinated: 0x40000000, burrowed: 0x10, cloaked: 0x300, speedUpgrade: 0x10000000, inTransport: 0x40 };
 /** The unit an order is aimed at (a pointer, 0 for none), and the defensive matrix's hit points (a word, 256 a point) beside its timer. */
