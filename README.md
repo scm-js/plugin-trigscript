@@ -2026,6 +2026,13 @@ a message that says so; none is passed over in silence:
 | Writing a unit's position, cloak or tint | the game refuses these itself (*Units*) |
 | Playing on the classic game (1.16.1) | `trigger()` only |
 
+### Coming from 4.0
+
+Nothing of the language has changed. 4.0.1 builds a script with a long list known when it
+is built, such as a video played in the fog: 4.0.0 refused one of more than 16,384 values
+wider than six bits ("arrays and stacks of … cells, past the 65536"), and now reads it
+where it is in the map, four bytes a value.
+
 ### Coming from 3.12
 
 A 3.12 script builds into the same map, and its programs now build *without eudplib*:
