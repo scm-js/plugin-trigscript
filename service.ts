@@ -7,31 +7,30 @@
  * the editor's own trigger dialogs write.
  *
  * A script has two outputs. Its `trigger()` calls are ordinary triggers: applying writes
- * them into the map's trigger list as the script's block. Its `program()`s are IR, which
- * the eudplib plugin builds into the *saved file* — never into the map the user edits —
- * so the service contributes them to the library's build (`attach`). Both happen by
- * themselves whenever the map is saved, tested or exported: the editor runs `bringUpToDate`
- * first (`buildSteps.before`), then asks the contribution.
+ * them into the map's trigger list as the script's block. Its `program()`s are IR, built
+ * into the *saved file* — never into the map the user edits — by TrigScript's own build
+ * step (`buildOwn`, `compiler/backend/build.ts`). That happens by itself whenever the map
+ * is saved, tested or exported: the editor runs `bringUpToDate` first (`buildSteps.before`),
+ * then the build step (`attach`). (Until TrigScript 4's step 17 a program the build did not
+ * take went through the eudplib plugin instead; now it is a failure the notice says.)
  */
 import type { PluginApi, TriggerClaimHandle } from "@scm-js/plugin-api";
 import type { TriggerRecord } from "./vendor/triggers";
-import { compileInBackground, type CompileInput } from "./compile";
-import { ENTRY_FILE, type CompileResult, type ScriptDiagnostic, type ScriptFiles } from "./compiler/compiler";
+import { buildInBackground, compileInBackground, type CompileInput } from "./compile";
+import { isRefused, type OwnBuildInput, type OwnBuildOutcome } from "./compiler/backend/build";
+import { ENTRY_FILE, type CompileResult, type OwnCheck, type ScriptDiagnostic, type ScriptFiles } from "./compiler/compiler";
 import { generateDeclarations } from "./compiler/declarations";
-import { serializeIr } from "./compiler/eud";
-import { buildPlugins } from "./compiler/input";
-import { TRIGSCRIPT_PY } from "./compiler/generated/trigscriptPy";
 import { scriptNames, type ScriptNames } from "./compiler/names";
 import { printScript, type PrintOptions } from "./compiler/print";
 import { simulate, type SimulationEvent } from "./compiler/simulate";
 import type { TestResult, TestRunOptions, TestWorld } from "./compiler/testing";
 import { DEFAULT_DIST, DIST_STORAGE_KEY } from "./monaco";
 import {
-  DEFAULT_SETTINGS, buildScript, findBlock, hashFiles, hashText, isScriptMember, readManifest, readSettings, relocateManifest, scriptState, triggerAtLine, withFiles, withSettings, type ScriptSettings,
+  DEFAULT_SETTINGS, buildScript, findBlock, hashFiles, hashText, isBuiltSound, isScriptMember, readManifest, readSettings, relocateManifest, scriptState, triggerAtLine, withFiles, withSettings, type ScriptSettings,
   type BuildOptions, type Extras, type ScriptBlock, type ScriptState,
 } from "./script";
 import { english, msg, type Translate } from "./i18n";
-import { EUDPLIB_SERVICE, type EudplibBuildEvent, type EudplibInput, type EudplibService } from "./vendor/eudplib";
+import { SCM_SIM_SERVICE, type ScmSimEngine } from "./vendor/scmSim";
 
 /**
  * A compile, with what it was compiled *for*: the map it read its names from and the
@@ -92,7 +91,22 @@ export function firstFault(diagnostics: readonly ScriptDiagnostic[]): string {
   return `${d.file}:${d.line} — ${d.message.split("\n")[0]}${diagnostics.length > 1 ? ` (and ${diagnostics.length - 1} more)` : ""}`;
 }
 
-/** The label the editor's notices and the library's install question name the plugin by. */
+/** A contribution's `collect` threw, or brought what it may not: the error carries whose it was. */
+class ContributionError extends Error {
+  readonly contribution: BuildContribution;
+  constructor(contribution: BuildContribution, message: string) {
+    super(`${contribution.label}: ${message}`);
+    this.contribution = contribution;
+  }
+}
+
+/** Where a refusal of the own build points: ", line N" and ", line N of <file>" at its end (`refusedAt` in the emitter). */
+export function refusalAt(refusal: string): { reason: string; line: number | null; file: string | null } {
+  const m = /, line (\d+)(?: of (\S+))?$/.exec(refusal);
+  return m ? { reason: refusal.slice(0, m.index), line: Number(m[1]), file: m[2] ?? null } : { reason: refusal, line: null, file: null };
+}
+
+/** The label the editor's notices name the plugin by. */
 export const LABEL = "TrigScript";
 
 export interface ScriptSimulation {
@@ -112,12 +126,69 @@ export interface MapNames {
 
 /** What compiles a script: `compileInBackground`, or something synchronous in a test. */
 export type Compiler = (input: CompileInput, dist: string) => Promise<CompileResult>;
+/** What builds a map of our own: `buildInBackground`, or `buildOwnMap` itself in a test. */
+export type OwnBuilder = (input: OwnBuildInput, dist: string) => Promise<OwnBuildOutcome>;
 
-/** The script's members as the map holds them, by their stored names. */
+/**
+ * The member the Magenta plugin keeps its triggers in. A Magenta that builds through the eudplib plugin rewrites the
+ * strings section TrigScript's payload sits behind, so the two cannot share a map: while such a Magenta is the one
+ * running (none has contributed to this build, `contribute`), a map with this member in it is not built (`buildOwn`
+ * says so) and Magenta's build runs alone. A Magenta that builds with TrigScript contributes as "magenta".
+ */
+export const MAGENTA_MEMBER = "magenta\\magenta.json";
+const MAGENTA = "magenta";
+
+/**
+ * What another plugin brings to the build (TrigScript as the library, 2026-10-25): TrigScript source of its own,
+ * compiled with the map's script and laid out into the map by the same build — Magenta's rows, say. The copy other
+ * plugins import is `contract.d.ts`.
+ */
+export interface BuildContribution {
+  /** The plugin's id ("magenta"): what the build's events name it by. */
+  id: string;
+  /** What the notice calls it. */
+  label: string;
+  /** Asked on every save: cheap, synchronous, no side effects. */
+  applies(): boolean;
+  /** Its part of the build for the open map as it is now. Throw an `Error` worded for the user. */
+  collect(ctx: { purpose: "save" | "test" | "export"; signal: AbortSignal }): Promise<ContributedScript>;
+}
+
+/**
+ * The files a contribution brings — TrigScript source by path, under a folder of its own (`magenta/…`) so that they
+ * cannot shadow the map's — and which of them run as entries, in order. Their `program()`s are built into the map
+ * after the script's; a `trigger()` in them is a problem (`check`), since nothing writes it into the trigger list.
+ */
+export interface ContributedScript { files: ScriptFiles; entries: string[] }
+
+/** What `check` says of a contribution's source, as a build would compile it: each problem at its file and line. */
+export interface ContributionCheck { problems: { file: string; line: number; column: number; message: string }[]; programs: number }
+
+/** The service other plugins reach as `trigscript.build` (`contract.d.ts` is its published shape). */
+export interface BuildService {
+  versions: { plugin: string };
+  contribute(contribution: BuildContribution): { dispose(): void };
+  onBuild(listener: (event: OwnBuildEvent) => void): { dispose(): void };
+  check(files: ScriptFiles, entries: string[]): Promise<ContributionCheck>;
+}
+
+/**
+ * What a build of the programs says as it goes (`onBuild`): its start, each line of its log, its end or its failure —
+ * and a warning: a trigger of the map's own left out or never run (`OwnBuild.warnings`). (The shape is the eudplib
+ * library's build events, which the editor heard beside these until step 17.)
+ */
+export type OwnBuildEvent =
+  | { kind: "start"; purpose: "save" | "test" | "export"; contributors: string[] }
+  | { kind: "log"; line: string }
+  | { kind: "done"; purpose: "save" | "test" | "export"; contributors: string[]; log: string; chkBytes: number; ms: number }
+  | { kind: "failed"; purpose: "save" | "test" | "export"; contributors: string[]; from: string | null; message: string; log: string }
+  | { kind: "warning"; message: string };
+
+/** The script's members as the map holds them, by their stored names, and the WAVs its last build wrote for its clips. */
 export function snapshotExtras(api: PluginApi): Map<string, Uint8Array> {
   const out = new Map<string, Uint8Array>();
   for (const name of api.document.extras.list()) {
-    if (!isScriptMember(name)) continue;
+    if (!isScriptMember(name) && !isBuiltSound(name)) continue;
     const bytes = api.document.extras.get(name);
     if (bytes) out.set(name, bytes);
   }
@@ -137,15 +208,23 @@ export class ScriptService {
   readonly api: PluginApi;
   readonly claim: TriggerClaimHandle;
   private readonly compiler: Compiler;
+  private readonly builder: OwnBuilder;
+  /** Who hears about the builds TrigScript does itself (`onBuild`). */
+  private readonly ownListeners = new Set<(event: OwnBuildEvent) => void>();
+  /** The other plugins' parts of the build (`contribute`), by id. */
+  private readonly contributions = new Map<string, BuildContribution>();
   private lastManifest: Uint8Array | null | undefined;
   /** The last compile, for a save that comes right after an apply: the same files against the same names need no second compile. */
   private lastArtifact: ScriptArtifact | null = null;
+  /** Builds under way that want the lowering to say where the programs' variables are (`withVariableMap`). */
+  private variableMaps = 0;
   /** The editor's language, for what a person reads in the editor's own trigger editors and notices; what the commands return stays English. */
   private readonly t: Translate;
 
-  constructor(api: PluginApi, open: (file?: string, line?: number) => void, compiler: Compiler = compileInBackground) {
+  constructor(api: PluginApi, open: (file?: string, line?: number) => void, compiler: Compiler = compileInBackground, builder: OwnBuilder = buildInBackground) {
     this.api = api;
     this.compiler = compiler;
+    this.builder = builder;
     const t: Translate = api.i18n ? (text, params) => api.i18n.t(text, params) : english;
     this.t = t;
     this.claim = api.triggers.claim({
@@ -183,19 +262,19 @@ export class ScriptService {
     return scriptState(this.api.triggers.list(), snapshotExtras(this.api));
   }
 
-  /** The eudplib plugin's service, or null when it is not installed or is off. */
-  library(): EudplibService | null {
-    return this.api.services.get<EudplibService>(EUDPLIB_SERVICE);
+  /** The scm-sim plugin's engine, or null when it is not installed or is off: where a script's tests run in the game. */
+  engine(): ScmSimEngine | null {
+    return this.api.services.get<ScmSimEngine>(SCM_SIM_SERVICE);
   }
 
-  /** Called at once and whenever the eudplib plugin arrives or goes. */
-  watchLibrary(listener: (service: EudplibService | null) => void): { dispose(): void } {
-    return this.api.services.watch<EudplibService>(EUDPLIB_SERVICE, (s) => listener(s));
+  /** Called at once and whenever the scm-sim plugin arrives or goes. */
+  watchEngine(listener: (service: ScmSimEngine | null) => void): { dispose(): void } {
+    return this.api.services.watch<ScmSimEngine>(SCM_SIM_SERVICE, (s) => listener(s));
   }
 
   /**
-   * Take part in saving: bring the map's block up to date before its bytes are produced,
-   * and hand the programs to the eudplib plugin's build. Dispose when the plugin goes.
+   * Take part in saving: bring the map's block up to date before its bytes are produced, then build the programs
+   * into the map (TrigScript 4, step 14). Dispose when the plugin goes.
    */
   attach(): { dispose(): void } {
     const before = this.api.document.buildSteps?.before({
@@ -203,18 +282,176 @@ export class ScriptService {
       applies: () => this.api.document.isOpen() && snapshotExtras(this.api).size > 0,
       run: () => this.bringUpToDate(),
     });
-    let mine: { dispose(): void } | null = null;
-    const watch = this.watchLibrary((library) => {
-      mine?.dispose();
-      mine = library?.contribute?.({ id: "trigscript", label: LABEL, applies: () => this.hasPrograms(), collect: () => this.collect() }) ?? null;
+    const step = this.api.document.buildSteps?.add({
+      id: "build", label: LABEL,
+      applies: () => this.hasPrograms() || this.contributionsApply(),
+      run: (input) => this.buildOwn(input),
     });
-    return { dispose: () => { before?.dispose(); mine?.dispose(); watch.dispose(); } };
+    return { dispose: () => { before?.dispose(); step?.dispose(); } };
+  }
+
+  /** Another plugin's standing offer to take part in the build (`BuildContribution`); the second of one id replaces the first. */
+  contribute(contribution: BuildContribution): { dispose(): void } {
+    this.contributions.set(contribution.id, contribution);
+    return { dispose: () => { if (this.contributions.get(contribution.id) === contribution) this.contributions.delete(contribution.id); } };
+  }
+
+  /** Whether any contribution has something for the open map. */
+  contributionsApply(): boolean {
+    if (!this.api.document.isOpen()) return false;
+    for (const c of this.contributions.values()) if (c.applies()) return true;
+    return false;
+  }
+
+  /** The service held out to other plugins as `trigscript.build`. */
+  buildService(version: string): BuildService {
+    return {
+      versions: { plugin: version },
+      contribute: (c) => this.contribute(c),
+      onBuild: (l) => this.onBuild(l),
+      check: (files, entries) => this.check(files, entries),
+    };
+  }
+
+  /**
+   * A contribution's source as a build would compile it, without building: the problems (TypeScript's, the compiler's,
+   * a `trigger()` where only programs go, what the own build does not take), for the contributor's own preflight.
+   */
+  async check(files: ScriptFiles, entries: string[]): Promise<ContributionCheck> {
+    const map = this.names();
+    const at = entries[0] ?? Object.keys(files)[0] ?? ENTRY_FILE;
+    if (!map) return { problems: [{ file: at, line: 1, column: 1, message: this.t("No map is open.") }], programs: 0 };
+    const own = this.ownCheck();
+    const r = await this.compiler({ files: { [ENTRY_FILE]: "", ...files }, names: map.names, entries, ...(own ? { own } : {}) }, this.dist());
+    const problems: ContributionCheck["problems"] = r.diagnostics.map((d) => ({ file: d.file, line: d.line, column: d.column, message: d.message }));
+    if (r.ok && r.triggers.length) problems.push({ file: at, line: 1, column: 1, message: this.t("A contribution holds programs only: its trigger() calls are not written into the map.") });
+    if (r.ok && r.ownRefusal) {
+      const where = refusalAt(r.ownRefusal);
+      problems.push({ file: where.file ?? at, line: where.line ?? 1, column: 1, message: this.t("TrigScript does not take this yet ({reason}).", { reason: where.reason }) });
+    }
+    return { problems, programs: r.ir.length };
+  }
+
+  /** The contributions that apply, collected: their files and entries together, and which contribution each file is. */
+  private async collectContributions(ctx: { purpose: "save" | "test" | "export"; signal: AbortSignal }): Promise<{ files: ScriptFiles; entries: string[]; of: Map<string, BuildContribution> }> {
+    const files: ScriptFiles = {}, entries: string[] = [], of = new Map<string, BuildContribution>();
+    for (const c of this.contributions.values()) {
+      if (!c.applies()) continue;
+      let brought: ContributedScript;
+      try { brought = await c.collect(ctx); } catch (err) { throw new ContributionError(c, err instanceof Error ? err.message : String(err)); }
+      for (const [path, text] of Object.entries(brought.files)) {
+        if (!path.startsWith(`${c.id}/`)) throw new ContributionError(c, this.t("{label} brought the file {file}, which is not under its own folder ({folder}/).", { label: c.label, file: path, folder: c.id }));
+        files[path] = text;
+        of.set(path, c);
+      }
+      entries.push(...brought.entries);
+    }
+    return { files, entries, of };
   }
 
   /** Whether the map's script, as last applied, has programs — read off the manifest, so it costs a save nothing. */
   hasPrograms(): boolean {
     if (!this.api.document.isOpen()) return false;
     return (readManifest(snapshotExtras(this.api))?.programs ?? 0) > 0;
+  }
+
+  /** Why the programs cannot be built into this map, in the user's words — a Magenta that builds through eudplib has triggers in it — or null. */
+  whyNotBuilt(): string | null {
+    if (!this.api.document.isOpen()) return null;
+    if (this.api.document.extras.get(MAGENTA_MEMBER) !== null && !this.contributions.has(MAGENTA)) return this.t("Magenta's triggers are in this map, and this Magenta builds them through eudplib, which rewrites the part of the map TrigScript's programs go into. Update Magenta to the version that builds with TrigScript, or keep the two in different maps.");
+    return null;
+  }
+
+  /** The open map as a map of our own is checked against while the script is typed: who plays, and its size in pixels. */
+  ownCheck(): OwnCheck | null {
+    const scn = this.api.document.scenario();
+    if (!scn) return null;
+    const types = scn.playerTypes.slice(0, 8);
+    return {
+      players: { slots: types.flatMap((type, slot) => (type === OWNER_HUMAN || type === OWNER_COMPUTER ? [slot] : [])), forces: scn.forces.playerForce.slice(0, 8) },
+      humans: types.flatMap((type, slot) => (type === OWNER_HUMAN ? [slot] : [])),
+      width: scn.width * 32,
+      height: scn.height * 32,
+    };
+  }
+
+  /**
+   * The build step: the scenario out of the map Save made (the script applied), the programs laid out into it by
+   * TrigScript itself (`compiler/backend/build.ts`, in the compile worker), the scenario back — the editor lays the
+   * file out with the user's save options and the map's members as they are. What the other plugins contribute
+   * (`contribute`) is compiled with the script and built with it, their programs after the script's. Throws, worded
+   * for the editor's notice, when the script or a contribution does not compile, the build does not take it, or a
+   * Magenta that builds through eudplib has triggers in the map; the map is then saved without its programs.
+   */
+  async buildOwn(input: { map: Uint8Array; purpose: "save" | "test" | "export"; signal: AbortSignal }): Promise<Uint8Array> {
+    const started = Date.now();
+    const contributors = ["trigscript"];
+    const lines: string[] = [];
+    const say = (event: OwnBuildEvent) => { for (const l of this.ownListeners) l(event); };
+    const log = (line: string) => { lines.push(line); say({ kind: "log", line }); };
+    say({ kind: "start", purpose: input.purpose, contributors });
+    let from = "trigscript";
+    try {
+      const state = this.state();
+      const why = this.whyNotBuilt();
+      if (why) throw new Error(why);
+      const brought = await this.collectContributions(input);
+      for (const c of new Set(brought.of.values())) contributors.push(c.id);
+      if (!state?.files && !brought.entries.length) throw new Error(this.t("The map has no script."));
+      const map = this.names();
+      if (!map) throw new Error(this.t("No map is open."));
+      const guard = this.settings().testsGuardBuild;
+      // The map's own script, as the apply compiled it (its tests guard the build when the settings say so).
+      let compiled: CompileResult | null = null;
+      if (state?.files) {
+        const cached = this.lastArtifact;
+        const fresh = cached && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
+        const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : undefined);
+        if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
+        if (guard) this.guardTests(artifact.compiled);
+        compiled = artifact.compiled;
+      }
+      // With contributions: the script and what they bring, compiled together, their entries after the script's.
+      if (brought.entries.length) {
+        const files = { ...(state?.files ?? { [ENTRY_FILE]: "" }), ...brought.files };
+        compiled = await this.compiler({ files, names: map.names, entries: brought.entries }, this.dist());
+        if (!compiled.ok) {
+          const fault = compiled.diagnostics[0];
+          const c = fault && brought.of.get(fault.file);
+          if (c) { from = c.id; throw new Error(`${c.label}: ${firstFault(compiled.diagnostics)}`); }
+          throw new Error(firstFault(compiled.diagnostics));
+        }
+        const contributedTriggers = compiled.sources.filter((s) => s && brought.of.has(s.file)).length;
+        if (contributedTriggers) {
+          const c = brought.of.get(compiled.sources.find((s) => s && brought.of.has(s.file))!.file)!;
+          from = c.id;
+          throw new Error(this.t("{label} brought trigger() calls, and a contribution holds programs only.", { label: c.label }));
+        }
+      }
+      const chk = await this.api.document.sections.chkOf(input.map);
+      const { heapCells, stackDepth } = this.settings();
+      log(brought.entries.length
+        ? this.t("Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map, {contributors} among them", { n: compiled!.ir.length, contributors: [...new Set(brought.of.values())].map((c) => c.label).join(", ") })
+        : this.t("Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map", { n: compiled!.ir.length }));
+      // (With the maps of where the triggers and the variables are, for a test run in the lifted game: `withVariableMap`.)
+      const out = await this.builder({ chk, compiled: { ir: compiled!.ir, strings: compiled!.strings, input: compiled!.input, triggers: [] }, settings: { heapCells, stackDepth }, ...(this.variableMaps ? { maps: true } : {}) }, this.dist());
+      if (isRefused(out)) {
+        const where = refusalAt(out.refused);
+        const c = where.file ? brought.of.get(where.file) : undefined;
+        if (c) { from = c.id; throw new Error(this.t("{label}: TrigScript does not take this yet ({reason}).", { label: c.label, reason: out.refused })); }
+        throw new Error(this.t("The programs were not built: TrigScript does not take this yet ({reason}).", { reason: out.refused }));
+      }
+      for (const line of out.lines) log(line);
+      for (const line of out.maps?.lines ?? []) log(line);
+      for (const message of out.warnings) say({ kind: "warning", message });
+      say({ kind: "done", purpose: input.purpose, contributors, log: lines.join("\n"), chkBytes: out.chk.length, ms: Date.now() - started });
+      return out.chk;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof ContributionError) from = err.contribution.id;
+      say({ kind: "failed", purpose: input.purpose, contributors, from, message, log: lines.join("\n") });
+      throw err;
+    }
   }
 
   /**
@@ -282,33 +519,22 @@ export class ScriptService {
     throw new Error(`Not built: ${failed.length === 1 ? "a test fails" : `${failed.length} tests fail`} — ${testName(first)}: ${first.message ?? "failed"}. (The script's settings make a failing test refuse the build.)`);
   }
 
-  /** The programs for the library's build: the IR as a data file, the lowering as a source, eudTurbo so the game runs them every frame. */
-  async collect(): Promise<EudplibInput> {
-    const state = this.state();
-    if (!state?.files) throw new Error("The map has no script.");
-    const map = this.names();
-    const cached = this.lastArtifact;
-    const guard = this.settings().testsGuardBuild;
-    const fresh = cached && map && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
-    const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : undefined);
-    if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
-    if (guard) this.guardTests(artifact.compiled);
-    return {
-      // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
-      plugins: buildPlugins(artifact.compiled.input, "/work/files/trigscript.json"),
-      sources: { trigscript: TRIGSCRIPT_PY },
-      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings, artifact.compiled.input, this.settings()) },
-    };
+  /**
+   * `run` with every build it starts asked to say where the programs' variables and its triggers are — lines of the
+   * build's log (`compiler/gameVariables.ts`) — for tests in the lifted game to read them and name lines.
+   */
+  async withVariableMap<T>(run: () => Promise<T>): Promise<T> {
+    this.variableMaps++;
+    try { return await run(); } finally { this.variableMaps--; }
   }
 
-  /** Hear about the library's builds (it runs them on Save, Test Map and export): the log, and where a failure points. */
-  onBuild(listener: (event: EudplibBuildEvent) => void): { dispose(): void } {
-    let mine: { dispose(): void } | null = null;
-    const watch = this.watchLibrary((library) => { mine?.dispose(); mine = library?.onBuild?.(listener) ?? null; });
-    return { dispose: () => { mine?.dispose(); watch.dispose(); } };
+  /** Hear about the builds of the programs (on Save, Test Map and export): the log, and where a failure points. */
+  onBuild(listener: (event: OwnBuildEvent) => void): { dispose(): void } {
+    this.ownListeners.add(listener);
+    return { dispose: () => { this.ownListeners.delete(listener); } };
   }
 
-  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names and custom unit names. Null with no map. */
+  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names, custom unit names and sounds. Null with no map. */
   names(): MapNames | null {
     const api = this.api;
     const info = api.document.info();
@@ -322,6 +548,8 @@ export class ScriptService {
       locations: used.map((index) => ({ index, name: api.names.location(index) })),
       switchNames,
       unitCustomName: (id) => custom.get(id) || null,
+      // (A host from before the Sound Editor's API has no sounds() to ask.)
+      sounds: (api.settings.sounds?.() ?? []).map((w) => ({ stringIndex: w.stringIndex, path: w.path })),
     });
     const decls = generateDeclarations(names);
     return { names, decls, context: hashText(decls) };
@@ -354,14 +582,17 @@ export class ScriptService {
   /**
    * Compile into an artifact `install` can check: the files as they are now, against the
    * map in front and its names as they are now (`map`, when the caller already has them —
-   * the editor keeps a copy that follows the map's events).
+   * the editor keeps a copy that follows the map's events). With `sounds`, a build's: its
+   * long clips encoded as Ogg Vorbis for the map, which a check as the user types does not wait for.
    */
-  async prepare(input: ScriptInput, map: MapNames | null = this.names(), tests?: TestRunOptions): Promise<ScriptArtifact> {
+  async prepare(input: ScriptInput, map: MapNames | null = this.names(), tests?: TestRunOptions, sounds = false): Promise<ScriptArtifact> {
     if (!map) throw new Error("No map is open.");
     const files = this.filesOf(input);
     const document = this.documentId();
     const archived = hashFiles(this.state()?.files ?? {});
-    const compiled = await this.compiler({ files, names: map.names, ...(tests ? { tests } : {}) }, this.dist());
+    // (And whether TrigScript's own build takes the programs for this map: the apply writes the answer into the manifest.)
+    const own = this.ownCheck();
+    const compiled = await this.compiler({ files, names: map.names, ...(tests ? { tests } : {}), ...(sounds ? { sounds } : {}), ...(own ? { own } : {}) }, this.dist());
     const artifact = { files, compiled, document, context: map.context, archived };
     this.lastArtifact = artifact;
     return artifact;
@@ -412,7 +643,7 @@ export class ScriptService {
    */
   async build(input: ScriptInput, options: BuildOptions = {}): Promise<ScriptBuildResult> {
     for (let attempt = 0; ; attempt++) {
-      const out = this.install(await this.prepare(input), options);
+      const out = this.install(await this.prepare(input, undefined, undefined, true), options);
       if (out.refused !== "changed" || attempt >= 2) return out;
     }
   }

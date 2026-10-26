@@ -1,6 +1,6 @@
 /**
  * TrigScript: TypeScript kept as files inside the map. Its `trigger()` calls become a block
- * of the map's trigger list; its `program()`s are built into the saved map by the eudplib
+ * of the map's trigger list; its `program()`s are built into the saved map by TrigScript's own
  * plugin. This is the activation: the editor under Triggers, a claim on the generated block
  * so the editor's own trigger editors show it badged and locked, the part it takes in
  * saving (`ScriptService.attach`), and the commands other plugins call
@@ -12,6 +12,7 @@ import type { TriggerRecord } from "./vendor/triggers";
 import { openScriptEditor, relabelScriptEditor } from "./editor";
 import { msg } from "./i18n";
 import { KO } from "./ko";
+import { VERSION } from "./version";
 import { ScriptService, type ScriptInput } from "./service";
 
 export default function activate(api: PluginApi) {
@@ -41,9 +42,11 @@ export default function activate(api: PluginApi) {
   api.commands.register({ id: "simulate", title: msg("TrigScript: simulate records"), run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : undefined }) });
   api.commands.register({ id: "triggerAt", title: msg("TrigScript: trigger at a source line"), run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
 
-  // Save, Test Map and export apply the script first and build its programs; the library's list is not the host's to sweep.
+  // Save, Test Map and export apply the script first and build its programs — the other plugins' parts too
+  // (`trigscript.build`, the service Magenta contributes its rows through; `contract.d.ts`).
   const attached = svc.attach();
-  return () => attached.dispose();
+  const provided = api.services.provide("build", svc.buildService(VERSION), { version: 1 });
+  return () => { provided.dispose(); attached.dispose(); };
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;

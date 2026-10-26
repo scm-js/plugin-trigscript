@@ -10,7 +10,6 @@ import { describe, expect, it } from "vitest";
 import { compileScript, type CompileResult } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { simulatePrograms } from "../compiler/simulateIr";
-import { serializeIr } from "../compiler/eud";
 import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_DEPTH } from "../compiler/ir";
 import { DEFAULT_SETTINGS, SETTINGS_MEMBER, readSettings, withSettings } from "../script";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -141,7 +140,7 @@ describe("arrays that grow", () => {
     const sim = run("let xs = [4, 5, 6]; let v = 5; let at = 9; let none = 9; let has = false; at = xs.indexOf(v); none = xs.indexOf(v + 9); has = xs.includes(6) && !xs.includes(v * 3); let flags = [false, true]; let f = false; f = flags.includes(true); xs.fill(v + 2);");
     expect([sim.value("at"), sim.value("none"), sim.value("has"), sim.value("f")]).toEqual([1, -1, true, true]);
     expect(sim.list("xs")).toEqual([7, 7, 7]);
-    expect(messages("let xs = [1]; xs.splice(0, 1);")[0]).toMatch(/has push, pop, fill, includes, indexOf, length, for…of, and the methods that take a function .*; splice\(\) is not one of them/);
+    expect(messages("let xs = [1]; xs.copyWithin(0, 1);")[0]).toMatch(/has push, pop, shift, unshift, splice, fill, at, includes, indexOf, lastIndexOf, join, length, for…of, and the methods that take a function .*; copyWithin\(\) is not one of them/);
   });
   it("a loop until the array is empty ends when pop()'s value is what empties it", () => {
     const sim = run("const queue: number[] = []; let k = 3; let sum = 0; queue.push(k, 4, 5); while (queue.length > 0) { const v = queue.pop()!; sum += v; }");
@@ -189,13 +188,6 @@ describe("the heap's size is a setting of the map's script", () => {
     expect(withSettings(set, { heapCells: HEAP_CELLS }).size).toBe(0);
     expect(readSettings(new Map([[SETTINGS_MEMBER, new TextEncoder().encode("not json")]]))).toEqual(DEFAULT_SETTINGS);
   });
-  it("goes to the lowering with the IR when an array grows and it is not the default", () => {
-    const grows = compile("const xs: number[] = []; xs.push(1);");
-    expect(JSON.parse(serializeIr(grows.ir, grows.strings, null, { heapCells: 65536 })).heap).toBe(65536);
-    expect(JSON.parse(serializeIr(grows.ir, grows.strings, null, { heapCells: HEAP_CELLS })).heap).toBeUndefined();
-    const fixed = compile("let xs = [1, 2]; xs[0] = 3;");
-    expect(JSON.parse(serializeIr(fixed.ir, fixed.strings, null, { heapCells: 65536 })).heap).toBeUndefined();
-  });
   it("and the interpreter runs out where the game will", () => {
     const r = compile("const xs: number[] = []; let i = 0; while (i < 70000) { xs.push(i); i++; } let n = 0; n = xs.length;");
     const at = (heapCells: number) => simulatePrograms(r.ir, 1, { strings: r.strings, heapCells, maxStepsPerCycle: 1_000_000 }).value("n");
@@ -238,9 +230,9 @@ describe("tables keyed by an id of the game: Record, Map, Set", () => {
     expect(messages("const score: Record<Player, number> = { [P1]: 0 }; for (const p of score) {}").some((m) => /is a Record: it has a value for every key/.test(m) || /iterator|iterable/i.test(m))).toBe(true);
   });
   it("what a key cannot be", () => {
-    // Any number is a key since 3.9 (tests/hash.test.ts); a text is not.
+    // Any number is a key since 3.9 (tests/hash.test.ts); a text of a union since the second sweep (tests/small-gaps.test.ts), any text not.
     expect(messages("const m = new Map<number, number>();")).toEqual([]);
-    expect(messages("const m = new Map<string, number>();")[0]).toMatch(/keys have to be numbers, or ids of the game/);
+    expect(messages("const m = new Map<string, number>();")[0]).toMatch(/keys have to be numbers, ids of the game .* or texts of a union/);
     expect(messages("const score: Record<Player, number> = { [P1]: 0 }; score[CurrentPlayer] += 1;")[0]).toMatch(/CurrentPlayer is not a key of score/);
     expect(messages("const price = new Map<UnitType, number>(); price.forEach(() => {});")[0]).toMatch(/has get, set, has, delete, clear and size; forEach\(\) is not one of them/);
   });
@@ -273,7 +265,7 @@ describe("arrays of records", () => {
   it("what they cannot be", () => {
     expect(messages("let waves = [{ count: 4 }]; waves.push({ delay: 1 });")[0]).toMatch(/count is missing|does not exist|missing/);
     expect(messages("let waves = [{ count: 4 }]; let n = 0; n = waves;")[0]).toMatch(/is an array of records|not assignable/);
-    expect(messages("let waves = [{ count: 4 }]; waves.splice(0, 1);")[0]).toMatch(/has push\(\{ … \}\), pop\(\), length, for…of, and forEach/);
+    expect(messages("let waves = [{ count: 4 }]; waves.copyWithin(0, 1);")[0]).toMatch(/has push\(\{ … \}\), pop\(\), shift\(\), unshift\(\{ … \}\), splice\(…\), length, for…of, and forEach/);
   });
 });
 
@@ -295,6 +287,6 @@ describe("arrays of units", () => {
     expect([sim.value("alive"), sim.value("none"), sim.value("n")]).toEqual([1, 1, 0]);
   });
   it("what they cannot be", () => {
-    expect(messages("const squad: Unit[] = []; const u = first(); if (u) squad.push(u); squad.splice(0, 1);")[0]).toMatch(/An array of units has push\(unit\), pop\(\), length, for…of, and forEach/);
+    expect(messages("const squad: Unit[] = []; const u = first(); if (u) squad.push(u); squad.copyWithin(0, 1);")[0]).toMatch(/An array of units has push\(unit\), pop\(\), shift\(\), unshift\(unit\), splice\(…\), length, for…of, and forEach/);
   });
 });

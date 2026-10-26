@@ -1,0 +1,30 @@
+TrigScript sounds, step 4: Korobeiniki, steered by the game
+===========================================================
+
+(Second build, 18:03: the bass now as loud in the game as it was mixed, and the Space crash turned down with the
+music so it can never push it to clipping. The first build's recording went within 0.2% of full scale once.)
+
+Host it as a multiplayer game, alone, with the game's music OFF. Headphones help. Record it.
+
+This is step 3's B cut into 160 bars (1.68 s each) in four layers: drums, bass, harmony (pad, arpeggio, piano),
+melody. The game plays one bar of each layer at every bar line, as the program says. Nothing is one long song any
+more: each bar is its own sound, starting on its frame, and the bars overlap so nothing is cut off.
+
+1. FIRST, let it play once all the way through WITHOUT touching anything (about 70 s, until "intro" shows again).
+   I will compare that pass against the song bar by bar, to measure how evenly the game starts the bars.
+
+2. THEN play with it:
+     1 2 3 4 5 6 7   jump to a section at the next bar line: intro, verse, build, drop, break, last verse, outro
+     D B H M         drums, bass, harmony, melody: off / on from the next bar line
+     L               loop: a section plays again when it ends (press again: on through the song)
+     Space           a crash on the next bar line
+   Try: loop the verse (2, L), drop out the drums and bring them back, jump to the drop from anywhere (4),
+   hit Space a few times, jump to the break mid-phrase (5), and let the outro end it (7, L off).
+
+What to listen for:
+1. The first pass: does it sound like step 3's B, or can you hear the bars — a stutter, a flam, a click, a gap? ............
+2. Jumps: does a jump land cleanly on the bar line? Does the old section's tail ring into the new one nicely? ............
+3. Layers on and off: clean? Does the mix still sound full with one off? ............
+4. How quick it feels: a jump waits for the next bar line (up to 1.7 s). Too slow for a game? ............
+5. It is about 4 dB quieter than B was: the game adds the bars up itself, with no limiter, so they are turned down
+   to leave room. Too quiet? ............

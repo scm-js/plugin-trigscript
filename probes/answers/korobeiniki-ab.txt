@@ -1,0 +1,32 @@
+TrigScript sounds, step 1: Korobeiniki, A then B
+================================================
+
+Host it as a multiplayer game, alone, with the game's music OFF. Headphones help for B.
+It plays A (32 s), a pause, B (32 s), a pause, and repeats. Start it once, quit when A comes round again.
+A recording is all I need; a sentence or two of what you heard is the rest.
+
+A: how a mixed song went in before: 22 kHz, one channel, a WAV, turned down so it does not clip.
+B: the same notes made at 44 kHz, the parts spread left and right, through the limiter, as Ogg Vorbis.
+   (Lead a little left, the low lead and the arpeggio right, the chords split both ways, drums and bass in the middle.)
+
+The two files are beside this sheet too (korobeiniki-A-before.wav, korobeiniki-B-after.ogg), to compare outside the game.
+
+1. Does B sound better than A? Brighter / clearer top, wider? ............
+2. Anything wrong in B: crackle, clipping, distortion, a dropout? ............
+3. Does B start right when its line of text appears, or late? (The recording tells me too.) ............
+4. Any hitch in the game when B starts (it is a 559 KB Ogg)? ............
+5. B is about 2 dB louder than A at the same peak: too loud next to the game's own sounds? ............
+
+The instruments are still the plain ones (square, saw, triangle, noise drums); making them sound good is step 2.
+This round is about the format, the stereo and the limiter.
+
+Measured from the recording (StarCraft 2026.10.19 - 13.59.06.34.mp4), 2026-10-19
+-----------------------------------------------------------------------------
+- A started at 6.771 s, B at 41.715 s, A again at 76.659 s: 34.944 s apart both times, the 832 frames the script
+  waits to the millisecond. The Ogg starts with the same timing as the WAV, and B cost the game no time (no hitch).
+- B as heard against the file the build wrote: the same within 31.9 dB over the whole 32 s (what the recording's
+  own AAC allows; A, a WAV, came back at 24.5), the worst 100 ms still 19.5 dB: no dropout anywhere.
+- Left and right kept: the recording's L−R follows the file's at 0.996.
+- No clipping: the loudest peaks came back at 0.97 of full scale. The whole is heard 1.08× the file (0.7 dB), the
+  peaks only 1.00–1.05×: something after the game rounds the very top off a little, gently.
+- Q1 and Q5 (does it sound better; too loud?) are for your ears.

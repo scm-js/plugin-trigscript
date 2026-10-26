@@ -30,13 +30,16 @@ export interface SimUnit {
   hp: number; maxHp: number; shields: number; maxShields: number; energy: number;
   kills: number; orderId: number; cooldown: number; resources: number;
   stim: number; ensnare: number; plague: number; lockdown: number; maelstrom: number; irradiate: number; stasis: number;
-  hallucinated: boolean; cloaked: boolean; burrowed: boolean; invincible: boolean; underAttack: boolean;
+  buildTime: number; rank: number; matrix: number; speed: number;
+  hallucinated: boolean; cloaked: boolean; burrowed: boolean; invincible: boolean; underAttack: boolean; speedUpgrade: boolean; hasTarget: boolean; inTransport: boolean;
   /** Still on the map. */
   alive: boolean;
   /** Its place in the unit table, from 0; another unit's once this one is gone. */
   slot: number;
   /** The place's uniqueness byte while this unit is in it. */
   uid: number;
+  /** Once it has died in a fight: the player whose attack killed it (on.killed()). */
+  killedBy?: number;
 }
 export type SimUnitInit = Partial<Omit<SimUnit, "alive" | "slot" | "uid">> & { type: number; owner: number };
 export interface SimBounds { left: number; top: number; right: number; bottom: number }
@@ -126,6 +129,11 @@ export class World {
   /** A unit died by `kill`: the death is the caller's to count, in the table its script's counters are in. */
   onDeath: (unit: SimUnit) => void = () => {};
   private readonly table: (SimUnit | null)[] = [];
+  /**
+   * The free places in the order the game hands them out (scm-sim docs/specs/unit-lists.md, section 3): at the start
+   * slot 0, then 1699, 1698 … 1; a place freed goes in right behind the first, so it is the one after the next.
+   */
+  private readonly free: number[] = [0, ...Array.from({ length: UNIT_SLOTS - 1 }, (_, i) => UNIT_SLOTS - 1 - i)];
   private readonly uids: number[] = [];
   private readonly classOf: (type: number, cls: number) => boolean;
   private readonly properties: (slot: number) => SimUnitProperties | undefined;
@@ -143,11 +151,10 @@ export class World {
 
   /* ── the unit table ── */
 
-  /** A unit on the map, in the lowest free place of the table. Null when the table is full, as the game makes no unit then. */
+  /** A unit on the map, in the place the game hands out next. Null when the table is full, as the game makes no unit then. */
   make(init: SimUnitInit): SimUnit | null {
-    let slot = 0;
-    while (slot < UNIT_SLOTS && this.table[slot]) slot++;
-    if (slot >= UNIT_SLOTS) return null;
+    const slot = this.free.shift();
+    if (slot === undefined) return null;
     // A place used again is not the place it was: what kept the unit that was here compares this byte.
     const uid = this.uids[slot] === undefined ? 0 : (this.uids[slot] + 1) & 0xff;
     this.uids[slot] = uid;
@@ -155,13 +162,18 @@ export class World {
     const shields = init.shields ?? init.maxShields ?? 0;
     const unit: SimUnit = {
       x: 0, y: 0, energy: 0, kills: 0, orderId: 3, cooldown: 0, resources: 0,
-      stim: 0, ensnare: 0, plague: 0, lockdown: 0, maelstrom: 0, irradiate: 0, stasis: 0,
-      hallucinated: false, cloaked: false, burrowed: false, invincible: false, underAttack: false,
+      stim: 0, ensnare: 0, plague: 0, lockdown: 0, maelstrom: 0, irradiate: 0, stasis: 0, buildTime: 0, rank: 0, matrix: 0, speed: 0,
+      hallucinated: false, cloaked: false, burrowed: false, invincible: false, underAttack: false, speedUpgrade: false, hasTarget: false, inTransport: false,
       ...init, hp, maxHp: init.maxHp ?? hp, shields, maxShields: init.maxShields ?? shields, alive: true, slot, uid,
     };
     this.table[slot] = unit;
     this.units.push(unit);
     return unit;
+  }
+
+  /** A unit given to a player. */
+  setOwner(unit: SimUnit, to: number): void {
+    if (unit.alive) unit.owner = to;
   }
 
   /** A unit of a type as the game makes one: the type's hit points and shields, at a point. */
@@ -181,12 +193,19 @@ export class World {
     });
   }
 
-  /** Off the map, its place free for the next unit made. `killed`: it died — counted as a death, and as a kill of `by` when someone is named. */
-  gone(unit: SimUnit, killed: boolean, by?: number): void {
+  /**
+   * Off the map, its place free for the next unit made. `killed`: it died. `fought`: it died in the game — shot, or
+   * killed by a spell — and so counts as a death, and as a kill of `by` when someone is named. A unit a trigger or a
+   * program kills (Kill Unit, a unit's kill(), hit points written down to 0) dies without counting: the lifted game
+   * says so for all three (TrigScript 4, A2, 2026-10-16), as the editor's trigger reference does for Kill Unit.
+   */
+  gone(unit: SimUnit, killed: boolean, by?: number, fought = true): void {
     if (!unit.alive) return;
     unit.alive = false;
-    if (this.table[unit.slot] === unit) this.table[unit.slot] = null;
-    if (!killed) return;
+    if (this.table[unit.slot] === unit) { this.table[unit.slot] = null; this.free.splice(Math.min(1, this.free.length), 0, unit.slot); }
+    if (!killed || !fought) return;
+    // (The game keeps no attacker for a unit its own player killed — a storm on your own units — so there is no killer then.)
+    if (by !== undefined && by !== unit.owner) unit.killedBy = by;
     this.onDeath(unit);
     if (by !== undefined) this.killed.set(unit.type * 4096 + by, (this.killed.get(unit.type * 4096 + by) ?? 0) + 1);
   }
@@ -198,11 +217,13 @@ export class World {
     return this.units.find((u) => u.slot === slot && u.uid === uid) ?? null;
   }
 
-  /** The units on the map, in the order of the table. */
+  /**
+   * The units on the map, oldest first: the order of the game's table walked as it hands its places out (slot 0, then
+   * 1699 downwards), as long as no place freed has been handed out again — when the game frees a record, some frames after
+   * its unit is gone, is not something the simulator knows.
+   */
   living(): SimUnit[] {
-    const out: SimUnit[] = [];
-    for (const u of this.table) if (u) out.push(u);
-    return out;
+    return this.units.filter((u) => u.alive && this.table[u.slot] === u);
   }
 
   private typed(u: SimUnit, type: number | undefined): boolean {
@@ -216,7 +237,17 @@ export class World {
 
   /** The living units of these owners (any, when undefined), of a type or a class, inside a location — in table order. */
   matching(owners: readonly number[] | undefined, type?: number, location?: number): SimUnit[] {
-    return this.living().filter((u) => (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location));
+    return this.living().filter((u) => this.fits(u, owners, type, location));
+  }
+
+  /** The living units a program's loop comes to (TrigScript 4): oldest first, as `living` says. */
+  listed(owners: readonly number[] | undefined, type?: number, location?: number): SimUnit[] {
+    return this.matching(owners, type, location);
+  }
+
+  /** Whether a unit, living or as it died, is of these owners (any, when undefined), of a type or a class, inside a location. */
+  fits(u: SimUnit, owners: readonly number[] | undefined, type?: number, location?: number): boolean {
+    return (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location);
   }
 
   centreOf(location: number): { x: number; y: number } {
@@ -224,11 +255,11 @@ export class World {
     return b ? { x: Math.floor((b.left + b.right) / 2), y: Math.floor((b.top + b.bottom) / 2) } : { x: 0, y: 0 };
   }
 
-  /** A location centred on a point, its size kept. */
-  centre(location: number, x: number, y: number): void {
+  /** A location centred on a point, its size kept — or the size given. */
+  centre(location: number, x: number, y: number, size?: { width: number; height: number }): void {
     const b = this.locations.get(location) ?? { left: 0, top: 0, right: 0, bottom: 0 };
-    const w = b.right - b.left;
-    const h = b.bottom - b.top;
+    const w = size ? size.width : b.right - b.left;
+    const h = size ? size.height : b.bottom - b.top;
     const left = x - Math.floor(w / 2);
     const top = y - Math.floor(h / 2);
     this.locations.set(location, { left, top, right: left + w, bottom: top + h });
@@ -288,13 +319,13 @@ export class World {
         for (const owner of owners) if (owner < 12) for (let i = 0; i < Math.max(1, a.modifier); i++) { const u = this.create(a.unitId, owner, x, y, properties); if (u) made?.push(u); }
         return true;
       }
-      case ActionType.KillUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, true); return true;
+      case ActionType.KillUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, true, undefined, false); return true;
       case ActionType.RemoveUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, false); return true;
-      case ActionType.KillUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, true); return true;
+      case ActionType.KillUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, true, undefined, false); return true;
       case ActionType.RemoveUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, false); return true;
       case ActionType.GiveUnits: {
         const to = this.players.of(a.target, current)[0];
-        if (to !== undefined && to < 12) for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) u.owner = to;
+        if (to !== undefined && to < 12) for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.setOwner(u, to);
         return true;
       }
       case ActionType.MoveUnit: {

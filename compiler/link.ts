@@ -40,17 +40,22 @@ export function resolvePath(from: string, spec: string): string {
 export function resolveModule(files: ReadonlySet<string>, from: string, spec: string): string | null {
   if (!spec.startsWith("./") && !spec.startsWith("../")) return null;
   const path = resolvePath(from, spec);
-  for (const candidate of [path, `${path}.ts`, path.replace(/\.js$/, ".ts"), `${path}/index.ts`]) if (files.has(candidate)) return candidate;
+  for (const candidate of [path, `${path}.ts`, `${path}.tsx`, path.replace(/\.js$/, ".ts"), path.replace(/\.js$/, ".tsx"), `${path}/index.ts`, `${path}/index.tsx`]) if (files.has(candidate)) return candidate;
   return null;
 }
 
 const SOURCE_URL_PREFIX = "trigscript://";
 
+/** Where the standard library's modules sit among a script's files: "trigscript/fog" is `__trigscript__/fog.ts` (`stdlib.ts`). */
+export const STDLIB_DIR = "__trigscript__";
+/** A module of the standard library among the script's files: its extension is `.tsx` when it has JSX in it (`stdlib.ts#STDLIB_EXT`). */
+export const stdlibFile = (name: string, ext: ".ts" | ".tsx" = ".ts") => `${STDLIB_DIR}/${name}${ext}`;
+
 /**
  * Run the entry module with the library in scope. Resolves to null when the script ran
  * to the end, else to the error it threw, located when possible.
  */
-export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string, library: Record<string, unknown>, moduleName: string, options: { imported?: readonly string[]; then?: readonly string[] } = {}): RunError | null {
+export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string, library: Record<string, unknown>, moduleName: string, options: { imported?: readonly string[]; then?: readonly string[]; media?: (path: string) => unknown } = {}): RunError | null {
   const names = new Set(files.keys());
   const cache = new Map<string, { exports: Record<string, unknown> }>();
   // `imported`: names the module has and the globals do not — a script may well have a `test` of its own.
@@ -63,11 +68,19 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
     cache.set(file, module);
     const require = (spec: string): unknown => {
       if (spec === moduleName) return library;
+      // The standard library: a module of TrigScript that ships with the compiler, among the files when imported.
+      if (spec.startsWith(`${moduleName}/`)) {
+        const name = spec.slice(moduleName.length + 1);
+        for (const ext of [".ts", ".tsx"] as const) if (names.has(stdlibFile(name, ext))) return load(stdlibFile(name, ext));
+      }
+      // A video, an image or a sound (`media.ts`): the value its file gives, by the path the import names.
+      const asMedia = spec.startsWith(".") && options.media ? options.media(resolvePath(file, spec)) : undefined;
+      if (asMedia !== undefined) return { __esModule: true, default: asMedia };
       const target = resolveModule(names, file, spec);
       if (!target) {
         throw new Error(spec.startsWith(".")
           ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.`
-          : `Cannot import "${spec}": a script imports its own files (./name) and "${moduleName}" only.`);
+          : `Cannot import "${spec}": a script imports its own files (./name), "${moduleName}" and the standard library ("${moduleName}/fog").`);
       }
       return load(target);
     };
@@ -85,6 +98,50 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
   } catch (err) {
     return locate(err, files);
   }
+}
+
+/**
+ * Where in the script the code calling this is now: the innermost line of a file of the script on the stack. Called
+ * every frame of a debugged test (A5), so on V8 it reads the stack as call sites rather than text: Node with source
+ * maps on formats every frame's path, which cost a debugged run more than the game did.
+ */
+const placed = new WeakMap<LinkedFile, Map<number, { file: string; line: number; column: number }>>();
+
+export function here(files: ReadonlyMap<string, LinkedFile>): { file: string; line: number; column: number } | null {
+  type Site = { getFileName(): string | null; getScriptNameOrSourceURL?(): string | null; getLineNumber(): number | null; getColumnNumber(): number | null };
+  const E = Error as unknown as { prepareStackTrace?: unknown; captureStackTrace?: (o: object) => void };
+  if (typeof E.captureStackTrace === "function") {
+    const was = E.prepareStackTrace;
+    const holder: { stack?: unknown } = {};
+    try {
+      E.prepareStackTrace = (_e: unknown, sites: Site[]) => sites;
+      E.captureStackTrace(holder);
+      const sites = holder.stack;
+      if (Array.isArray(sites)) {
+        for (const site of sites as Site[]) {
+          // (A Function's body is named by its sourceURL, which only this says.)
+          const name = site.getScriptNameOrSourceURL?.() ?? site.getFileName();
+          if (!name || !name.startsWith(SOURCE_URL_PREFIX)) continue;
+          const file = name.slice(SOURCE_URL_PREFIX.length), linked = files.get(file);
+          if (!linked) continue;
+          const line = (site.getLineNumber() ?? 1) - 2, column = site.getColumnNumber() ?? 1;
+          let seen = placed.get(linked);
+          if (!seen) { seen = new Map(); placed.set(linked, seen); }
+          const key = line * 65536 + column;
+          let out = seen.get(key);
+          if (!out) {
+            const original = linked.map ? mapPosition(linked.map, line, column) : null;
+            out = original ? { file, line: original.line, column: original.column } : { file, line: Math.max(1, line), column };
+            seen.set(key, out);
+          }
+          return out;
+        }
+        return null;
+      }
+    } catch { /* the text below */ } finally { E.prepareStackTrace = was; }
+  }
+  const at = locate(new Error(), files);
+  return at.file ? { file: at.file, line: at.line ?? 1, column: at.column ?? 1 } : null;
 }
 
 /** The error's message and, from its stack, where in the script it happened. */

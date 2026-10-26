@@ -1,7 +1,10 @@
 /**
  * The program interpreter: runs `program()` bodies from the IR, one player, frame by
  * frame. It is what Simulate shows and what the tests prove programs with; the model is
- * the Python lowering's (`python/trigscript.py`), which is what the game runs.
+ * the backend's (`compiler/backend/`, the map of our own), which is what the game runs — and was
+ * the Python lowering's (`python/trigscript.py`), which laid the same programs out through eudplib
+ * until TrigScript 4's step 17; the gate before it (step 16, `tests/random-scripts.test.ts`) holds
+ * the two to the same lines.
  *
  * A program is a coroutine the game resumes every frame. Its body runs until it sleeps or
  * ends: loops run to completion within the frame, only `sleep` gives the frame back
@@ -34,14 +37,20 @@
  * the next frame finds. A key, a click and a typed line last that one frame, as they do in the
  * game; the mouse stays where it was put.
  */
+import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "./fixedMath";
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
-import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, heapCells, isTextExpr, stackDepth } from "./ir";
-import type { TextExpr, ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
+import { ORDER_OF_VERB } from "./orders";
+import { BUILD_BYTES, ERROR_CODES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, STACK_OVERFLOW_MESSAGE, TEXT_BYTES, TEXT_FIELD_BYTES, UNIT_FLAGS, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
+import type { TextExpr, ArrayDecl, At, BoolExpr, Call, EventSource, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
 import { TABLE_FIELDS } from "./tables";
+import { FOG_SHAPES } from "./fogShapes";
+
+/** The tiles across and down the simulator's fog keeps: the largest map's. */
+const FOG_SIZE = 256;
 import type { SimBounds, SimUnit, SimUnitInit, World } from "./world";
 
 export type { SimBounds, SimUnit, SimUnitInit, SimUnitProperties } from "./world";
@@ -50,6 +59,11 @@ export const FRAMES_PER_SECOND = 24;
 /** What Elapsed Time and the countdown count: a game second is sixteen frames (the slice 2 probe: 21 after 336 frames), not the twenty-four of a second at Fastest. */
 export const FRAMES_PER_GAME_SECOND = 16;
 const U32 = 0x1_0000_0000;
+/** Frames with no message before a held key counts as let go; the backend's input has the same number (`compiler/backend/input.ts`). */
+const HELD_GRACE = 2;
+
+/** The code of the game's texts nearest each player's colour, by slot, when the map does not change them: red, blue, teal, purple, orange, brown, white, yellow. */
+const SLOT_COLOR_CODES = [8, 14, 15, 16, 17, 21, 22, 23];
 
 export interface ProgramEvent {
   /** 0-based run of the programs. */
@@ -66,7 +80,7 @@ export interface ProgramEvent {
 }
 
 /** The most a field of a unit holds: a byte for the timers, the cooldown and the kills, 255 points of energy, a word of resources. */
-const UNIT_FIELD_MAX: Partial<Record<UnitNumField, number>> = { hp: 0xff_ffff, shields: 0xff_ffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
+const UNIT_FIELD_MAX: Partial<Record<UnitNumField, number>> = { hp: 0xff_ffff, shields: 0xff_ffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255, buildTime: 0xffff, rank: 255, matrix: 255 };
 export interface ProgramSimulationOptions extends Pick<SimulationOptions, "player" | "condition" | "random" | "strings" | "players" | "forces" | "properties"> {
   /** The trigger interpreter holding the world; one is made when absent. */
   world?: Simulation;
@@ -82,6 +96,8 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
   unitStats?: SimulationOptions["unitStats"];
   /** A player's name in a printed text; default "Player 1" … */
   playerName?: (player: number) => string;
+  /** The code of the game's texts a player's colour is (8 red, 14 blue, …); default the colour of the player's slot when a map does not change it. */
+  playerColor?: (player: number) => number;
   /** The units on the map, in the order of the game's unit table. With a `world` of the caller's they are added to it. */
   units?: SimUnitInit[];
   /** The map's locations as boxes, by their 1-based number. A location the simulation does not know holds every unit. */
@@ -121,6 +137,23 @@ interface Ctx {
 class Halt extends Error {}
 /** The program stops for good, as the game stops it: its stack ran out. Said as a fault where it happened. */
 class Stopped extends Error {}
+/** An error of the program's is in flight (`Program.errors` holds it), on its way to the nearest `try`. */
+class Thrown extends Error {}
+
+/** A slot of a `start`: the task in it (none: free), its generation, the frame it last ran in, and its own cells. */
+interface TaskSlot {
+  exec: Exec | null;
+  apart: Exec[];
+  gen: number;
+  ran: number;
+  vars: Map<string, Value>;
+  units: Map<string, SimUnit | null>;
+  texts: Map<string, HeldText>;
+  arrays: Map<string, Held>;
+  latches: Map<object, boolean>;
+}
+/** A `start` statement's tasks: its slots, and the ids of the variables and arrays a slot has a copy of. */
+interface TaskPool { start: Extract<Stmt, { kind: "start" }>; vars: string[]; arrays: ArrayDecl[]; slots: TaskSlot[]; said: boolean }
 
 /** One program's run: its variables, its latches, and the coroutine that is its body. */
 /** What a recursive function holds, kept for the length of a call that may come back into it. */
@@ -197,7 +230,10 @@ class ProgramRun {
   readonly bits = new Map<string, 8 | 16>();
   /** The `u32` variables. */
   readonly unsigned = new Set<string>();
-  readonly latches = new Map<object, boolean>();
+  /** Every latch's state; a task has its own, swapped in while it runs. */
+  latches = new Map<object, boolean>();
+  /** The units of on.died() turns: read as they died, though they are gone. */
+  readonly asDied = new Set<string>();
   /** The program's arrays: their cells, as a variable's value is kept. */
   readonly arrays: Map<string, Held> = new (class extends Map<string, Held> {
     run!: ProgramRun;
@@ -210,15 +246,28 @@ class ProgramRun {
   /** How many calls deep the program is in functions that call themselves: frames on the stack. Nothing is on it between frames. */
   depth = 0;
   /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
-  private readonly apart: Exec[] = [];
+  private apart: Exec[] = [];
+  /** The number of the task whose turn it is (`taskHandle`); 0 in the program's own turn. */
+  private taskNow = 0;
+  /** Where the error in flight was thrown: what an uncaught one is said at. */
+  private thrownAt: At | undefined;
+  /** The `start` statements' tasks, in order of their numbers. */
+  private readonly pools: TaskPool[] = [];
+  /** Frames the tasks have run, for a slot to tell whether it has had its turn in this one. */
+  private taskFrame = 0;
+  /** A task was started during this frame's turn of the tasks: they are gone through again, for it to start in this frame too. */
+  private again = false;
   readonly sim: ProgramSimulation;
   readonly index: number;
   readonly program: Program;
   /** The player this run is: who Current Player is while it runs. */
   readonly player: number;
   private readonly common: Common;
+  /** The variables the closures count (`VarDecl.held`): read by their own declare, 0 before it. */
+  private readonly held: ReadonlySet<string>;
 
   constructor(sim: ProgramSimulation, index: number, program: Program, player: number, common: Common = newCommon()) {
+    this.held = new Set(programDeclarations(program).filter((d) => d.held).map((d) => d.id));
     this.sim = sim;
     this.index = index;
     this.program = program;
@@ -235,6 +284,14 @@ class ProgramRun {
       this.arrays.set(decl.id, held);
     }
     this.body = this.run();
+    const decls = programDeclarations(this.program);
+    const starts: Extract<Stmt, { kind: "start" }>[] = [];
+    eachStart([program.body, program.functions ?? []], (st) => starts.push(st));
+    starts.sort((a, b) => a.task - b.task);
+    for (const start of starts) {
+      const slots = Array.from({ length: start.max }, (): TaskSlot => ({ exec: null, apart: [], gen: 0, ran: 0, vars: new Map(), units: new Map(), texts: new Map(), arrays: new Map(), latches: new Map() }));
+      this.pools.push({ start, vars: decls.filter((d) => d.task === start.task).map((d) => d.id), arrays: (program.arrays ?? []).filter((a) => a.task === start.task), slots, said: false });
+    }
   }
 
   private *run(): Exec {
@@ -243,27 +300,109 @@ class ProgramRun {
     return "next";
   }
 
-  /** One frame: resume the body until it gives the frame back or ends. */
+  /** One frame: resume the body until it gives the frame back or ends, then each task that is running. */
   tick(): void {
-    if (this.done || !this.body) return;
     this.steps = 0;
+    if (!this.done && this.body) {
+      try {
+        if (this.drive(this.body)) { this.done = true; this.body = null; }
+      } catch (err) {
+        this.apart.length = 0;
+        if (!(err instanceof Stopped)) throw err;
+        this.done = true;
+        this.body = null;
+        this.depth = 0;
+      }
+    }
+    this.runTasks();
+  }
+
+  /** Whether a task of the program is still running. */
+  get tasksRunning(): boolean { return this.pools.some((p) => p.slots.some((s) => s.exec)); }
+
+  /**
+   * The tasks' turn, after the program's: each that is running goes on until it gives the frame back or ends, in order of
+   * their start's number and then of their slot. A task started meanwhile has its first turn in this frame too.
+   */
+  private runTasks(): void {
+    if (!this.pools.length) return;
+    this.taskFrame++;
+    do {
+      this.again = false;
+      for (const pool of this.pools) {
+        for (const slot of pool.slots) {
+          if (!slot.exec || slot.ran === this.taskFrame) continue;
+          slot.ran = this.taskFrame;
+          this.runSlot(pool, slot);
+        }
+      }
+    } while (this.again);
+  }
+
+  /** A task's turn: its cells in place of the slot's, its body driven as the program's is. */
+  private runSlot(pool: TaskPool, slot: TaskSlot): void {
+    const exec = slot.exec!;
+    const outer = this.apart, latches = this.latches;
+    this.taskNow = pool.slots.indexOf(slot) | (pool.start.task << 8) | (slot.gen << 16);
+    this.swap(pool, slot, true);
+    this.apart = slot.apart;
+    this.latches = slot.latches;
     try {
-      if (this.drive()) { this.done = true; this.body = null; }
+      if (this.drive(exec)) { slot.exec = null; slot.apart.length = 0; }
     } catch (err) {
-      this.apart.length = 0;
+      slot.apart.length = 0;
       if (!(err instanceof Stopped)) throw err;
-      this.done = true;
-      this.body = null;
+      slot.exec = null;
       this.depth = 0;
+    } finally {
+      this.taskNow = 0;
+      this.apart = outer;
+      this.latches = latches;
+      this.swap(pool, slot, false);
     }
   }
 
+  /** A slot's cells into the run's (`into`), or back out of them: between turns nothing of a task is among the run's. */
+  private swap(pool: TaskPool, slot: TaskSlot, into: boolean): void {
+    const move = <V>(run: Map<string, V>, own: Map<string, V>, id: string) => {
+      if (into) { if (own.has(id)) run.set(id, own.get(id)!); else run.delete(id); }
+      else { if (run.has(id)) own.set(id, run.get(id)!); else own.delete(id); run.delete(id); }
+    };
+    for (const id of pool.vars) { move(this.vars, slot.vars, id); move(this.unitVars, slot.units, id); move(this.textVars, slot.texts, id); }
+    for (const a of pool.arrays) {
+      if (into) this.arrays.set(a.id, slot.arrays.get(a.id) ?? this.newHeld(a));
+      else { const held = (this.arrays as Map<string, Held>).get(a.id); if (held) slot.arrays.set(a.id, held); }
+    }
+  }
+
+  private newHeld(decl: ArrayDecl): Held {
+    return { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array<Value>(decl.length).fill(decl.kind === "number" ? 0 : false) };
+  }
+
+  /** The pool and slot a task's number names, while that task is in it; undefined for a number that is no running task's. */
+  private taskOf(handle: number): { pool: TaskPool; slot: TaskSlot } | undefined {
+    const pool = this.pools.find((p) => p.start.task === ((handle >>> 8) & 0xff));
+    const slot = pool?.slots[handle & 0xff];
+    return pool && slot?.exec && slot.gen === handle >>> 16 ? { pool, slot } : undefined;
+  }
+
   /** The run until it gives the frame back (false) or ends (true): the body, and above it each body that was handed over to be run apart. */
-  private drive(): boolean {
+  private drive(body: Exec): boolean {
     let send: unknown;
+    // An error thrown in a body run apart goes on in the body that called it, at the call.
+    let thrown: Thrown | undefined;
     for (;;) {
-      const top = this.apart[this.apart.length - 1] ?? this.body!;
-      const r = top.next(send);
+      const top = this.apart[this.apart.length - 1] ?? body;
+      let r: IteratorResult<Apart | undefined, Flow>;
+      try {
+        r = thrown ? top.throw(thrown) : top.next(send);
+      } catch (err) {
+        if (!(err instanceof Thrown) || !this.apart.length) throw err;
+        this.apart.pop();
+        thrown = err;
+        continue;
+      }
+      thrown = undefined;
       send = undefined;
       if (r.done) {
         if (!this.apart.length) return true;
@@ -282,6 +421,7 @@ class ProgramRun {
 
   private read(id: string, at?: At): Value {
     const v = this.vars.get(id);
+    if (v === undefined && this.held.has(id)) return 0;
     if (v === undefined) throw new Error(`The variable ${id} was read before it was declared${at ? ` (line ${at.line})` : ""}.`);
     return v;
   }
@@ -326,7 +466,7 @@ class ProgramRun {
   }
 
   /**
-   * Room for `cells` in a growing array, as the game finds it (`python/trigscript.py`): a block twice the size from the
+   * Room for `cells` in a growing array, as the game finds it (`compiler/backend/heap.ts`): a block twice the size from the
    * heap, the old one given back. False, and said once, when the heap has none left.
    */
   private grow(a: { decl: ArrayDecl; cells: Value[]; room: number }, cells: number, at: At): boolean {
@@ -390,12 +530,15 @@ class ProgramRun {
       // A kept unit is its place in the table, from 1, and the place's uniqueness byte: a unit made since in that place is another.
       case "unitAt": { const ptr = (yield* this.num(e.ptr)) >>> 0; yield* this.num(e.epd); const uid = (yield* this.num(e.uid)) >>> 0; return ptr >= 1 ? this.sim.game.at(ptr - 1, uid) : null; }
       case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
+      case "selected": return this.sim.selectedUnit(e.index);
     }
   }
 
   /** The unit, when there is one and it is still on the map. */
   private *living(e: UnitExpr): Gen<SimUnit | null> {
     const u = yield* this.unit(e);
+    // The unit of an on.died() turn is read as it died.
+    if (u && e.kind === "unitVar" && this.asDied.has(e.id)) return u;
     return u?.alive ? u : null;
   }
 
@@ -405,16 +548,17 @@ class ProgramRun {
     const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
     if (!u) return;
     switch (verb.do) {
-      case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill"); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
-      case "give": { const to = this.sim.slotOf(verb.to); if (to < 12) u.owner = to; break; }
-      case "order": this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
+      case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill", undefined, false); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
+      case "give": { const to = this.sim.slotOf(verb.to); if (to < 12) this.sim.game.setOwner(u, to); break; }
+      // (The unit takes up the order and keeps it here: the simulator moves nothing, so it never arrives.)
+      case "order": u.orderId = ORDER_OF_VERB[verb.order]; this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
       case "locate": this.sim.centre(verb.location, u.x, u.y); break;
       case "damage": case "heal": {
         // In the game's own units, 256 to a point, as the lowering computes it.
         const step = verb.percent ? Math.floor((u.maxHp * 256 * amount) / 100) : amount * 256;
         const raw = verb.do === "damage" ? Math.max(0, u.hp * 256 - step) : Math.min(u.maxHp * 256, u.hp * 256 + step);
         u.hp = Math.ceil(raw / 256);
-        if (u.hp === 0) { this.sim.game.gone(u, true); this.sim.unitEvent(this, ActionType.KillUnit, u, at); }
+        if (u.hp === 0) { this.sim.game.gone(u, true, undefined, false); this.sim.unitEvent(this, ActionType.KillUnit, u, at); }
         break;
       }
     }
@@ -423,7 +567,7 @@ class ProgramRun {
   /* ── expressions ── */
 
   /**
-   * A number, the way the game computes it (`python/trigscript.py`): 32 bits, given here as the
+   * A number, the way the game computes it (`compiler/backend/emit.ts`): 32 bits, given here as the
    * signed reading of them (`| 0`). + − × and the bitwise operators are the same bits whichever
    * way they are read; what reads them one way or the other — ÷, %, a shift right, min and max, a
    * comparison — says which in the IR. A divisor of 0 gives 0, as `(a / 0) | 0` does.
@@ -434,6 +578,7 @@ class ProgramRun {
       case "var": return Number(this.read(e.id)) | 0;
       case "element": { const c = yield* this.cell(e.array, e.index, e.at, "it reads 0"); return c ? Number(c.cells[c.i]) | 0 : 0; }
       case "length": return this.arrays.get(e.array)?.cells.length ?? 0;
+      case "taskHandle": return this.taskNow;
       case "pop": return Number(this.arrays.get(e.array)?.cells.pop() ?? 0) | 0;
       case "unary": return -(yield* this.num(e.expr)) | 0;
       case "cast": return yield* this.num(e.expr);
@@ -470,6 +615,13 @@ class ProgramRun {
         const args: number[] = [];
         for (const a of e.args) args.push(yield* this.num(a));
         if (e.name === "abs") return Math.abs(args[0]) | 0;
+        if (e.name === "fmul") return fixedMul(args[0], args[1]);
+        if (e.name === "fdiv") return fixedDiv(args[0], args[1]);
+        if (e.name === "sqrt") return fixedSqrt(args[0], !!e.unsigned);
+        if (e.name === "atan2" || e.name === "sin" || e.name === "cos") {
+          const table = (this.arrays.get(e.table ?? "")?.cells ?? []).map((c) => Number(c) | 0);
+          return e.name === "atan2" ? fixedAtan2(args[0], args[1], table) : fixedSin(args[0], args[1], table, e.name === "cos");
+        }
         const seen = e.unsigned ? args.map((a) => a >>> 0) : args;
         return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
       }
@@ -491,7 +643,7 @@ class ProgramRun {
   /* ── texts ── */
 
   /**
-   * A text that was just made, as the game keeps it (`python/trigscript.py`): past `TEXT_BYTES` it is cut, and its
+   * A text that was just made, as the game keeps it (`compiler/backend/texts.ts`): past `TEXT_BYTES` it is cut, and its
    * bytes go into a block of the heap. When the heap has none, the text is empty — and both are said.
    */
   private made(s: string, at: At, cameTo = bytesOf(s)): TextValue {
@@ -522,7 +674,9 @@ class ProgramRun {
   private *parts(parts: TextPart[], used: TextValue[]): Gen<string> {
     let out = "";
     for (const p of parts) {
-      if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      if (p.kind === "number") out += p.fixed ? fixedText(yield* this.num(p.expr)) : String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      // A colour code is a character of the text, as in the game: it counts in the length, and the log shows it.
+      else if (p.kind === "char") { const code = (yield* this.num(p.expr)) & 0xff; if (code) out += String.fromCharCode(code); }
       else if (p.kind === "value") { const v = yield* this.text(p.text); used.push(v); out += v.s; }
       else out += this.sim.partText(p);
     }
@@ -585,6 +739,7 @@ class ProgramRun {
         this.used(of);
         return out;
       }
+      case "built": return { s: this.sim.buffers.get(e.buffer) ?? "", room: 0, taken: false };
       case "textCall": {
         yield* this.call(e.call);
         const held = e.call.result ? this.textVars.get(e.call.result.decl.id) : undefined;
@@ -671,6 +826,7 @@ class ProgramRun {
         return false;
       }
       case "ternary": return (yield* this.bool(e.cond)) ? yield* this.bool(e.whenTrue) : yield* this.bool(e.whenFalse);
+      case "running": return !!this.taskOf((yield* this.num(e.task)) >>> 0);
       case "call": return Boolean(yield* this.call(e.call));
       case "textCompare": {
         const a = yield* this.text(e.left);
@@ -699,6 +855,14 @@ class ProgramRun {
     else this.store(decl.id, yield* this.init(e as NumExpr | BoolExpr, decl.kind));
   }
 
+  /** A task's body, as its slot runs it: what it returns into is the task's own, and nothing reads it. */
+  private *taskBody(c: Call): Exec {
+    if (c.result) this.declare(c.result.decl);
+    const flow = yield* this.block(c.body, { fn: { result: c.result?.decl } });
+    if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a task reached its end (line ${c.at.line}).`);
+    return "next";
+  }
+
   private *call(c: Call): Gen<Value> {
     if (c.result) this.declare(c.result.decl);
     const fn = c.fn ? this.program.functions?.find((f) => f.id === c.fn) : undefined;
@@ -723,7 +887,14 @@ class ProgramRun {
       }
     }
     const ctx: Ctx = { fn: { result: c.result?.decl } };
-    const flow = kept && fn ? ((yield { run: this.block(fn.body, ctx) }) as Flow) : yield* this.block(fn ? fn.body : c.body, ctx);
+    let flow: Flow;
+    try {
+      flow = kept && fn ? ((yield { run: this.block(fn.body, ctx) }) as Flow) : yield* this.block(fn ? fn.body : c.body, ctx);
+    } catch (err) {
+      // The error goes on out of the call; what the function holds comes back first, as it does when the function returns.
+      if (kept && err instanceof Thrown) this.bringBack(kept);
+      throw err;
+    }
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c.at.line}).`);
     if (kept) this.bringBack(kept);
     return c.result && c.result.kind !== "unit" && c.result.kind !== "text" ? this.read(c.result.decl.id) : 0;
@@ -731,11 +902,20 @@ class ProgramRun {
 
   /**
    * A call that may come back into the function it is in: what that function holds goes on the stack, as the game
-   * keeps it (`python/trigscript.py`) — its variables, and the handle of each array declared in it, which is "no block"
+   * keeps it (`compiler/backend/emit.ts`, `Emitter.keep`) — its variables, and the handle of each array declared in it, which is "no block"
    * for the length of the call. Past the depth the map allows the program stops, and says where.
    */
   private keep(c: Call): Frame {
     const saves = c.saves!;
+    if (this.depth >= this.sim.stackDepth && this.program.errors) {
+      // A RangeError, as JavaScript's: where the call is, before anything of it is kept.
+      this.store(this.program.errors.thrown, ERROR_CODES.RangeError);
+      const old = this.textVars.get(this.program.errors.message);
+      if (old?.room) this.sim.heap.give(old.room);
+      this.textVars.set(this.program.errors.message, { s: STACK_OVERFLOW_MESSAGE, room: 0 });
+      this.thrownAt = c.at;
+      throw new Thrown();
+    }
     if (this.depth >= this.sim.stackDepth) {
       this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: c.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
       throw new Stopped();
@@ -819,23 +999,34 @@ class ProgramRun {
         // The text as it is when the loop starts: a copy of a variable's, so that assigning the variable inside changes nothing here.
         const over = this.owned(yield* this.text(s.of), s.at);
         let flow: Flow = "next";
-        for (const ch of over.s) {
-          const old = this.textVars.get(s.decl.id);
-          const turn = this.made(ch, s.at);
-          if (old?.room) this.sim.heap.give(old.room);
-          this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
-          flow = yield* this.block(s.body, ctx);
-          if (flow === "break" || flow === "return") break;
+        try {
+          for (const ch of over.s) {
+            const old = this.textVars.get(s.decl.id);
+            const turn = this.made(ch, s.at);
+            if (old?.room) this.sim.heap.give(old.room);
+            this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
+            flow = yield* this.block(s.body, ctx);
+            if (flow === "break" || flow === "return") break;
+          }
+        } catch (err) {
+          // An error out of the body: the text the loop holds goes back on its way, as the game gives it back.
+          if (err instanceof Thrown && over.room) this.sim.heap.give(over.room);
+          throw err;
         }
         if (over.room) this.sim.heap.give(over.room);
         return flow === "return" ? flow : "next";
       }
       case "unitLoop": {
         this.declare(s.decl);
-        // The units as they are when the loop starts, in table order; one that dies on the way is passed over.
-        for (const u of this.sim.matching(s.filter)) {
-          if (!u.alive) continue;
+        // The units as they are when the loop starts, in table order; one that dies on the way is passed over. Those of
+        // the frame's events pass (`on.created` / `on.died`): the ones that came on, and the ones that died, read as they died.
+        const dead = s.source === "died" || s.source === "killed";
+        if (dead) this.asDied.add(s.decl.id);
+        if (s.was) this.declare(s.was);
+        for (const { u, was } of s.source ? this.sim.eventUnits(s.source, s.filter, s.event) : this.sim.matching(s.filter).map((u) => ({ u, was: 0 }))) {
+          if (!dead && !u.alive) continue;
           this.unitVars.set(s.decl.id, u);
+          if (s.was) this.store(s.was.id, was);
           const flow = yield* this.block(s.body, ctx);
           if (flow === "break") break;
           if (flow === "return") return flow;
@@ -845,11 +1036,11 @@ class ProgramRun {
       case "unitWrite": {
         const u = yield* this.living(s.unit);
         const field = s.field;
-        if (field === "invincible") { const on = yield* this.bool(s.value as BoolExpr); if (u) u.invincible = on; return "next"; }
+        if ((UNIT_FLAGS as readonly string[]).includes(field)) { const on = yield* this.bool(s.value as BoolExpr); if (u) (u as unknown as Record<string, boolean>)[field] = on; return "next"; }
         const value = yield* this.amount(s.value as NumExpr);
         if (!u) return "next";
         (u as unknown as Record<string, number>)[field] = Math.min(value, UNIT_FIELD_MAX[field as UnitNumField] ?? 0xffff_ffff);
-        if (field === "hp" && u.hp === 0) { this.sim.game.gone(u, true); this.sim.unitEvent(this, ActionType.KillUnit, u, s.at); }
+        if (field === "hp" && u.hp === 0) { this.sim.game.gone(u, true, undefined, false); this.sim.unitEvent(this, ActionType.KillUnit, u, s.at); }
         return "next";
       }
       case "unitDo": yield* this.unitDo(s.unit, s.verb, s.at); return "next";
@@ -977,6 +1168,32 @@ class ProgramRun {
         for (let i = 0; i < n; i++) yield;
         return "next";
       }
+      case "parallel": {
+        // Each branch a coroutine of its own: started here in order, then once a frame each one still running goes on, in
+        // order. A body run apart (a recursive call) inside a branch is handed up to the run's loop and its outcome back.
+        const branches = s.branches.map((b) => this.block(b, {}));
+        const done = branches.map(() => false);
+        for (;;) {
+          for (let i = 0; i < branches.length; i++) {
+            if (done[i]) continue;
+            let send: unknown;
+            // An error from a body the branch had run apart goes on inside the branch, which may catch it.
+            let thrown: Thrown | undefined;
+            for (;;) {
+              const r = thrown ? branches[i].throw(thrown) : branches[i].next(send);
+              send = undefined;
+              thrown = undefined;
+              if (r.done) { done[i] = true; break; }
+              if (r.value === undefined) break;
+              try { send = yield r.value; } catch (err) { if (!(err instanceof Thrown)) throw err; thrown = err; }
+            }
+            // The first to end wins a race; the others stop where they are.
+            if (done[i] && s.mode === "race") return "next";
+          }
+          if (done.every(Boolean)) return "next";
+          yield;
+        }
+      }
       case "action": {
         const record: ActionRecord = { ...s.record };
         // A unit count is that many units (the game does the action once for each), whatever a byte could hold.
@@ -992,10 +1209,108 @@ class ProgramRun {
         this.sim.print(this, text, s.to, s.at);
         return "next";
       }
-      case "centerLocation": { const x = yield* this.amount(s.x); const y = yield* this.amount(s.y); this.sim.centre(s.location, x, y); return "next"; }
+      case "buildText": {
+        const used: TextValue[] = [];
+        const more = yield* this.parts(s.parts, used);
+        this.used(...used);
+        const was = s.reset ? "" : this.sim.buffers.get(s.buffer) ?? "";
+        let text = was + more;
+        // Past what a buffer holds the text is cut, as it is in the game, and said once a buffer.
+        if (bytesOf(text) > BUILD_BYTES) {
+          if (bytesOf(was) <= BUILD_BYTES) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `This text came to more than the ${BUILD_BYTES.toLocaleString("en-US")} bytes a text put together piece by piece holds: it is cut off there, as it is in the game.` });
+          text = cutTo(text, BUILD_BYTES);
+        }
+        this.sim.buffers.set(s.buffer, text);
+        return "next";
+      }
+      case "select": {
+        const units: SimUnit[] = [];
+        for (const u of s.units) { const got = yield* this.unit(u); if (got?.alive && units.length < 12) units.push(got); }
+        this.sim.selectUnits(units, this.sim.slotOf(s.player));
+        return "next";
+      }
+      case "syncSend": {
+        this.sim.readAt(s.player);
+        let value: number;
+        try { value = yield* this.num(s.value); } finally { this.sim.readAt(null); }
+        this.sim.syncSend(s.slot, s.player, value);
+        return "next";
+      }
+      case "centerLocation": {
+        const x = yield* this.amount(s.x); const y = yield* this.amount(s.y);
+        const size = s.size ? { width: yield* this.amount(s.size.width), height: yield* this.amount(s.size.height) } : undefined;
+        this.sim.centre(s.location, x, y, size);
+        return "next";
+      }
+      case "start": {
+        const pool = this.pools.find((p) => p.start === s);
+        if (!pool) throw new Error(`The start of task ${s.task} is not one of the program's (line ${s.at.line}).`);
+        // The arguments as they are now, before any parameter is set.
+        const values: (Value | SimUnit | HeldText | null)[] = [];
+        for (const p of s.call.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init as UnitExpr) : p.decl.kind === "text" ? this.owned(yield* this.text(p.init as TextExpr), s.at) : this.kept(yield* this.init(p.init as NumExpr | BoolExpr, p.decl.kind), p.decl));
+        const i = pool.slots.findIndex((slot) => !slot.exec);
+        if (i < 0) {
+          for (const v of values) if (v && typeof v === "object" && "room" in v && v.room) this.sim.heap.give(v.room);
+          if (!pool.said) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `${s.call.name ?? "The task"} did not start: all ${s.max} of this start's tasks are running. start(…, { max: … }) lets more run at once.` });
+          pool.said = true;
+          if (s.handle) this.store(s.handle, 0);
+          return "next";
+        }
+        const slot = pool.slots[i];
+        slot.gen = slot.gen >= 0xffff ? 1 : slot.gen + 1;
+        s.call.params.forEach((p, k) => {
+          this.declare(p.decl);
+          if (p.decl.kind === "unit") slot.units.set(p.decl.id, values[k] as SimUnit | null);
+          else if (p.decl.kind === "text") { const old = slot.texts.get(p.decl.id); if (old?.room) this.sim.heap.give(old.room); slot.texts.set(p.decl.id, values[k] as HeldText); }
+          else slot.vars.set(p.decl.id, values[k] as Value);
+          // (declare() put the parameter among the run's own: it is the slot's.)
+          this.vars.delete(p.decl.id);
+          this.unitVars.delete(p.decl.id);
+          this.textVars.delete(p.decl.id);
+        });
+        slot.exec = this.taskBody(s.call);
+        slot.apart = [];
+        slot.ran = 0;
+        this.again = true;
+        if (s.handle) this.store(s.handle, i | (s.task << 8) | (slot.gen << 16));
+        return "next";
+      }
+      case "cancel": {
+        const t = this.taskOf((yield* this.num(s.task)) >>> 0);
+        if (t) { t.slot.exec = null; t.slot.apart.length = 0; }
+        return "next";
+      }
       case "call": { yield* this.call(s.call); return "next"; }
       case "block": return yield* this.block(s.body, ctx);
+      case "try": {
+        try {
+          return yield* this.block(s.body, ctx);
+        } catch (err) {
+          if (!(err instanceof Thrown)) throw err;
+          return yield* this.block(s.catch, ctx);
+        }
+      }
+      case "throw": {
+        if (!s.rethrow) this.thrownAt = s.at;
+        throw new Thrown();
+      }
+      case "uncaught": {
+        const errors = this.program.errors;
+        if (!errors) throw new Error(`An uncaught error, but the program keeps none (line ${s.at.line}).`);
+        const code = this.read(errors.thrown) as number;
+        const names = this.arrays.get(errors.names);
+        const name = names?.decl.texts?.[names.cells[code] as number] || "Error";
+        const message = this.textVars.get(errors.message)?.s ?? "";
+        const at = this.thrownAt ?? s.at;
+        this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `Uncaught ${name}${message ? `: ${message}` : ""}` });
+        // The game says it in red to the player it ran as (`compiler/backend/errors.ts`).
+        this.sim.print(this, `\x06TrigScript: uncaught ${name}: ${message}, line ${at.line}.`, 13, s.at);
+        this.store(errors.thrown, 0);
+        return "next";
+      }
       case "remark": return "next";
+      // (A map of our own's own statements, which only its backend makes and never hands the simulator.)
+      case "textBlock": case "showText": case "watch": throw new Error(`the simulator does not run a ${s.kind}`);
     }
   }
 
@@ -1066,6 +1381,8 @@ export class ProgramSimulation {
   /** The arrays that grow inside others, by the number their handle's cell holds. */
   readonly inner = new Map<number, Held>();
   lastInner = 0;
+  /** What each buffer of `buildText` holds: one for the whole game, as in the game. */
+  readonly buffers = new Map<string, string>();
   readonly heap = {
     cells: HEAP_CELLS,
     top: 1,
@@ -1087,6 +1404,7 @@ export class ProgramSimulation {
   private readonly conditionOf?: SimulationOptions["condition"];
   private readonly readOf?: ProgramSimulationOptions["read"];
   private readonly nameOf: (player: number) => string;
+  private readonly colorOf: (player: number) => number;
   /** The units, the locations and who the players are: the trigger interpreter's, so both see one game. */
   readonly game: World;
   /** What the programs wrote into the game's tables, as the cell stores it; a name as its text. */
@@ -1097,11 +1415,22 @@ export class ProgramSimulation {
   /** The typed-line patterns of all the programs, in the order the game tries them: the first that matches a line is the one that line is. */
   private readonly chats: ChatPattern[] = [];
   private readonly unitByName: (lower: string) => number | undefined;
-  /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
+  /** What the players did, for the next frame and for the one running: "key:0:F7", "click:0:left", and a typed line as the pattern it matched with its values. */
   private queued: { events: Set<string>; lines: Map<number, { pattern: string; values: number[] }> } = { events: new Set(), lines: new Map() };
   private current = this.queued;
+  /** The keys and buttons down on the last frame, and on this one (what keyHeld() finds). */
+  private down = new Set<string>();
+  private downNow = new Set<string>();
+  private readonly lastDown = new Map<string, number>();
+  /** Whether a program reads a held key: then a press is worked out from the held keys, as the game does. */
+  private heldKeys = false;
   /** Where each player's mouse is, in map pixels. */
   readonly mice = new Map<number, { x: number; y: number }>();
+  /** Where each player's screen is on the map, its top left corner in pixels (`local.camera`; B5). */
+  readonly cameras = new Map<number, { x: number; y: number }>();
+  /** sync() (B5): what arrived this frame, "slot:player" → the value + 1; and what was sent, arriving at the next frame. */
+  private readonly synced = new Map<string, number>();
+  private sending: [key: string, value: number][] = [];
   cycle = 0;
   /** The world is the caller's, run on the game's schedule: the programs run in its passes, and its frame is the game's. */
   private readonly shared: boolean;
@@ -1130,6 +1459,7 @@ export class ProgramSimulation {
     this.conditionOf = options.condition;
     this.readOf = options.read;
     this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
+    this.colorOf = options.playerColor ?? ((p) => SLOT_COLOR_CODES[p] ?? SLOT_COLOR_CODES[7]);
     this.tableOf = options.table;
     // A unit is made with what its type has now: what a program wrote into the game's tables, else what the caller says.
     const cellOf = (name: string, type: number): TableCell => { const f = TABLE_FIELDS.unit.find((x) => x.name === name)!; return { name: `unit.${name}`, base: f.base, stride: f.stride, index: type, width: f.width, ...(f.scale ? { scale: f.scale } : {}) }; };
@@ -1140,6 +1470,7 @@ export class ProgramSimulation {
     };
     this.unitByName = options.unitByName ?? (() => undefined);
     for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c) => c.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
+    this.heldKeys = inputsOf(programs).sources.some((s) => s.source === "key" && s.held);
     this.current = { events: new Set(), lines: new Map() };
     // A program runs once a frame for each of its owners who is in the game, each run with its own variables; one that
     // is not per player runs as the first of them. Without the map's player settings there is the one player and one run.
@@ -1231,6 +1562,52 @@ export class ProgramSimulation {
   press(key: string, player = this.player): this { this.queued.events.add(`key:${player}:${keyName(key) ?? key}`); return this; }
   click(button: MouseButton = "left", player = this.player): this { this.queued.events.add(`click:${player}:${button}`); return this; }
   moveMouse(x: number, y: number, player = this.player): this { this.mice.set(player, { x, y }); return this; }
+  /** What each player has selected (B5): \`local.selected\`, \`local.selectionCount\`; select() and the tests set it. */
+  readonly selections = new Map<number, SimUnit[]>();
+  /** A player selects units: what \`local.selected\` reads at their computer, and what select() makes it. */
+  selectUnits(units: readonly SimUnit[], player = this.player): this { this.selections.set(player, units.slice(0, 12)); return this; }
+  /** The unit in a slot of the selection at the computer a program reads (\`localRead\`'s), if it is still there. */
+  selectedUnit(index: number): SimUnit | null {
+    const u = this.selections.get(this.sendingFrom ?? this.slotOf(13))?.[index];
+    return u?.alive ? u : null;
+  }
+  /** A player's screen moves: its top left corner to this place on the map, in pixels (what \`local.camera\` reads). */
+  moveCamera(x: number, y: number, player = this.player): this { this.cameras.set(player, { x, y }); return this; }
+
+  /**
+   * \`local.…\` (B5): what this computer knows. The simulator runs every computer's programs at once, so a program reads
+   * the computer of the player it runs for, and a sync()'s value is read at the computer of the player it is sent from
+   * (\`sendingFrom\`).
+   */
+  private sendingFrom: number | null = null;
+  private localRead(name: string): number | undefined {
+    const at = this.sendingFrom ?? this.slotOf(13);
+    const camera = this.cameras.get(at) ?? { x: 0, y: 0 };
+    const mouse = this.mice.get(at) ?? camera;
+    switch (name) {
+      case "local.player": return at;
+      case "local.camera.x": return camera.x;
+      case "local.camera.y": return camera.y;
+      case "local.mouse.x": return mouse.x - camera.x;
+      case "local.mouse.y": return mouse.y - camera.y;
+      default: {
+        // A selection slot: the unit's place in the table, from 1, as a kept unit's number is here; 0 for none.
+        const slot = /^local\.selection\[(\d+)\]$/.exec(name);
+        if (!slot) return undefined;
+        const u = this.selections.get(at)?.[Number(slot[1])];
+        return u?.alive ? u.slot + 1 : 0;
+      }
+    }
+  }
+
+  /** While a sync()'s value is worked out: whose computer's local values it reads. */
+  readAt(player: number | null): void { this.sendingFrom = player === null ? null : this.slotOf(player); }
+  /** sync()'s first half: the slot's arrival cleared everywhere, and the value on its way, arriving at the next frame. */
+  syncSend(slot: number, player: number, value: number): void {
+    const key = `${slot}:${this.slotOf(player)}`;
+    this.synced.delete(key);
+    this.sending.push([key, Math.min(Math.max(0, Math.trunc(value)), 1048574) + 1]);
+  }
   /** A player sends a line of chat: the next frame finds it, as the first of the programs' patterns it matches — or not at all. */
   type(line: string, player = this.player): this {
     for (const c of this.chats) {
@@ -1244,9 +1621,10 @@ export class ProgramSimulation {
   input(i: InputSource): number {
     const p = this.slotOf(i.player);
     switch (i.source) {
-      case "key": return this.current.events.has(`key:${p}:${i.key}`) ? 1 : 0;
+      case "key": return (i.held ? this.downNow : this.current.events).has(`key:${p}:${i.key}`) ? 1 : 0;
       case "click": return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
       case "mouse": return this.mice.get(p)?.[i.axis] ?? 0;
+      case "sync": return this.synced.get(`${i.slot}:${p}`) ?? 0;
       case "chat": {
         const line = this.current.lines.get(p);
         if (!line || line.pattern !== i.pattern) return 0;
@@ -1257,9 +1635,9 @@ export class ProgramSimulation {
 
   /* ── units and tables ── */
 
-  /** The living units a filter matches, in table order. */
+  /** The living units a filter matches, in the order a program's loop comes to them (the players' lists: `World.listed`). */
   matching(f: UnitFilter): SimUnit[] {
-    return this.game.matching(f.owner === undefined ? undefined : this.slotsOf(f.owner), f.type, f.at);
+    return this.game.listed(f.owner === undefined ? undefined : this.slotsOf(f.owner), f.type, f.at);
   }
 
   /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
@@ -1279,7 +1657,7 @@ export class ProgramSimulation {
   }
 
   /** A location centred on a point, its size kept. */
-  centre(location: number, x: number, y: number): void { this.game.centre(location, x, y); }
+  centre(location: number, x: number, y: number, size?: { width: number; height: number }): void { this.game.centre(location, x, y, size); }
 
   private cellKey(c: TableCell): string {
     return `${c.name}:${c.player ? this.slotOf(c.index) : c.index}${c.key !== undefined ? `:${c.key}` : ""}`;
@@ -1287,14 +1665,72 @@ export class ProgramSimulation {
 
   /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
   tableRead(c: TableCell): number {
+    // The game's own count of frames, which a program can read and never write (memory.ts).
+    if (c.name === "memory.game.frame") return this.frame;
+    // The vision countdown, run down by the frames (visionStep) as much as written by the programs.
+    if (c.name === "memory.vision.countdown") return this.countdown;
+    const local = c.name.startsWith("local.") ? this.localRead(c.name) : undefined;
+    if (local !== undefined) return local;
+    // A location's edge (bounds()): the location as the simulator holds it, which centerLocation() moves too.
+    if (c.name.startsWith("location.")) return this.locations.get(c.index + 1)?.[c.name.slice("location.".length) as keyof SimBounds] ?? 0;
     const stored = this.tables.get(this.cellKey(c));
     if (typeof stored === "number") return Math.floor(stored / (c.scale ?? 1));
     const given = this.tableOf?.(c);
     return given === undefined ? 0 : Math.max(0, Math.trunc(given));
   }
 
+  /**
+   * The fog of war, as far as the simulator draws it: each player's tiles, 0 never seen, 1 seen before, 2 seen now. A
+   * unit lights the tiles of its sight when it is made — a unit whose type's sight a program set (\`stats(t).sight\`),
+   * with the shape a flying unit of that sight has in the game (FOG_SHAPES), which is what the fog library draws with —
+   * and the vision countdown (\`memory.vision.countdown\`) run down to 0 at the start of a frame puts every tile seen
+   * now back to seen before and has the units there light theirs again, as the game's frame step does.
+   */
+  private readonly vision = new Map<number, Uint8Array>();
+  private countdown = 0;
+  private visionOf(player: number): Uint8Array {
+    let v = this.vision.get(player);
+    if (!v) { v = new Uint8Array(FOG_SIZE * FOG_SIZE); this.vision.set(player, v); }
+    return v;
+  }
+  private reveal(u: SimUnit): void {
+    const sight = this.tables.get(`unit.sight:${u.type}`);
+    if (typeof sight !== "number" || sight < 1 || u.owner > 7) return;
+    const shape = FOG_SHAPES[Math.min(sight, FOG_SHAPES.length) - 1];
+    const cy = shape.findIndex((r) => r.includes("@")), cx = shape[cy].indexOf("@");
+    const tx = Math.floor(u.x / 32), ty = Math.floor(u.y / 32), v = this.visionOf(u.owner);
+    shape.forEach((row, dy) => { for (let dx = 0; dx < row.length; dx++) if (row[dx] !== ".") { const x = tx + dx - cx, y = ty + dy - cy; if (x >= 0 && y >= 0 && x < FOG_SIZE && y < FOG_SIZE) v[y * FOG_SIZE + x] = 2; } });
+  }
+  /** At the start of a frame: the countdown, and the wipe when it runs out. */
+  private visionStep(): void {
+    if (this.countdown <= 0) return;
+    if (--this.countdown > 0) return;
+    this.countdown = 100;
+    for (const v of this.vision.values()) for (let i = 0; i < v.length; i++) if (v[i] === 2) v[i] = 1;
+    for (const u of this.world.game.units) if (u.alive) this.reveal(u);
+  }
+  /** What a player sees of the fog, as GameSim.fog gives it from the game: "#" now, "+" before, "." never. */
+  fog(player: number, area?: { x: number; y: number; width: number; height: number }): string[] {
+    const w = this.tableOf?.({ name: "memory.map.width", base: 0x57f1d4, stride: 0, index: 0, width: 2 }) || 128;
+    const h = this.tableOf?.({ name: "memory.map.height", base: 0x57f1d6, stride: 0, index: 0, width: 2 }) || 128;
+    const { x = 0, y = 0, width = w, height = h } = area ?? {};
+    const v = this.visionOf(player), rows: string[] = [];
+    for (let ty = y; ty < Math.min(y + height, FOG_SIZE); ty++) {
+      let row = "";
+      for (let tx = x; tx < Math.min(x + width, FOG_SIZE); tx++) row += ".+#"[v[ty * FOG_SIZE + tx]];
+      rows.push(row);
+    }
+    return rows;
+  }
+
   /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
   tableWrite(c: TableCell, value: number, scaled: boolean, text?: string): void {
+    if (c.name === "memory.vision.countdown") this.countdown = value;
+    if (c.name.startsWith("location.")) {
+      const n = c.index + 1, b = this.locations.get(n) ?? { left: 0, top: 0, right: 0, bottom: 0 };
+      this.locations.set(n, { ...b, [c.name.slice("location.".length)]: Math.min(value, cellMax(4)) });
+      return;
+    }
     if (text !== undefined) { this.tables.set(this.cellKey(c), text); return; }
     const raw = scaled ? value : value * (c.scale ?? 1);
     this.tables.set(this.cellKey(c), Math.min(raw, cellMax(c.width)));
@@ -1306,9 +1742,9 @@ export class ProgramSimulation {
     this.events.push({ cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
 
-  partText(p: Exclude<TextPart, { kind: "number" | "value" }>): string {
-    // A colour is a control character in the game; the log keeps the words.
-    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
+  partText(p: Exclude<TextPart, { kind: "number" | "value" | "char" }>): string {
+    // A player's colour is the code of the game's texts nearest it: one character, as the game puts it there.
+    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : p.kind === "color" ? String.fromCharCode(this.colorOf(this.slotOf(p.player))) : "";
   }
 
   /** A printed text: an event like a Display Text action's, the text already filled in. */
@@ -1347,7 +1783,9 @@ export class ProgramSimulation {
       case ActionType.Comment: case ActionType.PreserveTrigger: return;
       default: {
         // What is done to units is done, and said like everything else.
-        this.game.act(a, run.player);
+        const made: SimUnit[] = [];
+        this.game.act(a, run.player, made);
+        for (const u of made) this.reveal(u);
         const ev: ProgramEvent = { cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: a };
         const text = programText ?? this.world.text(a.text);
         if (text !== undefined) ev.text = text;
@@ -1356,11 +1794,70 @@ export class ProgramSimulation {
     }
   }
 
+  /**
+   * The frame's events pass (on.created / on.died), as the game's lowering has it: a unit is seen the first time a pass
+   * finds it on the map, and its death is found by the first pass after it, once. A unit made and gone between two
+   * passes is neither. Each list is the latest first, as the game's lists keep them.
+   */
+  private eventsFrom = 0;
+  /** Each unit seen on the map, with its order and type as the pass before found them (on.order / on.morphed). */
+  private readonly seen = new Map<SimUnit, { order: number; type: number }>();
+  private events_: Record<EventSource, { u: SimUnit; was: number }[]> = { created: [], died: [], killed: [], ordered: [], morphed: [] };
+  private eventsPass(): void {
+    const out: Record<EventSource, { u: SimUnit; was: number }[]> = { created: [], died: [], killed: [], ordered: [], morphed: [] };
+    // Latest first, as the game's lists keep them: what was seen before this pass, then what came on since.
+    for (const [u, last] of [...this.seen].reverse()) {
+      if (!u.alive) {
+        out.died.push({ u, was: 0 });
+        if (u.killedBy !== undefined) out.killed.push({ u, was: u.killedBy });
+        this.seen.delete(u);
+        continue;
+      }
+      if (u.orderId !== last.order) { out.ordered.push({ u, was: last.order }); last.order = u.orderId; }
+      if (u.type !== last.type) { out.morphed.push({ u, was: last.type }); last.type = u.type; }
+    }
+    const all = this.game.units;
+    for (; this.eventsFrom < all.length; this.eventsFrom++) { const u = all[this.eventsFrom]; if (u.alive) { out.created.push({ u, was: 0 }); this.seen.set(u, { order: u.orderId, type: u.type }); } }
+    out.created.reverse();
+    this.events_ = out;
+  }
+
+  /**
+   * What this frame's events pass found that a filter matches, each with what the unit was (the killer, the order it had,
+   * the type it was): the units that came on, took up an order or turned into another type and are still here, or the
+   * ones that died, as they died.
+   */
+  eventUnits(source: EventSource, f: UnitFilter, event: { order?: number; by?: number } = {}): { u: SimUnit; was: number }[] {
+    const owners = f.owner === undefined ? undefined : this.slotsOf(f.owner);
+    const by = event.by === undefined ? undefined : this.slotsOf(event.by);
+    const dead = source === "died" || source === "killed";
+    return this.events_[source].filter(({ u, was }) => (dead || u.alive) && this.game.fits(u, owners, f.type, f.at)
+      && (event.order === undefined || u.orderId === event.order) && (!by || by.includes(was)));
+  }
+
   /** One frame: every program in order, from where it left off. */
   step(): void {
+    this.eventsPass();
+    this.visionStep();
     // What was done since the last frame is what this one finds, and only this one.
     this.current = this.queued;
     this.queued = { events: new Set(), lines: new Map() };
+    // What was sent arrives on this frame and only this one, as MSQC's cell holds it (B5).
+    this.synced.clear();
+    for (const [key, value] of this.sending) this.synced.set(key, value);
+    this.sending = [];
+    // A key or a button down on this frame and the last is held, not pressed again: the game reports the frame it goes
+    // down (MSQC's KeyDown / MouseDown), however many frames a tap lasts.
+    const down = new Set([...this.current.events].filter((e) => e.startsWith("key:") || e.startsWith("click:")));
+    for (const e of down) if (this.down.has(e)) this.current.events.delete(e);
+    this.down = down;
+    // keyHeld(): down now, or let go no more than HELD_GRACE frames ago — as the game's lowering has it, which covers a
+    // message that went missing on its way between the players' computers.
+    for (const e of down) this.lastDown.set(e, this.frame);
+    const was = this.downNow;
+    this.downNow = new Set([...this.lastDown].filter(([, f]) => this.frame - f <= HELD_GRACE).map(([e]) => e));
+    // With a held key in the game every key goes as held, and a press is held now and not before (compiler/input.ts).
+    if (this.heldKeys) for (const e of [...this.current.events]) if (e.startsWith("key:") && (!this.downNow.has(e) || was.has(e))) this.current.events.delete(e);
     for (const run of this.runs) {
       this.world.current = run.player;
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }
@@ -1375,7 +1872,7 @@ export class ProgramSimulation {
   }
 
   /** Whether every program has ended. */
-  finished(): boolean { return this.runs.every((r) => r.done); }
+  finished(): boolean { return this.runs.every((r) => r.done && !r.tasksRunning); }
 
   /** A program's run: the program by its place in the list or its name, and of a per-player program the player's (the first by default). */
   runOf(program: number | string = 0, player?: number): ProgramRun | undefined {

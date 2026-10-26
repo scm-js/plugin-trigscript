@@ -2,3 +2,9 @@ node_modules/
 *.tsbuildinfo
 # Blizzard's maps, copied in for the round-trip test; never committed.
 fixtures/
+# Videos a probe imports (probes/bad-apple.ts): not ours, made on the spot with scripts/import-video.mts.
+probes/*.video
+# The halftone probe's pictures and walks: made on the spot by probes/lib/halftone-gen.mts.
+probes/*.image
+# The sound demo's imported sound: made on the spot by probes/lib/sound-demo-gen.mts.
+probes/*.sound

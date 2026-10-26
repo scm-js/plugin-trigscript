@@ -1,0 +1,29 @@
+TrigScript sounds, step 3: Korobeiniki as a song of sections
+============================================================
+
+Host it as a multiplayer game, alone, with the game's music OFF. Headphones help.
+It plays A (63 s: step 2's B, exactly the file you heard last time), a pause, then B (about 73 s), and repeats.
+Start it once and quit when A comes round again. A recording is all I need, plus what your ears say.
+B is beside this sheet as korobeiniki-step3.ogg too, to play outside the game.
+
+B, section by section (143 beats a minute, a bar 1.68 s):
+  0:00  intro, 4 bars: the pad and the plucked arpeggio behind a filter that opens; hats creep in; a reversed crash
+  0:07  verse, 8 bars: the melody on the warm lead, a crash on the first beat, the groove, held back a little
+  0:20  build, 4 bars: the bell plays the first phrase, a riser, the snare roll speeding up and getting louder,
+        the filters opening, half a bar of silence before...
+  0:27  drop, 8 bars: the supersaw melody and the bell, four on the floor, an impact, the pad, bass and arpeggio
+        pumping with the beat
+  0:40  break, 4 bars: electric piano, the bell plays the second phrase, the kick comes back, a short riser
+  0:47  last verse, a tone up (B minor): the supersaw, the bell, the acid line, pumping
+  1:00  outro: the last chord, an impact, the pad closing down into the reverb
+
+What to listen for:
+1. Does the shape work: does the build build, does the drop hit, does the key change lift? ............
+2. The drums: better now (they are about 2 dB quieter against the rest than in A)? Still too much? ............
+3. The riser, the impacts, the reversed crash, the pumping: good, cheesy, too much? ............
+4. Anything wrong: crackle, clipping, a sound that cuts off, a hitch in the game? ............
+
+What is new (step 3), all for writing songs, not new sounds: a song made of sections that fill parts by name and
+repeat a pattern to fill themselves; a section changed for its second time round; chord names (Am, E, Dm7, C/E) and
+templates that play a chord's notes by number, with voice leading; transpose, stretch, accents ("@0.5" on a step),
+swing, effects and volumes for one section only (the filter sweeps, the pumping), risers, impacts and a crash.

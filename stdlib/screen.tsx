@@ -1,0 +1,279 @@
+/**
+ * Pixel screens: the standard library's "trigscript/screen" (TrigScript 4).
+ *
+ *   import { Screen, ScreenView, sprite } from "trigscript/screen";
+ *
+ *   const SHIP = sprite([".1.", "111", "1.1"]);
+ *
+ *   program(async () => {
+ *     const screen = new Screen(4, 4, 24, 16);   // 24 × 16 pixels, its corner on tile (4, 4)
+ *     let x = 10;
+ *     while (true) {
+ *       screen.clear();
+ *       screen.rect(0, 15, 24, 1, 5);           // the ground, in colour 5
+ *       screen.blit(SHIP, x, 12);
+ *       screen.number(score, 1, 1, 2);          // digits 3 × 5 pixels, in colour 2
+ *       screen.present();                       // on the map, and so on the minimap (screen.reveal(P1) once first)
+ *       await nextFrame();
+ *     }
+ *   });
+ *
+ * A screen is a grid of pixels, each 0 (empty) or a colour from 1 to 7; drawing changes the grid, and `present()`
+ * shows it: a pixel is a unit on the map, owned by the player whose colour it is, so the minimap shows the picture —
+ * neighbouring pixels of one colour join into a solid block there. Only the pixels that changed since the last
+ * `present()` are made or taken away, and only the pixels drawn since are looked at, so a still picture costs nothing to
+ * show. Draw through the methods (`set`, `clear`, `rect`, …): a pixel written into `pixels` directly is not seen. The same grid can be shown in a
+ * player's text lines too, as squares (`ScreenView` in a `ui.lines` view): one game, two screens, as the Tetris probe has it.
+ *
+ * A player sees the pixels only where they have vision: `screen.reveal(P1)` once gives them Map Revealers over it.
+ *
+ * Two looks (the constructor's last argument): "dots", Overlords, which fly — the minimap draws each as a dot with a gap
+ * round it, the screen may be over Space; and "solid", Pylons, which the minimap draws as their whole two-tile
+ * footprint, so pixels side by side are one block — on buildable ground (probes/lib/screen-map.mts --ground).
+ *
+ * What the map needs, found playing the unit-pixel probe in StarCraft: Remastered (2026-10-16): the owners of the
+ * pixels (P3, P4, P5, P1, P6, P7, P8 below; their colours are theirs on the map, so give them the colours of TEXT_COLORS) must not
+ * be computers — a computer moves its own units — and Remastered will not start a game without a computer, so one slot
+ * (P2 here) is a computer that owns no pixel. A pixel is an Overlord, which sits on any ground and on nothing else; keep
+ * the screen's tiles clear of buildings. A Pylon needs buildable ground, and none of the map's own units in the way. About 80 pixels made and taken away in a frame did not slow the game.
+ */
+import { centerLocation, createUnit, removeUnitAt, reserveLocation, textColors, units, P1, P3, P4, P5, P6, P7, P8, type Player } from "trigscript";
+
+/**
+ * Whose units show colours 1 to 7 on the map, in the order of TEXT_COLORS: give each player that colour in the map
+ * (cyan, yellow, purple, green, red, blue, orange). Green is P1's — your own units are green on the minimap anyway.
+ * Not computers.
+ */
+export const OWNERS: readonly Player[] = [P3, P4, P5, P1, P6, P7, P8];
+/** The same colours in the text lines (`ScreenView`), 0 an empty square: cyan, yellow, purple, green, red, blue, orange. */
+export const TEXT_COLORS: readonly number[] = [0, textColors.cyan, textColors.yellow, textColors.purple, textColors.green, textColors.red, textColors.blue, textColors.orange];
+
+/** Where each pixel's unit is made: a location the map does not use, taken when the script is built. */
+const SPOT = reserveLocation("screen: where each pixel is made");
+
+/** A picture known when the script is built, to `blit` onto a screen: its size, and its pixels a row at a time (0 is see-through). */
+export interface Sprite { readonly width: number; readonly height: number; readonly cells: readonly number[] }
+
+/**
+ * A sprite from rows of text, when the script is built: "1" … "7" a pixel of that colour, anything else see-through.
+ *
+ *   const SHIP = sprite([".1.", "111", "1.1"]);
+ */
+export function sprite(rows: readonly string[]): Sprite {
+  const width = Math.max(0, ...rows.map((r) => r.length));
+  const cells: number[] = [];
+  for (const row of rows) for (let x = 0; x < width; x++) { const c = Number(row[x]); cells.push(c >= 1 && c <= 7 ? c : 0); }
+  return { width, height: rows.length, cells };
+}
+
+/** The digits 0 to 9, three pixels wide and five high, for `number()`: each fifteen pixels, a row at a time. */
+const DIGITS: readonly number[] = [
+  "111101101101111", "010110010010111", "111001111100111", "111001111001111", "101101111001001",
+  "111100111001111", "111100111101111", "111001001010010", "111101111101111", "111101111001111",
+].flatMap((d) => d.split("").map(Number));
+
+/** The most pixels a screen has: 32 × 32 at two tiles a pixel covers a 64 × 64 map, 64 × 32 half of a 128 × 128 one. */
+export const MAX_PIXELS = 2048;
+
+export class Screen {
+  /** The picture being drawn: a colour a pixel, a row at a time (the first width × height of them). */
+  pixels: number[] = new Array(MAX_PIXELS).fill(0);
+  /** What the map shows now: the picture as it was at the last `present()`. */
+  shown: number[] = new Array(MAX_PIXELS).fill(0);
+  /** The pixels drawn a colour they were not since the last `present()`, in order: each one's place and its x and y. */
+  drawnAt: number[] = new Array(MAX_PIXELS).fill(0);
+  drawnX: number[] = new Array(MAX_PIXELS).fill(0);
+  drawnY: number[] = new Array(MAX_PIXELS).fill(0);
+  drawn = 0;
+  /** More drawn than the list holds: `present()` looks at every pixel instead. */
+  overflow = false;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  cell: number;
+  /** The unit a pixel is: an Overlord ("dots"), or a Pylon ("solid"). */
+  unit = 0;
+
+  /**
+   * A screen `width` × `height` pixels (MAX_PIXELS at most), its top left corner on tile (x, y) of the map, a pixel two
+   * tiles across.
+   * @param look "dots" (the default): a pixel is an Overlord, which the minimap draws as a dot, a gap round it — it flies,
+   *   so the screen may be over anything, Space too. "solid": a pixel is a Pylon, which the minimap draws as its whole
+   *   footprint, two tiles square, so pixels side by side are one block — it needs buildable ground under the screen,
+   *   and gives its owner Protoss supply. (Overlords a tile apart do not fit: the game will not place most of them.)
+   */
+  constructor(x: number, y: number, width: number, height: number, look: "dots" | "solid" = "dots") {
+    this.x = x;
+    this.y = y;
+    this.width = width;
+    this.height = height;
+    this.cell = 64;
+    this.unit = look === "solid" ? units.ProtossPylon : units.ZergOverlord;
+  }
+
+  /** Every pixel the colour (0, empty, unless it says). */
+  clear(color: number = 0) {
+    let i = 0;
+    let y = 0;
+    while (y < this.height) {
+      let x = 0;
+      while (x < this.width) { this.put(i, x, y, color); i++; x++; }
+      y++;
+    }
+  }
+
+  /** One pixel; nothing happens outside the screen. */
+  set(x: number, y: number, color: number) {
+    if (x >= 0 && y >= 0 && x < this.width && y < this.height) this.put(y * this.width + x, x, y, color);
+  }
+
+  /** A pixel written, and listed for `present()` when its colour changed. */
+  private put(i: number, x: number, y: number, color: number) {
+    if (this.pixels[i] === color) return;
+    this.pixels[i] = color;
+    if (this.drawn < MAX_PIXELS) {
+      this.drawnAt[this.drawn] = i;
+      this.drawnX[this.drawn] = x;
+      this.drawnY[this.drawn] = y;
+      this.drawn++;
+    } else this.overflow = true;
+  }
+
+  /** The colour of a pixel; 0 outside the screen. */
+  get(x: number, y: number): number {
+    if (x >= 0 && y >= 0 && x < this.width && y < this.height) return this.pixels[y * this.width + x];
+    return 0;
+  }
+
+  /** A filled rectangle, its top left at (x, y); what is outside the screen is left out. */
+  rect(x: number, y: number, width: number, height: number, color: number) {
+    let j = 0;
+    while (j < height) {
+      let i = 0;
+      while (i < width) { this.set(x + i, y + j, color); i++; }
+      j++;
+    }
+  }
+
+  /** A line from (x0, y0) to (x1, y1), both ends drawn. */
+  line(x0: number, y0: number, x1: number, y1: number, color: number) {
+    const dx = Math.abs(x1 - x0);
+    const dy = -Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    let x = x0;
+    let y = y0;
+    while (true) {
+      this.set(x, y, color);
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
+    }
+  }
+
+  /** A sprite with its top left at (x, y): its see-through pixels leave what is under them. */
+  blit(s: Sprite, x: number, y: number) {
+    let k = 0;
+    let j = 0;
+    while (j < s.height) {
+      let i = 0;
+      while (i < s.width) {
+        const c = s.cells[k];
+        if (c !== 0) this.set(x + i, y + j, c);
+        k++;
+        i++;
+      }
+      j++;
+    }
+  }
+
+  /** A whole number's digits, 3 × 5 pixels each with a pixel between, its top left at (x, y): a score on the minimap. */
+  number(n: number, x: number, y: number, color: number) {
+    let rest = n < 0 ? -n : n;
+    let count = 1;
+    let probe = rest;
+    while (probe >= 10) { probe = Math.floor(probe / 10); count++; }
+    let place = x + (count - 1) * 4;
+    while (true) {
+      const d = rest % 10;
+      let k = 0;
+      while (k < 15) {
+        if (DIGITS[d * 15 + k] === 1) this.set(place + (k % 3), y + Math.floor(k / 3), color);
+        k++;
+      }
+      rest = Math.floor(rest / 10);
+      place -= 4;
+      if (rest === 0) break;
+    }
+  }
+
+  /**
+   * Let a player see the screen: Map Revealers of theirs over it, for the rest of the game. Without them its pixels,
+   * owned by other players, are hidden by the fog of war — on the map and on the minimap. Once, before the first
+   * `present()`.
+   * @param player Who sees it: P1 … P8, known when the script is built.
+   */
+  reveal(player: Player) {
+    // A Map Revealer sees ten tiles round; one every six tiles leaves no gap.
+    const right = this.x * 32 + this.width * this.cell;
+    const bottom = this.y * 32 + this.height * this.cell;
+    let py = this.y * 32 + 96;
+    while (py < bottom + 96) {
+      let px = this.x * 32 + 96;
+      while (px < right + 96) {
+        centerLocation(SPOT, px, py, 32, 32);
+        createUnit(player, units.MapRevealer, 1, SPOT);
+        px += 192;
+      }
+      py += 192;
+    }
+  }
+
+  /**
+   * The picture on the map: each pixel that changed since the last time taken away and made again in its colour. Only
+   * the pixels drawn since are looked at (one drawn and drawn back is passed over), unless more were drawn than the list
+   * holds.
+   */
+  present() {
+    if (this.overflow) {
+      let i = 0;
+      let y = 0;
+      while (y < this.height) {
+        let x = 0;
+        while (x < this.width) { this.show(i, x, y); i++; x++; }
+        y++;
+      }
+      this.overflow = false;
+    } else {
+      for (let k = 0; k < this.drawn; k++) this.show(this.drawnAt[k], this.drawnX[k], this.drawnY[k]);
+    }
+    this.drawn = 0;
+  }
+
+  /** One pixel on the map as it is in the picture, when it is not already. */
+  private show(i: number, x: number, y: number) {
+    const now = this.pixels[i];
+    const was = this.shown[i];
+    if (now === was) return;
+    const half = this.cell >> 1;
+    centerLocation(SPOT, this.x * 32 + x * this.cell + half, this.y * 32 + y * this.cell + half, 32, 32);
+    OWNERS.forEach((owner, k) => { if (was === k + 1) removeUnitAt(owner, this.unit, 1, SPOT); });
+    OWNERS.forEach((owner, k) => { if (now === k + 1) createUnit(owner, this.unit, 1, SPOT); });
+    this.shown[i] = now;
+  }
+}
+
+/**
+ * A screen in the text lines, a square a pixel — filled in its colour, or empty — a line a row. For a `ui.lines` view:
+ * `<ScreenView screen={screen} width={10} height={8} />`, the screen's size known when the script is built. Eleven lines
+ * show at once, sixty squares across.
+ */
+export function ScreenView({ screen, width, height }: { screen: Screen; width: number; height: number }) {
+  return <>{UP_TO_60.map((y) => y < height && <line>{UP_TO_60.map((x) => x < width && <cell color={TEXT_COLORS[screen.pixels[y * width + x]]} />)}</line>)}</>;
+}
+
+/** 0 … 59: the places a view's rows and columns are counted over, the ones past its size left out when the script is built. */
+const UP_TO_60: readonly number[] = Array.from({ length: 60 }, (_, i) => i);

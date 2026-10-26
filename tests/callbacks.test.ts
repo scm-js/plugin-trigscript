@@ -174,8 +174,10 @@ describe("what is refused, and how", () => {
     expect(messages("let xs = [2, 1]; xs.sort((a, b) => a > b);").join("\n")).toMatch(/'boolean' is not assignable to type 'number'/);
   });
   it("find of a number on its own, and of a record", () => {
-    expect(messages("let xs = [2, 1]; const a = xs.find((x) => x > 1);").join("\n")).toMatch(/\?\? 0/);
-    expect(messages("let ws = [{ n: 1 }]; const w = ws.find((w) => w.n > 0);").join("\n")).toMatch(/findIndex/);
+    // A number or nothing (B9): what find() gives of numbers is kept as such.
+    expect(messages("let xs = [2, 1]; const a = xs.find((x) => x > 1);")).toEqual([]);
+    // Of records, the row found and whether one was (tests/small-gaps.test.ts).
+    expect(messages("let ws = [{ n: 1 }]; const w = ws.find((w) => w.n > 0);")).toEqual([]);
   });
   it("reduce without what it starts from", () => {
     expect(messages("let xs = [2, 1]; let a = 0; a = xs.reduce((s, x) => s + x);")).toEqual([expect.stringMatching(/starts from/)]);

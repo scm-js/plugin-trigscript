@@ -111,8 +111,9 @@ describe("an array of instances", () => {
     expect(names.filter((name) => name.startsWith("(new Wave)")).length).toBe(6);
     expect(names.some((name) => name.startsWith("waves[…]"))).toBe(false);
   });
-  it("holds one class", () => {
-    expect(messages("class A { n = 0; } class B extends A { m = 0; } const xs: A[] = []; xs.push(new A()); xs.push(new B());").join("\n")).toMatch(/holds one class/);
+  it("of two classes holds them by reference (B9)", () => {
+    const sim = run("class A { n = 1; size() { return this.n; } } class B extends A { m = 5; size() { return this.n + this.m; } } const xs: A[] = []; xs.push(new A()); xs.push(new B()); print(`${xs[0].size()} ${xs[1].size()}`);");
+    expect(shown(sim)).toEqual(["1 6"]);
   });
   it("of a class others extend holds the one that is put into it", () => {
     const sim = run("class A { n = 1; size() { return this.n; } } class B extends A { m = 5; size() { return this.n + this.m; } } const xs: A[] = []; xs.push(new B()); print(`${xs[0].size()}`);");
@@ -204,8 +205,8 @@ describe("a method is a function", () => {
 });
 
 describe("what is said when a class cannot be the program's", () => {
-  it("a class declared outside the program is the script's", () => {
-    expect(messages("let n = 1; const c = new Outside(n);", "class Outside { constructor(public n: number) {} }").length).toBeGreaterThan(0);
+  it("a class declared outside the program is the program's too, since TrigScript 4", () => {
+    expect(messages("let n = 1; const c = new Outside(n); print(`${c.n}`);", "class Outside { constructor(public n: number) {} }")).toEqual([]);
   });
   it("a method that is not there", () => {
     expect(messages("class A { n = 0; } const a = new A(); (a as any).gone();").join("\n")).toMatch(/has no method gone/);
@@ -230,5 +231,59 @@ describe("the probe", () => {
     expect(lines.some((t) => t.startsWith("K: Player 1 2 7"))).toBe(true);
     expect(sim.faults).toEqual([]);
     expect(sim.events.some((e) => e.text === "done")).toBe(true);
+  });
+});
+
+describe("a class declared outside the program (TrigScript 4)", () => {
+  const files = (main: string, more: Record<string, string> = {}): CompileResult => compileScript(ts, { "main.ts": main, ...more }, NAMES, { lib: LIB });
+  const ok = (r: CompileResult) => { expect(r.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`)).toEqual([]); return r; };
+  const printed = (r: CompileResult, frames = 1) => simulatePrograms(r.ir, frames, { strings: r.strings }).events.map((e) => e.text);
+
+  it("is the program's where a program makes an instance of it, in the same file", () => {
+    const r = ok(files(`${COUNTER}\nprogram(() => { let k = 2; const c = new Counter(k); c.bump(); c.bump(); c.twice = 10; c.bump(); print(\`\${c.n} \${c.twice}\`); });`));
+    expect(printed(r)).toEqual(["7 14"]);
+  });
+
+  it("comes from another file, with what its bodies use from its own file's imports", () => {
+    const r = ok(files(
+      `import { Squad } from "./squad";\nprogram(() => { const s = new Squad(1); s.add(3); s.add(4); s.spawn(); print(\`\${s.size} \${s.total}\`); });`,
+      { "squad.ts": `import { createUnit, units, P2, type Location } from "trigscript";
+        const HOME = 1 as Location;
+        const BONUS = [10, 20, 30].reduce((a, b) => a + b, 0);
+        export class Squad {
+          tag: number; counts: number[] = []; total = BONUS;
+          constructor(tag: number) { this.tag = tag; }
+          add(n: number) { this.counts.push(n); this.total += n; }
+          get size() { return this.counts.length; }
+          spawn() { for (const n of this.counts) createUnit(P2, units.ZergZergling, n, HOME); }
+        }` },
+    ));
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings });
+    expect(sim.events.filter((e) => e.action.type === 9).map((e) => e.text)).toEqual(["2 67"]);
+    // BONUS was worked out in squad.ts when the script was built: 60, then 3 and 4 added in the game.
+    expect(sim.events.filter((e) => e.action.type === 44)).toHaveLength(2);
+  });
+
+  it("extends another class of the script's, across files, and keeps static fields as the program's", () => {
+    const r = ok(files(
+      `import { Hero } from "./hero";\nprogram(() => { const a = new Hero(5); const b = new Hero(7); a.hurt(2); print(\`\${a.hp} \${b.hp} \${Hero.made} \${a.name()}\`); });`,
+      {
+        "unit.ts": `export class Thing { hp: number; static made = 0; constructor(hp: number) { this.hp = hp; Thing.made++; } hurt(n: number) { this.hp -= n; } name() { return "thing"; } }`,
+        "hero.ts": `import { Thing } from "./unit";\nexport class Hero extends Thing { constructor(hp: number) { super(hp * 10); } name() { return "hero"; } }`,
+      },
+    ));
+    expect(printed(r)).toEqual(["48 70 2 hero"]);
+  });
+
+  it("is still an ordinary class when the script is built, beside the program's instances", () => {
+    const r = ok(files(`class V { x: number; constructor(x: number) { this.x = x; } double() { return this.x * 2; } }\nconst AT_BUILD = new V(21).double();\nprogram(() => { let n = 1; const v = new V(n); n = v.double(); print(\`\${AT_BUILD} \${n}\`); });`));
+    expect(printed(r)).toEqual(["42 2"]);
+  });
+
+  it("says what is wrong only where a program uses it", () => {
+    const unused = files(`class Tool { f = async () => 1; run(n: number) { return n; } }\nconst t = new Tool();\nprogram(() => { print("x"); });`);
+    expect(unused.diagnostics).toEqual([]);
+    const used = files(`class Tool { f = async () => 1; run(n: number) { return n; } }\nprogram(() => { let k = 1; const t = new Tool(); k = t.run(k); print(\`\${k}\`); });`);
+    expect(used.diagnostics.length).toBeGreaterThan(0);
   });
 });

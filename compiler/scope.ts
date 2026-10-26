@@ -30,7 +30,7 @@ export type Binding =
    * array with a cell for every id there is. `values` is absent for a Set; `present` says which keys were set (absent for
    * a Record, whose every key reads its value or 0); `size` counts them. `as` is how the source reaches it.
    */
-  | { kind: "keyed"; as: "record" | "map" | "set"; name: string; domain: number; key: string; values?: ArrayDecl; present?: ArrayDecl; size?: VarDecl }
+  | { kind: "keyed"; as: "record" | "map" | "set"; name: string; domain: number; key: string; values?: ArrayDecl; present?: ArrayDecl; size?: VarDecl; /** Keys that are texts of a union known when the script is built (`Map<"red" | "blue", number>`): each the cell at its place here. */ literals?: readonly string[] }
   /**
    * A `Map` or a `Set` over any number: the entries in the order they went in — `keys`, `values` (a Map's), `live` (false
    * once deleted) — and `slots`, the table a key is found through: a power of two of cells, each 0 or an entry's place
@@ -61,7 +61,27 @@ export type Binding =
    * `cls`: the record is an instance — `new Squad()` — and this is its class, known when the script is built, which is what a
    * method call, a getter, `instanceof` and an overridden method are settled by.
    */
-  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration };
+  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration; /** An instance of a generic class: what each of its type parameters is (`new Signal<number>()`). */ typeArgs?: TypeArgs; /** A reference (B9): the row of the object table it is, and the classes it may be an instance of — what a method called on it asks among. */ ref?: { place: NumExpr; classes: readonly TS.ClassDeclaration[] } }
+  /** A function known when the script is built (TrigScript 4, B3): a call of it is a call of its body, inlined or called as any function is. */
+  | { kind: "fn"; fn: FnValue }
+  /** `number | undefined`, `boolean | undefined` (B9): the value, a variable or a cell, and beside it whether there is one. */
+  | { kind: "maybe"; value: Binding; there: Binding };
+
+/**
+ * A function as a value: where it is written, and the scope it closes over — what the names in its body are bound to
+ * where it was written. `body` is the file's walk the function belongs to (`structured.ts#Body`), typed loosely here.
+ */
+export interface FnValue {
+  decl: TS.FunctionDeclaration | TS.ArrowFunction | TS.FunctionExpression;
+  parameters: readonly TS.ParameterDeclaration[];
+  body: TS.Block | TS.Expression;
+  closure: Scope | null;
+  target: unknown;
+  name?: string;
+}
+
+/** What each type parameter of a generic class or function stands for, in one instance or one call. */
+export type TypeArgs = Map<TS.Symbol, TS.Type>;
 
 /** What `this` is bound under in the scope of a method's body: no declaration of the source stands for it. */
 export const THIS = { kind: -1 } as unknown as TS.Node;
@@ -87,19 +107,49 @@ export type RowField =
   /** A text: `addr`, `block`, `chars` — where it is, the block of the heap it owns (0 for one of the map's table), its length. The row owns the block. */
   | { kind: "text" }
   /** A record, or an instance, inside the row: its fields' columns under its name. */
-  | { kind: "record"; shape: RowShape; cls?: TS.ClassDeclaration };
+  | { kind: "record"; shape: RowShape; cls?: TS.ClassDeclaration }
+  /** A number or a boolean that may be undefined (B9): its column, and `there`, whether it holds one. */
+  | { kind: "maybe"; of: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } };
 
 /** The parts of a unit, and of an array's handle, in the order their columns are kept. */
 export const UNIT_PARTS = ["ptr", "epd", "uid"] as const;
 export const HANDLE_PARTS = ["block", "length", "room", "size"] as const;
 export const TEXT_PARTS = ["addr", "block", "chars"] as const;
 
+let scopes = 0;
+
 export class Scope {
   private readonly map = new Map<TS.Node, Binding>();
   readonly parent: Scope | null;
-  constructor(parent: Scope | null) { this.parent = parent; }
-  bind(decl: TS.Node, b: Binding) { this.map.set(decl, b); }
+  /** In the order scopes were made: one made after another began is inside what that one's walk made. */
+  readonly serial = ++scopes;
+  /**
+   * Told of every name found outside the scope it was looked up in (B3): a function kept as a value is walked with one
+   * watching, which is how a variable it may not keep is found.
+   */
+  static watch: ((b: Binding, found: Scope, decl: TS.Node) => void) | null = null;
+  /**
+   * Closures over locals (TrigScript 4): a variable a kept function uses is kept in an environment on the heap, not a
+   * variable. `boxer` is told of every binding and may give another in its place (the variable's cell of the
+   * environment); `resolver` is told of every one found outside the scope it was looked up in and may give the same
+   * cell reached from there (through the environment a kept function was handed); `created` is told of every new scope.
+   */
+  static boxer: ((scope: Scope, decl: TS.Node, b: Binding) => Binding | undefined) | null = null;
+  static resolver: ((b: Binding, found: Scope, from: Scope) => Binding) | null = null;
+  static created: ((scope: Scope) => void) | null = null;
+  constructor(parent: Scope | null) { this.parent = parent; Scope.created?.(this); }
+  bind(decl: TS.Node, b: Binding) { this.map.set(decl, Scope.boxer?.(this, decl, b) ?? b); }
   lookup(decl: TS.Node): Binding | undefined {
-    return this.map.get(decl) ?? this.parent?.lookup(decl);
+    for (let s: Scope | null = this; s; s = s.parent) {
+      const b = s.map.get(decl);
+      if (b) {
+        if (s === this) return b;
+        Scope.watch?.(b, s, decl);
+        return Scope.resolver ? Scope.resolver(b, s, this) : b;
+      }
+    }
+    return undefined;
   }
+  /** Every binding of this scope itself, not its parents'. */
+  own(): IterableIterator<Binding> { return this.map.values(); }
 }

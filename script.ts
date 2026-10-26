@@ -71,9 +71,9 @@ export function withSettings(extras: Extras, settings: Partial<ScriptSettings>):
 export interface ScriptManifest {
   version: 2;
   /**
-   * How many `program()`s the script had when it was last applied: what tells the eudplib
-   * contribution, without compiling, whether the map has anything to build. Absent in a
-   * manifest from before 3.0, whose programs were triggers of the block.
+   * How many `program()`s the script had when it was last applied: what tells the build step,
+   * without compiling, whether the map has anything to build. Absent in a manifest from
+   * before 3.0, whose programs were triggers of the block.
    */
   programs?: number;
   /** Index of the first generated trigger. */
@@ -108,6 +108,25 @@ export function isScriptMember(name: string): boolean {
   return memberKey(name).startsWith(memberKey(SCRIPT_FOLDER));
 }
 
+/** A file a build wrote for a clip the script plays (`compiler/sound.ts`): `staredit\wav\trigscript-<hash>.wav`, or `.ogg` (8 hex digits before 3.13, 16 since). */
+export const isBuiltSound = (name: string): boolean => /^staredit\\wav\\trigscript-(?:[0-9a-f]{8}|[0-9a-f]{16})\.(wav|ogg)$/.test(memberKey(name));
+
+/**
+ * The members with the clips of this build in place of the last one's. A clip already in the map keeps its bytes as
+ * they are: the name says what it holds. One that is not, and has no bytes — an Ogg Vorbis clip from a check, which
+ * leaves it unencoded — is refused: the map would play nothing.
+ */
+export function withSounds(extras: Extras, sounds: readonly { path: string; bytes?: Uint8Array }[]): Map<string, Uint8Array> {
+  const next = new Map<string, Uint8Array>();
+  for (const [name, bytes] of extras) if (!isBuiltSound(name)) next.set(name, bytes);
+  for (const s of sounds) {
+    const bytes = [...extras].find(([name]) => memberKey(name) === memberKey(s.path))?.[1] ?? s.bytes;
+    if (!bytes) throw new Error(`The sound ${s.path} was not encoded: compile it as a build (with its sounds) before installing it.`);
+    next.set(s.path, bytes);
+  }
+  return next;
+}
+
 /** The member name of a script file (`ai/waves.ts` → `trigscript\ai\waves.ts`). */
 export function memberOf(path: string): string {
   return `${SCRIPT_FOLDER}${normalizePath(path).replace(/\//g, "\\")}`;
@@ -117,11 +136,14 @@ export function memberOf(path: string): string {
 export function pathOf(member: string): string | null {
   if (!isScriptMember(member)) return null;
   const rest = member.replace(/\//g, "\\").slice(SCRIPT_FOLDER.length);
-  return /\.ts$/i.test(rest) ? rest.replace(/\\/g, "/") : null;
+  return SCRIPT_FILE.test(rest) ? rest.replace(/\\/g, "/") : null;
 }
 
-/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts`. */
-export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.ts$/;
+/** What a file of the script ends in: TypeScript, TypeScript with JSX, or a video, an image or a sound it imports (`compiler/media.ts`). */
+const SCRIPT_FILE = /\.(?:tsx?|video|image|sound|notes)$/i;
+
+/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts` (or `.tsx`, `.video`, `.image`, `.sound`, `.notes`). */
+export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video|image|sound|notes)$/;
 
 function member(extras: Extras, name: string): Uint8Array | undefined {
   const key = memberKey(name);
@@ -250,7 +272,7 @@ export interface ScriptState {
   edited: { unchanged: number; changed: number } | null;
   /** The files differ from what the block was built from (or were never built). */
   unbuilt: boolean;
-  /** The script had programs when it was last applied: the saved map is built by eudplib and needs StarCraft: Remastered. */
+  /** The script had programs when it was last applied: the saved map is built with them and needs StarCraft: Remastered. */
   programs: number;
 }
 
@@ -363,7 +385,7 @@ export function buildScript(triggers: TriggerRecord[], extras: Extras, files: Sc
     start = triggers.length; before = triggers.slice(); after = [];
   }
   const manifest: ScriptManifest = { version: 2, programs: compiled.ir.length, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
-  return { list: [...before, ...records, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
+  return { list: [...before, ...records, ...after], extras: withSounds(withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), compiled.sounds ?? []), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
 }
 
 /** Which trigger a source line of a file belongs to (the trigger whose source starts at or before the line), if any. */
