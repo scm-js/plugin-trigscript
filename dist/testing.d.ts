@@ -2128,6 +2128,8 @@ export interface LinkedFile {
 	/** Its source map (JSON), when emitted. */
 	map?: string;
 }
+/** Each library's modules by id, each module's source by its path in the library ("patrol.ts", "ai/waves.tsx"). */
+export type ScriptLibraries = Readonly<Record<string, Readonly<Record<string, string>>>>;
 /**
  * The map's player settings, as a map of our own needs them (TrigScript 4, step 7): the slots a human or a computer
  * plays (0-based, P1 to P8), and each slot's force (0 to 3). Who a program runs for, who All Players and a force are,
@@ -2288,6 +2290,11 @@ export interface CompileOptions {
 	 * files is an error.
 	 */
 	entries?: readonly string[];
+	/**
+	 * Other plugins' libraries the script may import, by id (`libraries.ts`): "stamps/patrol" is the module `patrol.ts`
+	 * of the library "stamps". Only the modules something imports join the files.
+	 */
+	libraries?: ScriptLibraries;
 }
 /** Compile a script against a map's names. Never throws for script errors — read `diagnostics`. */
 export declare function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNames, options: CompileOptions): CompileResult;

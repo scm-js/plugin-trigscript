@@ -7611,6 +7611,13 @@ function resolveModule(files, from, spec) {
   for (const candidate of [path, `${path}.ts`, `${path}.tsx`, path.replace(/\.js$/, ".ts"), path.replace(/\.js$/, ".tsx"), `${path}/index.ts`, `${path}/index.tsx`]) if (files.has(candidate)) return candidate;
   return null;
 }
+var LIBRARY_DIR = "__libraries__";
+function libraryModule(files, spec) {
+  if (spec.startsWith(".") || spec.startsWith("/")) return null;
+  const path = `${LIBRARY_DIR}/${spec}`;
+  for (const candidate of [path, `${path}.ts`, `${path}.tsx`, `${path}/index.ts`, `${path}/index.tsx`]) if (files.has(candidate)) return candidate;
+  return null;
+}
 
 // compiler/generated/stdlib.ts
 var STDLIB_SOURCES = {
@@ -7629,6 +7636,46 @@ var STDLIB_EXTENSIONS = { "cutscene": ".ts", "fog": ".ts", "math": ".ts", "music
 // compiler/stdlib.ts
 var STDLIB = STDLIB_SOURCES;
 var STDLIB_EXT = STDLIB_EXTENSIONS;
+
+// compiler/libraries.ts
+var LIBRARY_ID = /^[a-z][a-z0-9-]{0,39}$/;
+var LIBRARY_PATH = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.tsx?$/;
+var libraryPath = (id, path) => `${LIBRARY_DIR}/${id}/${path}`;
+function libraryProblem(id, modules, reserved = []) {
+  if (!LIBRARY_ID.test(id)) return `"${id}" is not a library id: lower-case letters, digits and "-", starting with a letter.`;
+  if (reserved.includes(id)) return `"${id}" is a name TrigScript keeps for itself.`;
+  const paths = Object.keys(modules);
+  if (paths.length === 0) return `The library "${id}" has no modules.`;
+  for (const path of paths) {
+    if (!LIBRARY_PATH.test(path) || path.split("/").some((part) => part === "." || part === "..")) return `"${path}" is not a module path of a library: folders with "/", ending in .ts or .tsx.`;
+    if (/\.test\.ts$/i.test(path)) return `"${path}" is a test file: a library's tests stay in its own repository, since a script would run them with its own.`;
+    if (typeof modules[path] !== "string") return `The module "${path}" has no source.`;
+  }
+  return null;
+}
+var SPECIFIER = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g;
+function libraryImports(texts, libraries) {
+  const all = /* @__PURE__ */ new Map();
+  for (const [id, modules] of Object.entries(libraries)) for (const [path, text] of Object.entries(modules)) all.set(libraryPath(id, path), text);
+  const names = new Set(all.keys());
+  const files = {};
+  const used = /* @__PURE__ */ new Set();
+  const add = (file) => {
+    if (file in files) return;
+    files[file] = all.get(file);
+    used.add(file.slice(LIBRARY_DIR.length + 1).split("/")[0]);
+    scan(file, files[file]);
+  };
+  const scan = (from, text) => {
+    for (const m of text.matchAll(SPECIFIER)) {
+      const spec = m[1];
+      const target = spec.startsWith(".") ? from ? resolveModule(names, from, spec) : null : libraryModule(names, spec);
+      if (target) add(target);
+    }
+  };
+  for (const text of texts) scan(null, text);
+  return { files, used: [...used].sort() };
+}
 
 // compiler/local.ts
 var SHOWN = /* @__PURE__ */ new Set([ActionType.PlayWav, ActionType.DisplayText, ActionType.CenterView, ActionType.MinimapPing, ActionType.SetMissionObjectives]);
@@ -8077,10 +8124,11 @@ function loadMonaco(base = DEFAULT_DIST) {
   });
   return loading;
 }
-function setDeclarations(monaco, content) {
+function setDeclarations(monaco, content, libraries = {}) {
   tsLanguage(monaco).typescriptDefaults.setExtraLibs([
     { content, filePath: `file:///${DECLARATIONS_FILE}` },
-    ...Object.entries(STDLIB).map(([name, source]) => ({ content: source, filePath: `file:///node_modules/${MODULE_NAME}/${name}${STDLIB_EXT[name] ?? ".ts"}` }))
+    ...Object.entries(STDLIB).map(([name, source]) => ({ content: source, filePath: `file:///node_modules/${MODULE_NAME}/${name}${STDLIB_EXT[name] ?? ".ts"}` })),
+    ...Object.entries(libraries).filter(([id]) => id !== MODULE_NAME).flatMap(([id, modules]) => Object.entries(modules).map(([path, source]) => ({ content: source, filePath: `file:///node_modules/${id}/${path}` })))
   ]);
 }
 var fileUri = (monaco, path) => monaco.Uri.parse(`file:///${normalizePath(path)}`);
@@ -8427,7 +8475,7 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark, onBre
 }
 
 // version.ts
-var VERSION5 = "4.0.0";
+var VERSION5 = "4.1.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -8444,7 +8492,7 @@ importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests, own, entries, build } = e.data;
+  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests, own, entries, libraries, build } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
@@ -8463,7 +8511,7 @@ self.onmessage = async (e) => {
       lib = await r.text();
     }
     // A check names the script's clips and makes none of them; a build makes them, the long ones encoded below.
-    const result = mod.compileScript(self.ts, files, names, { lib, tests, sounds: Boolean(vorbisUrl), own, entries });
+    const result = mod.compileScript(self.ts, files, names, { lib, tests, sounds: Boolean(vorbisUrl), own, entries, libraries });
     // A build's long clips encoded as Ogg Vorbis; a check's left as names, their samples not sent.
     if (typeof mod.finishSounds === "function") {
       const encoder = vorbisUrl && result.sounds.some((s) => s.vorbis) ? await mod.loadVorbis(vorbisUrl) : null;
@@ -8602,7 +8650,7 @@ function compileInBackground(input, dist = DEFAULT_DIST) {
   return new Promise((resolve, reject) => {
     const ms = input.sounds ? BUILD_TIMEOUT_MS : COMPILE_TIMEOUT_MS;
     pending.set(id, { resolve: (r) => resolve(r), reject, timer: setTimeout(() => timeOut(id, ms), ms), build: false });
-    const req = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...input.tests ? { tests: input.tests } : {}, ...input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}, ...input.own ? { own: input.own } : {}, ...input.entries ? { entries: input.entries } : {} };
+    const req = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...input.tests ? { tests: input.tests } : {}, ...input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}, ...input.own ? { own: input.own } : {}, ...input.entries ? { entries: input.entries } : {}, ...input.libraries ? { libraries: input.libraries } : {} };
     w.postMessage(req);
   }).catch((err) => {
     if (err.message === RETRY) return compileInBackground(input, dist);
@@ -9057,7 +9105,7 @@ function memberOf(path) {
   return `${SCRIPT_FOLDER}${normalizePath(path).replace(/\//g, "\\")}`;
 }
 function pathOf(member2) {
-  if (!isScriptMember(member2)) return null;
+  if (!isScriptMember(member2) || isLibraryMember(member2)) return null;
   const rest = member2.replace(/\//g, "\\").slice(SCRIPT_FOLDER.length);
   return SCRIPT_FILE.test(rest) ? rest.replace(/\\/g, "/") : null;
 }
@@ -9082,6 +9130,47 @@ function readFiles(extras) {
     if (path) out[path] = decoder.decode(bytes2);
   }
   return out;
+}
+var LIBRARIES_FOLDER = `${SCRIPT_FOLDER}@libraries\\`;
+var LIBRARY_INFO = "library.json";
+var isLibraryMember = (name) => memberKey(name).startsWith(memberKey(LIBRARIES_FOLDER));
+function readLibraries(extras) {
+  const out = {};
+  for (const [name, bytes2] of extras) {
+    if (!isLibraryMember(name)) continue;
+    const [id, ...rest] = name.replace(/\//g, "\\").slice(LIBRARIES_FOLDER.length).split("\\");
+    if (!LIBRARY_ID.test(id) || rest.length === 0) continue;
+    const path = rest.join("/");
+    const copy = out[id] ??= { id, label: id, version: "", modules: {} };
+    if (path === LIBRARY_INFO) {
+      try {
+        const info = JSON.parse(decoder.decode(bytes2));
+        if (typeof info?.label === "string" && info.label) copy.label = info.label;
+        if (typeof info?.version === "string") copy.version = info.version;
+      } catch {
+      }
+    } else if (LIBRARY_PATH.test(path)) copy.modules[path] = decoder.decode(bytes2);
+  }
+  for (const id of Object.keys(out)) if (Object.keys(out[id].modules).length === 0) delete out[id];
+  return out;
+}
+function withLibraries(extras, libraries) {
+  const next = /* @__PURE__ */ new Map();
+  const was = /* @__PURE__ */ new Map();
+  for (const [name, bytes2] of extras) isLibraryMember(name) ? was.set(memberKey(name), bytes2) : next.set(name, bytes2);
+  const put = (name, text) => {
+    const old = was.get(memberKey(name));
+    next.set(name, old && decoder.decode(old) === text ? old : encoder.encode(text));
+  };
+  for (const lib of Object.values(libraries)) {
+    const folder = `${LIBRARIES_FOLDER}${lib.id}\\`;
+    put(`${folder}${LIBRARY_INFO}`, JSON.stringify({ label: lib.label, version: lib.version }, null, 2));
+    for (const [path, text] of Object.entries(lib.modules)) put(`${folder}${path.replace(/\//g, "\\")}`, text);
+  }
+  return next;
+}
+function librarySources(libraries) {
+  return Object.fromEntries(Object.values(libraries).map((l) => [l.id, l.modules]));
 }
 function withFiles(extras, files) {
   const next = /* @__PURE__ */ new Map();
@@ -9128,6 +9217,13 @@ function hashFiles(files) {
   const paths = Object.keys(files).map(normalizePath).sort();
   return hashText(paths.map((p) => `${p}\0${files[p] ?? ""}\0`).join(""));
 }
+function hashSources(files, libraries = {}) {
+  const libs = Object.values(libraries);
+  if (libs.length === 0) return hashFiles(files);
+  const all = { ...files };
+  for (const lib of libs) for (const [path, text] of Object.entries(lib.modules)) all[libraryPath(lib.id, path)] = text;
+  return hashFiles(all);
+}
 function findBlock(list, manifest) {
   const { start, count } = manifest;
   const at = (s) => s >= 0 && s + count <= list.length && hashTriggers(list.slice(s, s + count)) === manifest.hash;
@@ -9149,12 +9245,13 @@ function staleRecords(list, manifest) {
 function scriptState(triggers, extras) {
   const read = readFiles(extras);
   const files = Object.keys(read).length ? read : null;
+  const libraries = readLibraries(extras);
   const manifest = readManifest(extras);
   const block2 = triggers && manifest ? findBlock(triggers, manifest) : null;
-  const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
+  const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashSources(files, libraries));
   const stale = !!manifest && !block2;
   const parts = stale && triggers ? staleRecords(triggers, manifest) : null;
-  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, programs: manifest?.programs ?? 0 };
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, programs: manifest?.programs ?? 0, libraries: Object.values(libraries).map(({ id, label, version }) => ({ id, label, version })) };
 }
 function relocateManifest(triggers, extras) {
   const manifest = readManifest(extras);
@@ -9213,8 +9310,9 @@ function buildScript(triggers, extras, files, compiled, intern2, options = {}) {
     before = triggers.slice();
     after = [];
   }
-  const manifest = { version: 2, programs: compiled.ir.length, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records2.map(hashRecord) };
-  return { list: [...before, ...records2, ...after], extras: withSounds(withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), compiled.sounds ?? []), block: { start, count: records2.length, sources: manifest.sources }, ...replaced ? { replaced } : {} };
+  const manifest = { version: 2, programs: compiled.ir.length, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashSources(files, options.libraries ?? readLibraries(extras)), records: records2.map(hashRecord) };
+  const stored = options.keepFiles ? extras : options.libraries ? withLibraries(withFiles(extras, files), options.libraries) : withFiles(extras, files);
+  return { list: [...before, ...records2, ...after], extras: withSounds(withManifest(stored, manifest), compiled.sounds ?? []), block: { start, count: records2.length, sources: manifest.sources }, ...replaced ? { replaced } : {} };
 }
 function triggerAtLine(block2, file, line) {
   let hit = null;
@@ -9718,6 +9816,7 @@ function refusalAt(refusal) {
 var LABEL2 = "TrigScript";
 var MAGENTA_MEMBER = "magenta\\magenta.json";
 var MAGENTA = "magenta";
+var BUILD_SERVICE_VERSION = 2;
 function snapshotExtras(api) {
   const out = /* @__PURE__ */ new Map();
   for (const name of api.document.extras.list()) {
@@ -9740,6 +9839,9 @@ var ScriptService = class {
   ownListeners = /* @__PURE__ */ new Set();
   /** The other plugins' parts of the build (`contribute`), by id. */
   contributions = /* @__PURE__ */ new Map();
+  /** The libraries other plugins provide (`provideLibrary`), by id, and who hears when they come and go. */
+  provided = /* @__PURE__ */ new Map();
+  libraryListeners = /* @__PURE__ */ new Set();
   lastManifest;
   /** The last compile, for a save that comes right after an apply: the same files against the same names need no second compile. */
   lastArtifact = null;
@@ -9834,8 +9936,76 @@ var ScriptService = class {
       versions: { plugin: version },
       contribute: (c2) => this.contribute(c2),
       onBuild: (l) => this.onBuild(l),
-      check: (files, entries) => this.check(files, entries)
+      check: (files, entries) => this.check(files, entries),
+      provideLibrary: (library) => this.provideLibrary(library)
     };
+  }
+  /**
+   * Another plugin's library, for scripts to import while the handle lives; the second of one id replaces the first.
+   * Throws, in a sentence, for a library that cannot be taken (an id or a path it may not have, a test file).
+   */
+  provideLibrary(library) {
+    const modules = Object.fromEntries(Object.entries(library.modules ?? {}).map(([path, text]) => [path.replace(/\\/g, "/").replace(/^\.\//, ""), text]));
+    const problem = libraryProblem(library.id, modules, [MODULE_NAME]);
+    if (problem) throw new Error(problem);
+    const copy = { id: library.id, label: library.label || library.id, version: String(library.version ?? ""), modules };
+    this.provided.set(copy.id, copy);
+    this.librariesChanged();
+    return { dispose: () => {
+      if (this.provided.get(copy.id) === copy) {
+        this.provided.delete(copy.id);
+        this.librariesChanged();
+      }
+    } };
+  }
+  /** Hear when a plugin provides a library or withdraws one, and when the map's copies change. */
+  onLibraries(listener) {
+    this.libraryListeners.add(listener);
+    return { dispose: () => {
+      this.libraryListeners.delete(listener);
+    } };
+  }
+  librariesChanged() {
+    for (const l of this.libraryListeners) l();
+  }
+  /** The map's copies of the libraries; none with no map. */
+  mapLibraries() {
+    return this.api.document.isOpen() ? readLibraries(snapshotExtras(this.api)) : {};
+  }
+  /** Every library a script of the open map can import: the map's copy where it keeps one, else what a plugin provides. */
+  libraries() {
+    return { ...Object.fromEntries(this.provided), ...this.mapLibraries() };
+  }
+  /** The libraries these files import (and those import in turn), as a compile of them takes them. */
+  librariesFor(files) {
+    const all = this.libraries();
+    const { used } = libraryImports(Object.values(files), librarySources(all));
+    return Object.fromEntries(used.map((id) => [id, all[id]]));
+  }
+  /** The libraries the map keeps and the plugins provide, side by side, by id. */
+  libraryStatus() {
+    const kept2 = this.mapLibraries();
+    const ids = [.../* @__PURE__ */ new Set([...Object.keys(kept2), ...this.provided.keys()])].sort();
+    return ids.map((id) => {
+      const copy = kept2[id], offer = this.provided.get(id);
+      const differs = !!copy && !!offer && (copy.version !== offer.version || hashSources({}, { [id]: copy }) !== hashSources({}, { [id]: offer }));
+      return { id, label: (copy ?? offer).label, version: copy?.version ?? null, provided: offer?.version ?? null, update: differs };
+    });
+  }
+  /**
+   * Replace the map's copies of these libraries (all that have one, by default) with what their plugins provide now.
+   * The map is modified and the script reads as changed, so the next save applies it with them. Returns the ids updated.
+   */
+  updateLibraries(ids) {
+    if (!this.api.document.isOpen()) return [];
+    const wanted = this.libraryStatus().filter((l) => l.update && (!ids || ids.includes(l.id))).map((l) => l.id);
+    if (wanted.length === 0) return [];
+    const before = snapshotExtras(this.api);
+    const kept2 = readLibraries(before);
+    for (const id of wanted) kept2[id] = this.provided.get(id);
+    commitExtras(this.api, before, withLibraries(before, kept2));
+    this.librariesChanged();
+    return wanted;
   }
   /**
    * A contribution's source as a build would compile it, without building: the problems (TypeScript's, the compiler's,
@@ -9846,7 +10016,8 @@ var ScriptService = class {
     const at = entries[0] ?? Object.keys(files)[0] ?? ENTRY_FILE;
     if (!map) return { problems: [{ file: at, line: 1, column: 1, message: this.t("No map is open.") }], programs: 0 };
     const own = this.ownCheck();
-    const r = await this.compiler({ files: { [ENTRY_FILE]: "", ...files }, names: map.names, entries, ...own ? { own } : {} }, this.dist());
+    const libraries = librarySources(this.librariesFor(files));
+    const r = await this.compiler({ files: { [ENTRY_FILE]: "", ...files }, names: map.names, entries, ...own ? { own } : {}, ...Object.keys(libraries).length ? { libraries } : {} }, this.dist());
     const problems = r.diagnostics.map((d) => ({ file: d.file, line: d.line, column: d.column, message: d.message }));
     if (r.ok && r.triggers.length) problems.push({ file: at, line: 1, column: 1, message: this.t("A contribution holds programs only: its trigger() calls are not written into the map.") });
     if (r.ok && r.ownRefusal) {
@@ -9932,7 +10103,7 @@ var ScriptService = class {
       let compiled = null;
       if (state?.files) {
         const cached = this.lastArtifact;
-        const fresh = cached && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
+        const fresh = cached && cached.context === map.context && cached.document === this.documentId() && hashSources(cached.files, cached.libraries) === hashSources(state.files, readLibraries(snapshotExtras(this.api))) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
         const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : void 0);
         if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
         if (guard) this.guardTests(artifact.compiled);
@@ -9940,7 +10111,8 @@ var ScriptService = class {
       }
       if (brought.entries.length) {
         const files = { ...state?.files ?? { [ENTRY_FILE]: "" }, ...brought.files };
-        compiled = await this.compiler({ files, names: map.names, entries: brought.entries }, this.dist());
+        const libraries = librarySources(this.librariesFor(files));
+        compiled = await this.compiler({ files, names: map.names, entries: brought.entries, ...Object.keys(libraries).length ? { libraries } : {} }, this.dist());
         if (!compiled.ok) {
           const fault = compiled.diagnostics[0];
           const c2 = fault && brought.of.get(fault.file);
@@ -10125,8 +10297,10 @@ var ScriptService = class {
     const document2 = this.documentId();
     const archived = hashFiles(this.state()?.files ?? {});
     const own = this.ownCheck();
-    const compiled = await this.compiler({ files, names: map.names, ...tests ? { tests } : {}, ...sounds ? { sounds } : {}, ...own ? { own } : {} }, this.dist());
-    const artifact = { files, compiled, document: document2, context: map.context, archived };
+    const libraries = this.librariesFor(files);
+    const sources = librarySources(libraries);
+    const compiled = await this.compiler({ files, names: map.names, ...tests ? { tests } : {}, ...sounds ? { sounds } : {}, ...own ? { own } : {}, ...Object.keys(sources).length ? { libraries: sources } : {} }, this.dist());
+    const artifact = { files, compiled, document: document2, context: map.context, archived, libraries };
     this.lastArtifact = artifact;
     return artifact;
   }
@@ -10139,7 +10313,7 @@ var ScriptService = class {
    * `takeOver` replaces the whole trigger list with the script's.
    */
   install(artifact, options = {}) {
-    const { compiled, files } = artifact;
+    const { compiled, files, libraries } = artifact;
     const refuse = (refused) => ({ compiled, block: null, refused });
     if (!this.api.document.isOpen()) return refuse("closed");
     if (this.documentId() !== artifact.document) return refuse("switched");
@@ -10149,16 +10323,18 @@ var ScriptService = class {
     const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
     let block2 = null;
     let replaced;
+    const keptBefore = JSON.stringify(this.libraryStatus());
     this.api.document.update("Apply TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
       const intern2 = (text) => tx.strings.intern(text);
-      const plan = buildScript(tx.triggers.list(), before, files, compiled, intern2, { ...options, keepFiles });
+      const plan = buildScript(tx.triggers.list(), before, files, compiled, intern2, { ...options, keepFiles, libraries });
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block2 = plan.block;
       replaced = plan.replaced;
     });
     this.claim.refresh();
+    if (JSON.stringify(this.libraryStatus()) !== keptBefore) this.librariesChanged();
     if (block2) {
       const b = block2;
       const n = compiled.ir.length;
@@ -14207,6 +14383,26 @@ ${describeMedia(path, files[path])}` : path, onClick: () => openFile(path) },
       } }
     ] });
   };
+  let librariesShown = "";
+  const showLibraries = () => {
+    const newer = svc.libraryStatus().filter((l) => l.update);
+    if (newer.length === 0) {
+      librariesShown = "";
+      shell.dismiss("libraries");
+      return;
+    }
+    const signature2 = JSON.stringify(newer);
+    if (signature2 === librariesShown) return;
+    librariesShown = signature2;
+    const list = newer.map((l) => t("{label} {version} (installed: {provided})", { label: l.label, version: l.version || "?", provided: l.provided || "?" })).join(", ");
+    shell.notify({ key: "libraries", kind: "info", text: t("The map builds with its own copy of {n, plural, one {a library} other {# libraries}}, and the plugin installed here has another version: {list}. The copy stays until you update it.", { n: newer.length, list }), actions: [
+      { label: t("Keep the map's copy"), run: () => {
+      } },
+      { label: newer.length === 1 ? t("Update") : t("Update all"), primary: true, run: () => {
+        svc.updateLibraries(newer.map((l) => l.id));
+      } }
+    ] });
+  };
   const renamedNow = () => renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} \u2192 ${r.object}.${x.to}`));
   let renamesShown = "";
   const showRenames = (again = false) => {
@@ -14288,6 +14484,7 @@ ${describeMedia(path, files[path])}` : path, onClick: () => openFile(path) },
     renderSimulation();
     showStale();
     showRenames();
+    showLibraries();
   };
   const applyResult = (r, asked) => {
     diagnostics = r.diagnostics;
@@ -14804,7 +15001,13 @@ ${describeMedia(path, files[path])}` : path, onClick: () => openFile(path) },
         else renames.push({ object, list });
       }
     }
-    if (monaco && generated) setDeclarations(monaco, generated.decls);
+    if (monaco && generated) setDeclarations(monaco, generated.decls, librarySources(svc.libraries()));
+    render();
+    check();
+  };
+  const refreshLibraries = () => {
+    if (cancelled) return;
+    if (monaco && generated) setDeclarations(monaco, generated.decls, librarySources(svc.libraries()));
     render();
     check();
   };
@@ -14905,6 +15108,7 @@ ${describeMedia(path, files[path])}` : path, onClick: () => openFile(path) },
     const releaseWorker = retainCompileWorker();
     const subs = [
       svc.onBuild(onOwnBuild),
+      svc.onLibraries(refreshLibraries),
       api.events.on("settings", refreshNames),
       api.events.on("locations", refreshNames),
       api.events.on("triggers", refreshNames),
@@ -14915,7 +15119,7 @@ ${describeMedia(path, files[path])}` : path, onClick: () => openFile(path) },
       (m) => {
         if (cancelled) return;
         monaco = m;
-        if (generated) setDeclarations(m, generated.decls);
+        if (generated) setDeclarations(m, generated.decls, librarySources(svc.libraries()));
         setHoverVariables(m, () => result?.variables ?? []);
         setLineHints(m, () => [...result?.hints ?? [], ...costHints(), ...eudHints(), ...debug.hints()]);
         setMapRefs(m, mapRefs2);
@@ -15466,7 +15670,14 @@ var KO = {
   "Magenta's triggers are in this map, and this Magenta builds them through eudplib, which rewrites the part of the map TrigScript's programs go into. Update Magenta to the version that builds with TrigScript, or keep the two in different maps.": "\uC774 \uB9F5\uC5D0 Magenta\uC758 \uD2B8\uB9AC\uAC70\uAC00 \uC788\uACE0, \uC774 Magenta\uB294 eudplib\uB85C \uBE4C\uB4DC\uD558\uB294\uB370 \uADF8 \uBE4C\uB4DC\uAC00 TrigScript\uC758 \uD504\uB85C\uADF8\uB7A8\uC774 \uB4E4\uC5B4\uAC00\uB294 \uB9F5\uC758 \uBD80\uBD84\uC744 \uB2E4\uC2DC \uC501\uB2C8\uB2E4. TrigScript\uB85C \uBE4C\uB4DC\uD558\uB294 Magenta\uB85C \uC5C5\uB370\uC774\uD2B8\uD558\uAC70\uB098, \uB458\uC744 \uB2E4\uB978 \uB9F5\uC5D0 \uB450\uC138\uC694.",
   "{label} brought trigger() calls, and a contribution holds programs only.": "{label}\uC774(\uAC00) trigger() \uD638\uCD9C\uC744 \uAC00\uC838\uC654\uC9C0\uB9CC, \uAE30\uC5EC\uB294 \uD504\uB85C\uADF8\uB7A8\uB9CC \uB2F4\uC2B5\uB2C8\uB2E4.",
   "Built by TrigScript: {n, plural, one {# program} other {# programs}} laid out into the map, {contributors} among them": "TrigScript\uAC00 \uBE4C\uB4DC: \uD504\uB85C\uADF8\uB7A8 {n}\uAC1C\uB97C \uB9F5\uC5D0 \uBC30\uCE58, \uADF8\uC911 {contributors}\uC758 \uAC83 \uD3EC\uD568",
-  "{label}: TrigScript does not take this yet ({reason}).": "{label}: TrigScript\uAC00 \uC544\uC9C1 \uC774\uAC83\uC744 \uBC1B\uC9C0 \uBABB\uD569\uB2C8\uB2E4({reason})."
+  "{label}: TrigScript does not take this yet ({reason}).": "{label}: TrigScript\uAC00 \uC544\uC9C1 \uC774\uAC83\uC744 \uBC1B\uC9C0 \uBABB\uD569\uB2C8\uB2E4({reason}).",
+  "{label} {version} (installed: {provided})": "{label} {version} (\uC124\uCE58\uB41C \uBC84\uC804: {provided})",
+  "The map builds with its own copy of {n, plural, one {a library} other {# libraries}}, and the plugin installed here has another version: {list}. The copy stays until you update it.": "\uC774 \uB9F5\uC740 \uB77C\uC774\uBE0C\uB7EC\uB9AC {n}\uAC1C\uB97C \uB9F5 \uC548\uC758 \uC0AC\uBCF8\uC73C\uB85C \uBE4C\uB4DC\uD558\uB294\uB370, \uC5EC\uAE30\uC5D0 \uC124\uCE58\uB41C \uD50C\uB7EC\uADF8\uC778\uC740 \uB2E4\uB978 \uBC84\uC804\uC785\uB2C8\uB2E4: {list}. \uC5C5\uB370\uC774\uD2B8\uD558\uAE30 \uC804\uAE4C\uC9C0 \uC0AC\uBCF8\uC740 \uADF8\uB300\uB85C \uB0A8\uC2B5\uB2C8\uB2E4.",
+  "Keep the map's copy": "\uB9F5\uC758 \uC0AC\uBCF8 \uC720\uC9C0",
+  "Update": "\uC5C5\uB370\uC774\uD2B8",
+  "Update all": "\uBAA8\uB450 \uC5C5\uB370\uC774\uD2B8",
+  "TrigScript: libraries": "TrigScript: \uB77C\uC774\uBE0C\uB7EC\uB9AC",
+  "TrigScript: update libraries": "TrigScript: \uB77C\uC774\uBE0C\uB7EC\uB9AC \uC5C5\uB370\uC774\uD2B8"
 };
 
 // plugin.ts
@@ -15495,9 +15706,11 @@ function activate(api) {
   api.commands.register({ id: "build", title: msg("TrigScript: build"), run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true, replaceStale: isRecord(options) && options.replaceStale === true }) });
   api.commands.register({ id: "print", title: msg("TrigScript: print records as script"), run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : void 0) });
   api.commands.register({ id: "simulate", title: msg("TrigScript: simulate records"), run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
+  api.commands.register({ id: "libraries", title: msg("TrigScript: libraries"), run: () => svc.libraryStatus() });
+  api.commands.register({ id: "updateLibraries", title: msg("TrigScript: update libraries"), run: (ids) => svc.updateLibraries(Array.isArray(ids) ? ids.filter((x) => typeof x === "string") : void 0) });
   api.commands.register({ id: "triggerAt", title: msg("TrigScript: trigger at a source line"), run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
   const attached = svc.attach();
-  const provided = api.services.provide("build", svc.buildService(VERSION5), { version: 1 });
+  const provided = api.services.provide("build", svc.buildService(VERSION5), { version: BUILD_SERVICE_VERSION });
   return () => {
     provided.dispose();
     attached.dispose();

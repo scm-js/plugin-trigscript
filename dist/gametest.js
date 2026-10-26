@@ -6811,6 +6811,13 @@ function resolveModule(files, from, spec) {
 var SOURCE_URL_PREFIX = "trigscript://";
 var STDLIB_DIR = "__trigscript__";
 var stdlibFile = (name, ext = ".ts") => `${STDLIB_DIR}/${name}${ext}`;
+var LIBRARY_DIR = "__libraries__";
+function libraryModule(files, spec) {
+  if (spec.startsWith(".") || spec.startsWith("/")) return null;
+  const path = `${LIBRARY_DIR}/${spec}`;
+  for (const candidate of [path, `${path}.ts`, `${path}.tsx`, `${path}/index.ts`, `${path}/index.tsx`]) if (files.has(candidate)) return candidate;
+  return null;
+}
 function runModules(files, entry, library, moduleName, options = {}) {
   const names = new Set(files.keys());
   const cache2 = /* @__PURE__ */ new Map();
@@ -6829,9 +6836,11 @@ function runModules(files, entry, library, moduleName, options = {}) {
       }
       const asMedia = spec.startsWith(".") && options.media ? options.media(resolvePath(file, spec)) : void 0;
       if (asMedia !== void 0) return { __esModule: true, default: asMedia };
+      const ofLibrary = libraryModule(names, spec);
+      if (ofLibrary) return load(ofLibrary);
       const target = resolveModule(names, file, spec);
       if (!target) {
-        throw new Error(spec.startsWith(".") ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.` : `Cannot import "${spec}": a script imports its own files (./name), "${moduleName}" and the standard library ("${moduleName}/fog").`);
+        throw new Error(spec.startsWith(".") ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.` : `Cannot import "${spec}": a script imports its own files (./name), "${moduleName}", the standard library ("${moduleName}/fog") and the libraries other plugins provide ("name/module").`);
       }
       return load(target);
     };

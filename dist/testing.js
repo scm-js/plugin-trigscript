@@ -11043,6 +11043,13 @@ function resolveModule(files, from, spec) {
 var SOURCE_URL_PREFIX = "trigscript://";
 var STDLIB_DIR = "__trigscript__";
 var stdlibFile = (name, ext = ".ts") => `${STDLIB_DIR}/${name}${ext}`;
+var LIBRARY_DIR = "__libraries__";
+function libraryModule(files, spec) {
+  if (spec.startsWith(".") || spec.startsWith("/")) return null;
+  const path = `${LIBRARY_DIR}/${spec}`;
+  for (const candidate of [path, `${path}.ts`, `${path}.tsx`, `${path}/index.ts`, `${path}/index.tsx`]) if (files.has(candidate)) return candidate;
+  return null;
+}
 function runModules(files, entry, library, moduleName, options = {}) {
   const names = new Set(files.keys());
   const cache2 = /* @__PURE__ */ new Map();
@@ -11061,9 +11068,11 @@ function runModules(files, entry, library, moduleName, options = {}) {
       }
       const asMedia = spec.startsWith(".") && options.media ? options.media(resolvePath(file, spec)) : void 0;
       if (asMedia !== void 0) return { __esModule: true, default: asMedia };
+      const ofLibrary = libraryModule(names, spec);
+      if (ofLibrary) return load(ofLibrary);
       const target = resolveModule(names, file, spec);
       if (!target) {
-        throw new Error(spec.startsWith(".") ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.` : `Cannot import "${spec}": a script imports its own files (./name), "${moduleName}" and the standard library ("${moduleName}/fog").`);
+        throw new Error(spec.startsWith(".") ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.` : `Cannot import "${spec}": a script imports its own files (./name), "${moduleName}", the standard library ("${moduleName}/fog") and the libraries other plugins provide ("name/module").`);
       }
       return load(target);
     };
@@ -11174,6 +11183,33 @@ function stdlibImports(texts) {
   };
   for (const t of texts) scan(t);
   return [...found];
+}
+
+// compiler/libraries.ts
+var LIBRARY_ID = /^[a-z][a-z0-9-]{0,39}$/;
+var libraryPath = (id, path) => `${LIBRARY_DIR}/${id}/${path}`;
+var SPECIFIER = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g;
+function libraryImports(texts, libraries) {
+  const all = /* @__PURE__ */ new Map();
+  for (const [id, modules] of Object.entries(libraries)) for (const [path, text] of Object.entries(modules)) all.set(libraryPath(id, path), text);
+  const names = new Set(all.keys());
+  const files = {};
+  const used = /* @__PURE__ */ new Set();
+  const add = (file) => {
+    if (file in files) return;
+    files[file] = all.get(file);
+    used.add(file.slice(LIBRARY_DIR.length + 1).split("/")[0]);
+    scan(file, files[file]);
+  };
+  const scan = (from, text) => {
+    for (const m of text.matchAll(SPECIFIER)) {
+      const spec = m[1];
+      const target = spec.startsWith(".") ? from ? resolveModule(names, from, spec) : null : libraryModule(names, spec);
+      if (target) add(target);
+    }
+  };
+  for (const text of texts) scan(null, text);
+  return { files, used: [...used].sort() };
 }
 
 // compiler/check.ts
@@ -14856,10 +14892,7 @@ var Scope = class {
       if (!of || !nativeArray(of) || of.slice || !this.ok(a2.slice.offset)) return null;
       return { array: of, index: merged(index.c, [...index.terms, { id: a2.slice.offset, k: 1 }]), jump: true, guard: index, limit: a2.length, ...safe ? { safe } : {} };
     }
-    if (a2.values) {
-      const bits = a2.values.reduce((m, v) => (m | v >>> 0) >>> 0, 0).toString(2).replace(/0/g, "").length;
-      if (bits <= TABLE_BITS) return { array: a2, index };
-    }
+    if (a2.values && readInPlace(a2.values)) return { array: a2, index };
     return { array: a2, index, jump: true, ...safe ? { safe } : {} };
   }
   /**
@@ -15047,6 +15080,7 @@ var SCALED_BITS = 8;
 var width = (r) => r && r[0] >= 0 ? r[1] <= 0 ? 0 : 32 - Math.clz32(r[1]) : 32;
 var PAD = 13;
 var TABLE_BITS = 6;
+var TABLE_CELLS_MOST = 16384;
 var STACK_CELLS_MOST = 65536;
 var VARRAY_STRIDE_EPD = 18;
 function inRegion(arrays, id) {
@@ -15056,8 +15090,11 @@ function inRegion(arrays, id) {
     const of = arrays.get(a2.slice.of);
     return !!of && nativeArray(of) && !of.slice;
   }
-  if (a2.values) return a2.values.reduce((m, v) => (m | v >>> 0) >>> 0, 0).toString(2).replace(/0/g, "").length > TABLE_BITS;
+  if (a2.values) return !readInPlace(a2.values);
   return true;
+}
+function readInPlace(values5) {
+  return values5.length > TABLE_CELLS_MOST || values5.reduce((m, v) => (m | v >>> 0) >>> 0, 0).toString(2).replace(/0/g, "").length <= TABLE_BITS;
 }
 function nativeArray(a2) {
   return (a2.kind === "number" || a2.kind === "boolean") && !a2.dynamic && !a2.texts && !a2.through;
@@ -38731,6 +38768,14 @@ function renamedUnit(message) {
   return /type 'Unit' is not assignable to (parameter of )?type 'UnitType/.test(message) || /type 'UnitType<\d+>' is not assignable to (parameter of )?type 'Unit'/.test(message) ? `${message}
 A unit type (units.*) is a UnitType; Unit is a unit on the map, inside program().` : message;
 }
+function missingLibrary(message, libraries) {
+  const m = /^Cannot find module '([^'./][^']*)'/.exec(message);
+  if (!m || m[1] === MODULE_NAME || m[1].startsWith(`${MODULE_NAME}/`)) return message;
+  const id = m[1].split("/")[0];
+  return id in libraries ? `${message}
+The library "${id}" has no such module: it has ${Object.keys(libraries[id]).map((p) => `"${id}/${p.replace(/\.tsx?$/, "")}"`).join(", ")}.` : `${message}
+A name without ./ in front imports a library another plugin provides ("${id}/\u2026"): no plugin provides "${id}" here, and the map keeps no copy of it.`;
+}
 function normalizePath(path) {
   return path.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
 }
@@ -38750,6 +38795,8 @@ function compileScript(ts, files, names, options) {
   const scripts = /* @__PURE__ */ new Map();
   const media = /* @__PURE__ */ new Map();
   for (const [path, text] of Object.entries(files)) (isMediaFile(path) ? media : scripts).set(normalizePath(path), text);
+  const libraries = Object.fromEntries(Object.entries(options.libraries ?? {}).filter(([id]) => id !== MODULE_NAME && LIBRARY_ID.test(id)));
+  for (const [path, text] of Object.entries(libraryImports([...scripts.values()], libraries).files)) scripts.set(path, text);
   for (const name of stdlibImports([...scripts.values()])) scripts.set(stdlibPath(name), STDLIB[name]);
   const entry = entryOf(scripts.keys());
   if (!scripts.has(entry)) {
@@ -38766,7 +38813,7 @@ function compileScript(ts, files, names, options) {
     types: [],
     sourceMap: true,
     noLib: false,
-    paths: { [`${MODULE_NAME}/*`]: [`./${STDLIB_DIR}/*`] },
+    paths: { [`${MODULE_NAME}/*`]: [`./${STDLIB_DIR}/*`], ...Object.fromEntries(Object.keys(libraries).flatMap((id) => [[`${id}/*`, [`./${LIBRARY_DIR}/${id}/*`]], [id, [`./${LIBRARY_DIR}/${id}/index`]]])) },
     // JSX (in a .tsx file) is a text the game shows: elements are calls of __jsx, which the structured compiler lowers in a program.
     jsx: ts.JsxEmit.React,
     jsxFactory: "__jsx",
@@ -38829,7 +38876,7 @@ function compileScript(ts, files, names, options) {
     const pos = sf && d.start !== void 0 ? position(sf, d.start, d.start + (d.length ?? 0)) : { line: 1, column: 1, endLine: 1, endColumn: 1 };
     const file = sf ? sf.fileName : ENTRY_FILE;
     const where2 = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
-    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where2 + renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), source: "typescript" });
+    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where2 + missingLibrary(renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), libraries), source: "typescript" });
   }
   if (diagnostics.length) return result();
   const plans = /* @__PURE__ */ new Map();
