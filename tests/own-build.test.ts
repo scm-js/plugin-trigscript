@@ -191,6 +191,19 @@ describe("the build in the editor", () => {
     expect(fixed.at).toBeGreaterThanOrEqual(out.stats.address);
   });
 
+  it("a list known when built too long to keep as cells is read where it is, whatever its values' bits", () => {
+    // (70,000 values of 20 bits: as cell triggers 5 MB, past the cells a map lays out — a video's brushes for the fog.)
+    const source = `const T = Array.from({ length: 70000 }, (_, i) => (i * 40503 + 7) % 1048573);\nprogram(() => {\n  let f = 0;\n  const at = [0, 1, 34999, 69999];\n  while (f < 4) {\n    const k = at[f];\n    displayText(\`\${k}:\${T[k]}\`);\n    f++;\n    sleep(frames(1));\n  }\n});`;
+    const r = compile(source);
+    const out = buildOwnMap({ chk: scenario(), compiled: r });
+    if (isRefused(out)) throw new Error(out.refused);
+    // A dword a value, not 72 bytes.
+    expect(out.stats.payloadBytes).toBeLessThan(70000 * 8);
+    const walked = walkBuiltMap(out.chk, out.stats.players, out.stats.entries, 4);
+    const want = [0, 1, 34999, 69999].map((k) => `${k}:${(k * 40503 + 7) % 1048573}`);
+    expect(walked.printed.map((p) => p.text)).toEqual(want);
+  });
+
   it("the built file walked as the game walks it prints what the simulator prints, and its variables read as the simulator's", () => {
     const source = `program(() => {\n  let n = 0;\n  let seen: number[] = [];\n  let fixed = [10, 20, 30];\n  let title = "Probe";\n  while (true) {\n    n++;\n    seen.push(n * 2);\n    fixed[n % 3] += n;\n    if (n === 2) title = "Second";\n    displayText(\`\${title} \${n} \${seen.length} \${fixed[1]}\`);\n    sleep(frames(1));\n  }\n}, { name: "counting" });\nprogram(() => {\n  let mine = 0;\n  while (true) { mine += 3; displayText(\`mine \${mine}\`); sleep(frames(1)); }\n}, { owner: AllPlayers, name: "each" });`;
     const r = compile(source);
