@@ -10,7 +10,8 @@
  * The map is prepared through the editor's own code (a scm-js checkout beside this repository, or SCMJS_DIR): players,
  * a base each, and the script's `trigger()` records with their texts interned. TRIGGER_MAP=1 and VARIABLE_MAP=1 write
  * where each trigger and each variable is beside the map (<out>.triggers.json, <out>.variables.json), for scm-sim's
- * run in the lifted game and `sim.program()`. MAP_NAME names the scenario (what the lobby shows); KEEP_TRIGGERS=1 keeps
+ * run in the lifted game and `sim.program()`. MAP_NAME names the scenario (what the lobby shows); NO_BASES=1 places no
+ * base and troops at the start locations; KEEP_TRIGGERS=1 keeps
  * the base map's own triggers before the script's; STACK_DEPTH and HEAP_CELLS are the script's settings; OWN_FREE a
  * dword written into every free cell of the payload.
  */
@@ -64,7 +65,8 @@ scn.triggers = [...(process.env.KEEP_TRIGGERS ? scn.triggers : []), ...resolveSt
 const START_LOCATION = 214, COMMAND_CENTER = 106, HATCHERY = 131, MARINE = 0, ZERGLING = 37;
 const placed = [];
 let serial = nextSerial(scn);
-for (const [owner, base, troop] of [[0, COMMAND_CENTER, MARINE], [1, HATCHERY, ZERGLING]] as const) {
+// (NO_BASES=1: none — a map whose own units, or the lack of them, are the point, such as one drawn in the fog.)
+for (const [owner, base, troop] of process.env.NO_BASES ? [] : [[0, COMMAND_CENTER, MARINE], [1, HATCHERY, ZERGLING]] as const) {
   const start = scn.units.find((u: { unitId: number; owner: number }) => u.unitId === START_LOCATION && u.owner === owner);
   if (!start) continue;
   placed.push(makeUnit(null, base, owner, start.x, start.y, serial++));

@@ -38,7 +38,7 @@ const isom = flat.isom;
 const scn = createScenario({
   width: W, height: H, era: ERA, tiles, isom,
   name: "Bad Apple!! in the fog of war",
-  description: "The video drawn on the minimap with fog of war. Switch to Classic graphics (Options > Graphics) for a sharp minimap. Host as multiplayer, alone.",
+  description: "Bad Apple!! feat. nomico (Alstroemeria Records; shadow art video by Anira), played on the minimap with the fog of war and written in TrigScript. Host a multiplayer game alone and switch to Classic graphics (Options > Graphics) for a sharp minimap.",
 });
 scn.playerTypes = scn.playerTypes.map((t: number, i: number) => (i === 0 ? 6 : i === 1 ? 5 : i < 8 ? 0 : t));
 scn.editorPlayerTypes = [...scn.playerTypes];

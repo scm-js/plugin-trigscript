@@ -878,10 +878,7 @@ class Scope {
       if (!of || !nativeArray(of) || of.slice || !this.ok(a.slice.offset)) return null;
       return { array: of, index: merged(index.c, [...index.terms, { id: a.slice.offset, k: 1 }]), jump: true, guard: index, limit: a.length, ...(safe ? { safe } : {}) };
     }
-    if (a.values) {
-      const bits = a.values.reduce((m, v) => (m | (v >>> 0)) >>> 0, 0).toString(2).replace(/0/g, "").length;
-      if (bits <= TABLE_BITS) return { array: a, index };
-    }
+    if (a.values && readInPlace(a.values)) return { array: a, index };
     return { array: a, index, jump: true, ...(safe ? { safe } : {}) };
   }
 
@@ -1148,6 +1145,8 @@ const PAD = 0x0d;
  * bit, each 13 ns when the bit is clear and 23 when set, against about 200 ns for the Python side's read of a cell.
  */
 const TABLE_BITS = 6;
+/** The longest list known when built that is kept as cell triggers whatever its values (a longer one is read in place). */
+const TABLE_CELLS_MOST = 16384;
 
 /** The most cells a map of our own's stack has: a trigger of 72 bytes each (4.7 MB at this). */
 const STACK_CELLS_MOST = 65536;
@@ -1163,8 +1162,18 @@ function inRegion(arrays: Map<string, ArrayDecl>, id: string): boolean {
     const of = arrays.get(a.slice.of);
     return !!of && nativeArray(of) && !of.slice;
   }
-  if (a.values) return a.values.reduce((m, v) => (m | (v >>> 0)) >>> 0, 0).toString(2).replace(/0/g, "").length > TABLE_BITS;
+  if (a.values) return !readInPlace(a.values);
   return true;
+}
+
+/**
+ * A list known when the map is built that is read a bit at a time where it is, not kept as a region of cell triggers:
+ * one whose values have few bits between them, or one too long to keep as cells — a video's brushes for the fog,
+ * hundreds of thousands of words, would be tens of megabytes of cells and pass the cells a map lays out; in place it is
+ * a dword a value, and a read is a trigger a bit the values have (Bad Apple's: 18).
+ */
+function readInPlace(values: readonly number[]): boolean {
+  return values.length > TABLE_CELLS_MOST || values.reduce((m, v) => (m | (v >>> 0)) >>> 0, 0).toString(2).replace(/0/g, "").length <= TABLE_BITS;
 }
 
 /**
