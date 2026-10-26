@@ -3,6 +3,10 @@
  * has the locations the examples name; a block that calls neither `program()` nor `trigger()` is lines of a
  * program's body, and is compiled inside one. A block of several
  * files says so with a `// name.ts` line before each (`// tests/name.test.ts` for one in a folder).
+ *
+ * The language's own examples left the README for the documentation site (scm-js's docs/trigscript-language.md and
+ * docs/trigscript-library.md), whose tests compile them against the version the editor ships; the few here are the
+ * README's own, for the workspace and the tests.
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -44,7 +48,7 @@ function files(code: string): Record<string, string> {
 
 describe("the README's examples", () => {
   const all = blocks();
-  it("are there", () => expect(all.length).toBeGreaterThan(20));
+  it("are there", () => expect(all.length).toBeGreaterThan(0));
   it.each(all.map((b) => [b.line, b.code] as const))("README.md:%i compiles, and makes a trigger or a program", (_line, code) => {
     const r = compileScript(ts, files(code), NAMES, { lib: LIB });
     expect(r.diagnostics.map((d) => `${d.file}:${d.line} ${d.message}`)).toEqual([]);
