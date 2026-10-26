@@ -2026,6 +2026,37 @@ a message that says so; none is passed over in silence:
 | Writing a unit's position, cloak or tint | the game refuses these itself (*Units*) |
 | Playing on the classic game (1.16.1) | `trigger()` only |
 
+### Coming from 3.12
+
+A 3.12 script builds into the same map, and its programs now build *without eudplib*:
+TrigScript lays them out itself when you save, in under a second, with nothing to install
+and no Build step. The eudplib plugin is no longer required, and a map that used it keeps
+working. What 4.0 changed around that:
+
+- **What the build refuses, it says.** A script with something TrigScript does not take is
+  not built; Problems marks the line, and Save offers to save without it. Nothing is built
+  through another compiler behind your back.
+- **Tests run in the game as well.** With the lifted game installed, *Run all tests in the
+  game* judges each test twice, and a test's frames carry a cost in milliseconds of
+  Remastered's time. Every address a build touches is checked against what Remastered
+  allows, line by line, before a map is written.
+- **The language grew**: [functions as values](#functions-as-values) and closures, [`try`
+  / `catch` / `throw`](#errors), `async` functions, tasks and `Promise.*` ([Waiting and
+  tasks](#waiting-and-tasks)), [`on.*` events](#events), [numbers with a
+  fraction](#numbers-with-a-fraction), [the game's tables and `memory`](#the-games-tables-and-memory),
+  [`local` reads and `sync()`](#keys-the-mouse-and-chat), programs of a force or a list
+  of players ([Owners](#owners-and-per-player-programs)), [sounds](#sounds), pictures and
+  videos the script imports, and a [standard library](#the-standard-library) of nine
+  modules.
+- **Input is the build's own.** Keys, clicks, the mouse and typed lines reach every
+  player's computer in step without MSQC or a chat plugin: `keyPressed`, `keyHeld`,
+  `clicked`, `mouse`, `chatted`, `on.key`, `on.chat`.
+- **Units** gained `buildTime`, `rank`, `matrix`, `speed`, `speedUpgrade`, `hasTarget`,
+  `inTransport` and a writable `hallucinated`, and `bounds(location)` reads a location
+  where it is now. `underAttack` is the game's own alert: a hit out of the player's view.
+- **Other plugins build with TrigScript** through the `trigscript.build` service ([For
+  other plugins](#for-other-plugins)); Magenta 0.12 is the first.
+
 ### Coming from 3.9
 
 Nothing of the language has changed; a 3.9 script builds into the same map. What is new is
