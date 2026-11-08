@@ -205,6 +205,8 @@ class GameUnit implements SimUnit {
   get speedUpgrade() { return this.read("speedUpgrade", () => this.flag(0x10000000)); }
   get hasTarget() { return this.read("hasTarget", () => this.m.getUint32(this.at + 0x5c, true) !== 0); }
   get inTransport() { return this.read("inTransport", () => this.flag(0x00000040)); }
+  get orderTargetX() { return this.read("orderTargetX", () => this.m.getUint16(this.at + 0x58, true)); }
+  get orderTargetY() { return this.read("orderTargetY", () => this.m.getUint16(this.at + 0x5a, true)); }
   // Not read from the game yet: the spell timers and whether the unit is under attack.
   stim = 0; ensnare = 0; plague = 0; lockdown = 0; maelstrom = 0; irradiate = 0; stasis = 0;
   /** The attack-notify timer (+0x87) running: the game raised its under-attack alert for the unit within the last second or so. */

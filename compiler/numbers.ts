@@ -380,7 +380,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   };
   const texts: TextMap = { num: (e) => num(e)[0], bool: (e) => bool(e), call: (c) => { call(c); return c; }, text };
 
-  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "unitAt") { u.ptr = num(u.ptr)[0]; u.epd = num(u.epd)[0]; u.uid = num(u.uid)[0]; } };
+  const unit = (u: UnitExpr): void => { if (u.kind === "call") call(u.call); else if (u.kind === "unitAt") { u.ptr = num(u.ptr)[0]; u.epd = num(u.epd)[0]; u.uid = num(u.uid)[0]; } else if (u.kind === "unitOrderTarget") unit(u.unit); };
 
   /**
    * A value stored into a variable: a `u8` / `u16` takes nothing below zero, anything else keeps the 32 bits as they are.
@@ -472,6 +472,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = floor(s.verb.amount, s.at);
+        if (s.verb.do === "gather") unit(s.verb.target);
         break;
       case "tableWrite":
         s.value = isTextExpr(s.value) ? text(s.value) : s.boolean ? bool(s.value as BoolExpr) : floor(s.value as NumExpr, s.at);

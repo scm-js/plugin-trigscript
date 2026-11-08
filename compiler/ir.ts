@@ -221,10 +221,10 @@ export type EventSource = "created" | "died" | "killed" | "ordered" | "morphed";
  * remaining build time frames; `matrix` the defensive matrix's frames; `speed` the current speed in 256ths of a pixel a frame.
  */
 export type UnitNumField = "hp" | "maxHp" | "shields" | "maxShields" | "energy" | "owner" | "type" | "x" | "y" | "kills" | "orderId" | "cooldown" | "resources"
-  | "stim" | "ensnare" | "plague" | "lockdown" | "maelstrom" | "irradiate" | "stasis" | "buildTime" | "rank" | "matrix" | "speed";
+  | "stim" | "ensnare" | "plague" | "lockdown" | "maelstrom" | "irradiate" | "stasis" | "buildTime" | "rank" | "matrix" | "speed" | "orderTargetX" | "orderTargetY";
 /** The ones a program may write; the rest the game keeps for itself (a position write ends the game). */
 export const UNIT_WRITABLE: ReadonlySet<string> = new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "buildTime", "rank", "matrix", "invincible", "hallucinated", "speedUpgrade"]);
-export const UNIT_NUM_FIELDS: readonly UnitNumField[] = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "buildTime", "rank", "matrix", "speed"];
+export const UNIT_NUM_FIELDS: readonly UnitNumField[] = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "buildTime", "rank", "matrix", "speed", "orderTargetX", "orderTargetY"];
 /** A true / false of a unit on the map; `invincible`, `hallucinated` and `speedUpgrade` take a write. */
 export type UnitFlag = "hallucinated" | "cloaked" | "burrowed" | "invincible" | "underAttack" | "speedUpgrade" | "hasTarget" | "inTransport";
 export const UNIT_FLAGS: readonly UnitFlag[] = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack", "speedUpgrade", "hasTarget", "inTransport"];
@@ -248,7 +248,9 @@ export type UnitExpr =
   /** A call inlined here whose result is a unit. */
   | { kind: "call"; call: Call }
   /** The unit in slot `index` of this computer's selection (`local.selected` is slot 0; B5), or none: a Local value. */
-  | { kind: "selected"; index: number; at: At };
+  | { kind: "selected"; index: number; at: At }
+  /** The unit `unit`'s order is aimed at (`u.orderTarget`), or none. */
+  | { kind: "unitOrderTarget"; unit: UnitExpr; at: At };
 
 /** What a unit is told to do. `to` and `target` are known when the script is built; an amount is the program's. */
 export type UnitVerb =
@@ -260,7 +262,9 @@ export type UnitVerb =
   /** Hit points down (at 0 the unit dies) or up (to the type's maximum), by points or by a percentage of the maximum. */
   | { do: "damage" | "heal"; amount: NumExpr; percent: boolean }
   /** Centre a location on the unit, its size kept. */
-  | { do: "locate"; location: number };
+  | { do: "locate"; location: number }
+  /** A worker sent to mine a mineral field or harvest a gas building, as a right-click on it sends one. */
+  | { do: "gather"; target: UnitExpr };
 
 /**
  * One cell of the game's tables (`tables.ts`): `base + index × stride + key`, `width` bytes or one
@@ -780,7 +784,7 @@ export function eachStart(root: unknown, visit: (s: Extract<Stmt, { kind: "start
 }
 
 export const isUnitExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is UnitExpr =>
-  e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || (e.kind === "call" && e.call.result?.kind === "unit");
+  e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "unitOrderTarget" || (e.kind === "call" && e.call.result?.kind === "unit");
 
 export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is NumExpr => {
   switch (e.kind) {
@@ -815,7 +819,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "textLoop": text(s.of); out.push(s.decl); s.body.forEach(stmt); break;
       case "unitLoop": out.push(s.decl); if (s.was) out.push(s.was); s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); init(s.value); break;
-      case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
+      case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); if (s.verb.do === "gather") unit(s.verb.target); break;
       case "select": s.units.forEach(unit); break;
       case "tableWrite": init(s.value); break;
       case "if": init(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
@@ -858,7 +862,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       default: break;
     }
   };
-  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); } };
+  const unit = (u: UnitExpr): void => { if (u.kind === "call") call(u.call); else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); } else if (u.kind === "unitOrderTarget") unit(u.unit); };
   const expr = (e: NumExpr) => {
     switch (e.kind) {
       case "unitField": case "unitPart": unit(e.unit); break;

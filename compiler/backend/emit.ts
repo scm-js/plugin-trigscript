@@ -231,7 +231,7 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
       case "unitAlive": return "whether a unit is alive";
       case "unitSame": return "two units compared";
       case "unitFlag": return `a unit's flag ${o.flag as string}`;
-      case "unitNull": case "unitVar": case "pick": case "unitAt": case "selected": return "a unit";
+      case "unitNull": case "unitVar": case "pick": case "unitAt": case "selected": case "unitOrderTarget": return "a unit";
       case "textLength": return "a text's length";
       case "textIndexOf": return "a search in a text";
       case "textCode": return "a character's code";

@@ -40,7 +40,7 @@
 import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "./fixedMath";
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
-import { ORDER_OF_VERB } from "./orders";
+import { GATHER_ORDERS, GATHER_WORKERS, ORDER_OF_VERB } from "./orders";
 import { BUILD_BYTES, ERROR_CODES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, STACK_OVERFLOW_MESSAGE, TEXT_BYTES, TEXT_FIELD_BYTES, UNIT_FLAGS, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
 import type { TextExpr, ArrayDecl, At, BoolExpr, Call, EventSource, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
@@ -531,6 +531,7 @@ class ProgramRun {
       case "unitAt": { const ptr = (yield* this.num(e.ptr)) >>> 0; yield* this.num(e.epd); const uid = (yield* this.num(e.uid)) >>> 0; return ptr >= 1 ? this.sim.game.at(ptr - 1, uid) : null; }
       case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
       case "selected": return this.sim.selectedUnit(e.index);
+      case "unitOrderTarget": return (yield* this.living(e.unit))?.orderTarget ?? null;
     }
   }
 
@@ -546,6 +547,7 @@ class ProgramRun {
     const u = yield* this.living(e);
     // The amount is computed whether or not there is a unit, as the game computes it.
     const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
+    const target = verb.do === "gather" ? yield* this.living(verb.target) : null;
     if (!u) return;
     switch (verb.do) {
       case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill", undefined, false); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
@@ -553,6 +555,13 @@ class ProgramRun {
       // (The unit takes up the order and keeps it here: the simulator moves nothing, so it never arrives.)
       case "order": u.orderId = ORDER_OF_VERB[verb.order]; this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
       case "locate": this.sim.centre(verb.location, u.x, u.y); break;
+      // (The worker takes up the order and keeps it here: the simulator mines nothing.)
+      case "gather": {
+        if (!target || !GATHER_WORKERS.includes(u.type)) break;
+        const order = GATHER_ORDERS.find((g) => g.targets.includes(target.type))?.order;
+        if (order !== undefined) { u.orderId = order; u.orderTarget = target; }
+        break;
+      }
       case "damage": case "heal": {
         // In the game's own units, 256 to a point, as the lowering computes it.
         const step = verb.percent ? Math.floor((u.maxHp * 256 * amount) / 100) : amount * 256;

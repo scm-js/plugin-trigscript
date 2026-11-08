@@ -19,6 +19,7 @@
  */
 import type { ArrayDecl, At, BoolExpr, Call, CompareOp, FuncDecl, NumExpr, Program, Stmt, UnitExpr, UnitFilter, UnitFlag, UnitNumField, VarDecl } from "../ir";
 import type { ActionRecord, ConditionRecord } from "../../vendor/triggers";
+import { GATHER_ORDERS, GATHER_WORKERS } from "../orders";
 import { STATEMENT_KINDS } from "./emit";
 import { MOUSE_CELLS } from "./input";
 
@@ -66,6 +67,7 @@ const FIELDS: Partial<Record<UnitNumField, Bits>> = {
   owner: OWNER, type: TYPE, x: X, y: Y, kills: word(0x8f, 1), orderId: ORDER, cooldown: word(0x55, 1), resources: word(0xd0, 2),
   stim: word(0x115, 1), ensnare: word(0x116, 1), lockdown: word(0x117, 1), irradiate: word(0x118, 1), stasis: word(0x119, 1), plague: word(0x11a, 1), maelstrom: word(0x124, 1),
   buildTime: word(0xac, 2), rank: word(0x8e, 1), matrix: word(0x114, 1), speed: word(0x38, 4),
+  orderTargetX: word(0x58, 2), orderTargetY: word(0x5a, 2),
 };
 const HP = 0x08 >> 2, SHIELDS = 0x60 >> 2, ENERGY = word(0xa2, 2), STATUS = 0xdc >> 2, USER_ACTION = word(0x93, 1);
 /**
@@ -80,6 +82,8 @@ const ATTACKED = word(0x87, 1);
 const FLAG_BITS: Partial<Record<UnitFlag, number>> = { invincible: 0x04000000, hallucinated: 0x40000000, burrowed: 0x10, cloaked: 0x300, speedUpgrade: 0x10000000, inTransport: 0x40 };
 /** The unit an order is aimed at (a pointer, 0 for none), and the defensive matrix's hit points (a word, 256 a point) beside its timer. */
 const ORDER_TARGET = 0x5c >> 2, MATRIX_HP = word(0x112, 2), MATRIX_POINTS = 250 * 256;
+/** The order's state, beside the order in its dword: what `gather()` puts back to the start. */
+const ORDER_STATE = word(0x4e, 1);
 /** The most a field written holds, as the simulator stops it: points for hit points and shields, a byte, a word. */
 const TOPS: Partial<Record<UnitNumField, number>> = { hp: 0xffffff, shields: 0xffffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255, buildTime: 0xffff, rank: 255, matrix: 255 };
 /** The Order action's orders. */
@@ -645,6 +649,17 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
       }
       case "pick": return pick(e, pre);
       case "selected": return fix(e, pre) as Unit;
+      case "unitOrderTarget": {
+        // The order's target is a pointer, 0 for none: read as a unit whose uniqueness byte is taken when read, as `selected` is.
+        const holder = held(unit(e.unit, pre), pre);
+        if (isNone(holder)) return NONE;
+        const p = fresh("aim");
+        pre.push(dec(p, k(0), 0x3fffffff), ...when(alive(holder), [
+          ...through(of(holder.e, ORDER_TARGET), (h) => [set(p, h(POINTER, 2))]),
+          ...when(cmp(">=", V(p), k(IN_TABLE)), [set(p, bin("-", V(p), k(DEATHS / 4)))], [set(p, k(0))]),
+        ]));
+        return { e: ranged(V(p), 0, UNIT_TABLE + STRIDE * PLACES), k: null, none: true, killed: true };
+      }
       case "unitAt": {
         const ptr = plain(fix(e.ptr, pre) as NumExpr, pre);
         fix(e.epd, pre);
@@ -757,6 +772,7 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
     const v = s.verb;
     // (The amount is worked out whether or not there is a unit.)
     const amount = v.do === "damage" || v.do === "heal" ? plain(fix(v.amount, pre) as NumExpr, pre) : null;
+    const target = v.do === "gather" ? held(unit(v.target, pre), pre) : null;
     if (isNone(u0)) return;
     const u = held(u0, pre);
     const e = u.e;
@@ -813,6 +829,23 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
           ], [poke(bin("+", k(FIRST_UNIT), to), ptrOf(e)), poke(of(e, NEXT_UNIT), k(0)), poke(of(e, PREV_UNIT), k(0))]),
           { kind: "action", record: FORGET_COUNTS, ...at() } as Stmt,
         );
+        break;
+      }
+      case "gather": {
+        // The order's target, its state back to the start and the order itself, as the game's right-click leaves them.
+        if (!target || isNone(target)) break;
+        const worker = fresh("ty"), aimed = fresh("ty"), order = fresh("order");
+        const is = (id: string, types: readonly number[]) => any(types.map((type) => cmp("==", ranged(V(id), 0, 0xffff), k(type))));
+        body.push(dec(worker, k(0), 0xffff), dec(aimed, k(0), 0xffff), dec(order, k(0), 255), ...readInto(worker, e, TYPE));
+        body.push(...when(all([is(worker, GATHER_WORKERS), alive(target)]), [
+          ...readInto(aimed, target.e, TYPE),
+          ...GATHER_ORDERS.flatMap((g) => when(is(aimed, g.targets), [set(order, k(g.order))])),
+        ]));
+        body.push(...when(cmp(">=", ranged(V(order), 0, 255), k(1)), [
+          poke(of(e, ORDER_TARGET), bin("+", bin("*", target.e, k(4)), k(DEATHS))),
+          poke(of(e, ORDER_STATE.dword), k(0), ORDER_STATE.mask),
+          poke(of(e, ORDER.dword), bin("*", ranged(V(order), 0, 255), k(256)), ORDER.mask),
+        ]));
         break;
       }
       case "damage": case "heal": {

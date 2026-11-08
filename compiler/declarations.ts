@@ -145,6 +145,11 @@ ${kw}interface Unit {
   kills: number;
   /** What the unit is doing: \`if (u.orderId == orders.Move)\`. orders.PlayerGuard is standing guard, orders.AttackUnit attacking. */
   readonly orderId: Order;
+  /** The unit the order is aimed at (the one followed, attacked, mined …), or null when it is aimed at a place or at nothing. */
+  readonly orderTarget: Unit | null;
+  /** Where the order is aimed, in pixels: where a Move goes, or the target unit's centre. */
+  readonly orderTargetX: number;
+  readonly orderTargetY: number;
   /** Frames until the unit can attack or cast again, 0 … 255; writing it holds the unit's fire that long (the ground weapon's, the air weapon's and the spells' alike). */
   cooldown: number;
   /**
@@ -199,6 +204,11 @@ ${kw}interface Unit {
   heal(amount: number | { percent: number }): void;
   /** Centre a location on the unit, its size kept: then createUnit(), moveUnit() and the rest can happen where the unit is. */
   locate(location: Location): void;
+  /**
+   * Send an SCV, Probe or Drone to mine a mineral field or harvest a Refinery, Extractor or Assimilator, as a right-click
+   * on it does. Anything else, either way round, is left as it is.
+   */
+  gather(target: Unit): void;
 }
 /** Which units a loop or a pick looks at; a part left out matches all. units.Men, units.Buildings and units.Factories work as a type. */
 ${kw}interface UnitFilter {

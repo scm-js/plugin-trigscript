@@ -35,7 +35,7 @@ export function checkProgram(program: Program): { errors: ProgramDiagnostic[]; h
 
 /** Every expression of a statement list, calls' bodies included. */
 function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?: (u: UnitExpr & { kind: "pick" }) => void) {
-  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "pick") pick?.(u); else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); } };
+  const unit = (u: UnitExpr): void => { if (u.kind === "call") call(u.call); else if (u.kind === "pick") pick?.(u); else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); } else if (u.kind === "unitOrderTarget") unit(u.unit); };
   const any = (e: NumExpr | BoolExpr | UnitExpr | TextExpr) => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e));
   const looks: TextMap = { num: (e) => { expr(e); return e; }, bool: (e) => { expr(e); return e; }, call: (c) => { call(c); return c; } };
   const text = (t: TextExpr) => { mapText(t, looks); };
@@ -76,7 +76,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "textLoop": text(s.of); s.body.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
-      case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
+      case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); if (s.verb.do === "gather") unit(s.verb.target); break;
       case "select": s.units.forEach(unit); break;
       case "tableWrite": any(s.value); break;
       case "if": expr(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
@@ -280,6 +280,12 @@ const THE_GAME = "(the game)";
 let WINDOWS = new Map<string, string>();
 const whole = (array: string): string => WINDOWS.get(array) ?? array;
 
+/** The unit variable a unit is read through, and `THE_GAME` when it is the unit another one's order is aimed at. */
+function unitReads(u: UnitExpr, into: Set<string>): void {
+  if (u.kind === "unitVar") into.add(u.id);
+  else if (u.kind === "unitOrderTarget") { into.add(THE_GAME); unitReads(u.unit, into); }
+}
+
 /** The variables an expression reads, by id — and `THE_GAME` when it reads a value of the game or tests a condition. */
 function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
   // A text reads the variables it is made from; a list of texts the script has never changes.
@@ -292,8 +298,8 @@ function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
     case "read": case "cond": case "tableRead": into.add(THE_GAME); break;
     // What the players did is as it was when the frame began: nothing a loop does within the frame changes it.
     case "input": break;
-    case "unitField": case "unitAlive": case "unitFlag": into.add(THE_GAME); if (e.unit.kind === "unitVar") into.add(e.unit.id); break;
-    case "unitSame": for (const u of [e.left, e.right]) if (u.kind === "unitVar") into.add(u.id); break;
+    case "unitField": case "unitAlive": case "unitFlag": into.add(THE_GAME); unitReads(e.unit, into); break;
+    case "unitSame": for (const u of [e.left, e.right]) unitReads(u, into); break;
     case "randomInt": reads(e.bound, into); break;
     case "unary": case "cast": reads(e.expr, into); break;
     case "binary": case "compare": reads(e.left, into); reads(e.right, into); break;

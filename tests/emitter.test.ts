@@ -1481,6 +1481,8 @@ describe("a map of our own, units", () => {
       put(at + 0xa2, (u.energy ?? 0) * 256, 2);
       put(at + 0x38, u.speed ?? 0);
       put(at + 0x5c, u.hasTarget ? 0x700000 + 4 : 0);
+      put(at + 0x58, u.orderTargetX ?? 0, 2);
+      put(at + 0x5a, u.orderTargetY ?? 0, 2);
       put(at + 0x8e, u.rank ?? 0, 1);
       if (u.underAttack) put(at + 0x87, 12, 1);
       put(at + 0xac, u.buildTime ?? 0, 2);
@@ -1603,6 +1605,65 @@ describe("a map of our own, units", () => {
       "  m.matrix = 0; cc.buildTime = 70000; m.rank = 300;",
       "  print(`${m.matrix} ${cc.buildTime} ${m.rank}`);",
     ].join("\n"), units, HOME);
+  });
+
+  describe("gather()", () => {
+    const place = (slot: number) => TABLE + 336 * slot;
+    // Places 0, 1 699, 1 698 …: a mineral field, an SCV moving onto its centre, a Refinery, a Probe following it, a Marine.
+    const GATHERING: SimUnitInit[] = [
+      { type: 176, owner: 11, x: 200, y: 100, hp: 100000, maxHp: 100000 },
+      { type: 7, owner: 0, x: 100, y: 100, hp: 60, maxHp: 60, orderId: 6, orderTargetX: 200, orderTargetY: 100 },
+      { type: 110, owner: 0, x: 400, y: 100, hp: 750, maxHp: 750 },
+      { type: 64, owner: 0, x: 400, y: 150, hp: 20, maxHp: 20, orderId: 49 },
+      { type: 0, owner: 0, x: 500, y: 150, hp: 40, maxHp: 40 },
+    ];
+    const SCRIPT = [
+      "  const scv = first({ type: units.TerranSCV })!;",
+      "  const probe = first({ type: units.ProtossProbe })!;",
+      "  const marine = first({ type: units.TerranMarine })!;",
+      "  const refinery = first({ type: units.TerranRefinery })!;",
+      "  for (const m of allUnits({ type: units.MineralFieldType1 })) if (m.x == scv.orderTargetX && m.y == scv.orderTargetY) scv.gather(m);",
+      "  probe.gather(refinery);",
+      "  marine.gather(refinery);",
+      "  scv.gather(marine);",
+      "  print(`${scv.orderId} ${probe.orderId} ${marine.orderId} ${scv.orderTarget == first({ type: units.MineralFieldType1 })} ${probe.orderTarget == refinery}`);",
+    ].join("\n");
+
+    it("is MoveToMinerals at a mineral field and MoveToGas at a gas building, in the simulator as in the game", () => {
+      same(SCRIPT, GATHERING);
+    });
+
+    it("writes the order target, the order state and the order, and leaves anything but a worker alone", () => {
+      const r = compileScript(ts, { "main.ts": `program(() => {\n${SCRIPT}\n});\n` }, defaultScriptNames(), { lib: defaultLib() });
+      expect(r.diagnostics).toEqual([]);
+      const o = emitOwn(r);
+      if (typeof o === "string") throw new Error(o);
+      const memory = memoryOf(GATHERING, {});
+      // (A state the game had moved on from, which the order is to start again.)
+      for (const slot of [1699, 1697]) memory.set(place(slot) + 0x4c, (memory.get(place(slot) + 0x4c)! | 0x00030000) >>> 0);
+      const marineWord = memory.get(place(1696) + 0x4c);
+      // (The game's memory as the first frame left it, read before the second frame runs.)
+      const after = new Map<number, number>();
+      runOwn(o.runs[0].graph, memory, o.values, undefined, 2, (frame, _write, read) => {
+        if (frame === 2) for (const slot of [1699, 1697, 1696]) for (const offset of [0x4c, 0x5c]) after.set(place(slot) + offset, read(place(slot) + offset));
+      });
+      const dword = (slot: number, offset: number) => after.get(place(slot) + offset) ?? 0;
+      expect([(dword(1699, 0x4c) >>> 8) & 0xff, (dword(1699, 0x4c) >>> 16) & 0xff, dword(1699, 0x5c)]).toEqual([85, 0, place(0)]);
+      expect([(dword(1697, 0x4c) >>> 8) & 0xff, (dword(1697, 0x4c) >>> 16) & 0xff, dword(1697, 0x5c)]).toEqual([81, 0, place(1698)]);
+      expect([dword(1696, 0x4c), dword(1696, 0x5c)]).toEqual([marineWord, 0]);
+    });
+
+    it("reads the unit a Follow is aimed at", () => {
+      const r = compileScript(ts, { "main.ts": "program(() => {\n  const probe = first({ type: units.ProtossProbe })!;\n  const t = probe.orderTarget;\n  if (t && t.type == units.TerranRefinery && t.owner == probe.owner && t.buildTime == 0) print(`aimed at ${t.x}`);\n  if (!first({ type: units.TerranSCV })!.orderTarget) print(\"none\");\n});\n" }, defaultScriptNames(), { lib: defaultLib() });
+      expect(r.diagnostics).toEqual([]);
+      const o = emitOwn(r);
+      if (typeof o === "string") throw new Error(o);
+      const memory = memoryOf(GATHERING, {});
+      memory.set(place(1697) + 0x5c, place(1698));
+      PRINTED.got = [];
+      runOwn(o.runs[0].graph, memory, o.values);
+      expect(PRINTED.got).toEqual(["aimed at 400", "none"].map((text) => shown([...new TextEncoder().encode(text)])));
+    });
   });
 
   it("reads a location's bounds and moves one edge at a time", () => {

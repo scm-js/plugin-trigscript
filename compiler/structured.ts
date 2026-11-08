@@ -11639,6 +11639,10 @@ export class Structured {
       if (got && got.result?.kind !== "unit") { this.c.error(e, `${got.name ?? "This"} does not give a unit.`); return null; }
       return got ? this.mark<UnitExpr>({ kind: "call", call: got }, e) : null;
     }
+    if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name) && e.name.text === "orderTarget" && this.isUnitTyped(e.expression)) {
+      const of = this.unitExpr(e.expression);
+      return of ? this.mark<UnitExpr>({ kind: "unitOrderTarget", unit: of, at: this.at(e) }, e) : null;
+    }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const kept = this.bindingOf(e);
       if (kept?.kind === "unitAt") return this.unitAtPlaces(kept, e);
@@ -11766,6 +11770,13 @@ export class Structured {
         if (at === undefined) return;
         if (!location(at) || at === 64) { this.c.error(e.arguments[0], "locate() takes one of locations.*, which is moved onto the unit (not Anywhere)."); return; }
         emit({ do: "locate", location: at });
+        return;
+      }
+      case "gather": {
+        const a = e.arguments[0];
+        if (!a || e.arguments.length > 1 || !this.isUnitTyped(a)) { this.c.error(e, "gather() takes the mineral field or gas building to gather from."); return; }
+        const target = this.unitExpr(a);
+        if (target) emit({ do: "gather", target });
         return;
       }
       case "damage": case "heal": {

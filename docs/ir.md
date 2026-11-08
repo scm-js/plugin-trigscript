@@ -187,7 +187,7 @@ frame's `saves`, and a `slice` is never declared.
 | `assignUnit` | `target`, `value` | `target = value` for a unit variable. |
 | `unitLoop` | `decl`, `filter`, `source?`, `was?`, `event?`, `body` | `for (const u of unitsAt(…))`: the body once for every unit the filter matches, oldest first — the game's unit table from slot 0 and then from 1699 downwards, stopping once every unit in use has been met — within the frame (the compiler refuses a `sleep` inside). `decl` is the unit of the turn; `break` and `continue` are the loop's. With `source` (`on.created` / `on.died`, since version 18; `killed`, `ordered`, `morphed` since 19) the units are this frame's events pass's instead, `was` a number variable set at each turn and `event` a filter of the event's own (*Events*, below). |
 | `unitWrite` | `unit`, `field`, `value` | `u.hp = 40`, `u.invincible = true`. Nothing happens when the unit is none or gone. Hit points at 0 kill. |
-| `unitDo` | `unit`, `verb` | `{ do: "kill" }`, `{ do: "remove" }`, `{ do: "give", to }`, `{ do: "order", order, target }` (a location), `{ do: "damage" \| "heal", amount, percent }`, `{ do: "locate", location }`. Nothing happens when the unit is none or gone; an amount is evaluated either way. |
+| `unitDo` | `unit`, `verb` | `{ do: "kill" }`, `{ do: "remove" }`, `{ do: "give", to }`, `{ do: "order", order, target }` (a location), `{ do: "damage" \| "heal", amount, percent }`, `{ do: "locate", location }`, `{ do: "gather", target }` (an SCV, Drone or Probe sent to a mineral field or a gas building: the order MoveToMinerals or MoveToGas, its state 0 and its target written; anything else either way round is left alone). Nothing happens when the unit is none or gone; an amount is evaluated either way. |
 | `tableWrite` | `cell`, `value`, `scaled?`, `boolean?` | A cell of the game's tables. `value` is a number expression, a boolean one (`boolean`), or `{ kind: "text", text }` for a name. `scaled`: the number is already what the cell stores. |
 | `if` | `cond`, `then`, `else?` | As it reads. |
 | `while` | `cond?`, `body` | `cond` absent means `while (true)`, or a condition known true when the script was built. |
@@ -652,6 +652,7 @@ Units (`UnitExpr`):
 | `pick` | `by: first | nearest | random`, `filter`, `near?`, `mouse?`, `within?` — one of the units the filter matches: the first in that order (the oldest), the nearest to the centre of location `near` by \|dx\| + \|dy\| (the first of equals), or one drawn at random; none when nothing matches. With `mouse` (a player: a slot, or 13) in place of `near`, the nearest to that player's mouse and no farther from it than `within` pixels |
 | `call` | `call` whose result is a unit |
 | `selected` | `index` — the unit in that slot of this computer's selection (0 is the one the panel shows), or none. Differs from one computer to the next. Since version 23 |
+| `unitOrderTarget` | `unit` — the unit `unit`'s order is aimed at (the one it follows, attacks or mines), or none when the order is aimed at a place or at nothing |
 
 ```
 UnitFilter { type?, owner?, at? }
@@ -662,7 +663,7 @@ flags, as a trigger counts them); `owner` a slot or 13; `at` a 1-based location 
 holds the unit's centre, edges included. An absent part matches all, and a unit that is
 dying matches nothing. Number fields: `hp` (whole points, a started point counting, as
 the game shows it), `maxHp`, `shields`, `maxShields`, `energy`, `owner`, `type`, `x`, `y`,
-`kills`, `orderId`, `cooldown`, `resources`, and the timers `stim` `ensnare` `plague`
+`kills`, `orderId`, `orderTargetX`, `orderTargetY` (where the order is aimed, in pixels), `cooldown`, `resources`, and the timers `stim` `ensnare` `plague`
 `lockdown` `maelstrom` `irradiate` `stasis`. A written value stops at what the game's
 cell holds: 255 for a byte (kills, cooldown, timers, energy points), 65 535 for
 resources, 2²⁴ − 1 hit points.
