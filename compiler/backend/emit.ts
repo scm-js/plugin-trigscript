@@ -230,8 +230,9 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
       case "unitPart": return "a unit's place in the game's memory";
       case "unitAlive": return "whether a unit is alive";
       case "unitSame": return "two units compared";
+      case "unitDistance": return "how far apart two units are";
       case "unitFlag": return `a unit's flag ${o.flag as string}`;
-      case "unitNull": case "unitVar": case "pick": case "unitAt": case "selected": return "a unit";
+      case "unitNull": case "unitVar": case "pick": case "unitAt": case "selected": case "unitOrderTarget": return "a unit";
       case "textLength": return "a text's length";
       case "textIndexOf": return "a search in a text";
       case "textCode": return "a character's code";
@@ -318,7 +319,7 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
 }
 
 /** What is read of a unit, and what is done to a text: named before the unit or the text it is done to. */
-const UNIT_READS = new Set(["unitField", "unitFlag", "unitAlive", "unitSame", "unitPart", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "textSlice", "textPad", "textRepeat", "textTernary", "textCall"]);
+const UNIT_READS = new Set(["unitField", "unitDistance", "unitFlag", "unitAlive", "unitSame", "unitPart", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "textSlice", "textPad", "textRepeat", "textTernary", "textCall"]);
 /** The methods of a text the front end writes as functions of its own (`textCall`). */
 const TEXT_METHODS = new Set(["toUpperCase", "toLowerCase", "toLocaleUpperCase", "toLocaleLowerCase", "trim", "trimStart", "trimEnd", "replace", "replaceAll", "split", "join", "at", "charAt", "concat", "parseInt", "Number"]);
 /** Set Deaths, which `setMemory()` is when its player is past the groups (26). */
@@ -4999,7 +5000,7 @@ class Rewriter {
       const o = x as Record<string, unknown>;
       if (o.kind === "var" && typeof o.id === "string" && (h.written.has(o.id) || isTemp(o.id))) pure = false;
       if (o.kind === "element" && h.arrays.has(o.array as string)) pure = false;
-      if (o.kind === "call" || o.kind === "read" || o.kind === "randomInt" || o.kind === "input" || o.kind === "unitField" || o.kind === "tableRead" || o.kind === "pop") pure = false;
+      if (o.kind === "call" || o.kind === "read" || o.kind === "randomInt" || o.kind === "input" || o.kind === "unitField" || o.kind === "unitDistance" || o.kind === "tableRead" || o.kind === "pop") pure = false;
       Object.values(o).forEach(walk);
     };
     walk(e);

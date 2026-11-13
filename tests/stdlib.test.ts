@@ -1,7 +1,8 @@
 /**
  * The standard library (TrigScript 4): modules of TrigScript shipped with the compiler and imported as
  * "trigscript/<name>" — fog first. What joins a script's files and when, the location a library reserves, and what the
- * fog's functions compile to: a picture's brushes, read back out of the IR, light the picture's tiles.
+ * fog's functions compile to: a picture's brushes, read back out of the IR, light the picture's tiles. Workers'
+ * buildAutoMiningProgram(), spells' buildAutoRestoreProgram(), and card's right-click on a button.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ import { defaultScriptNames, type ScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 import { STDLIB_SOURCES } from "../compiler/generated/stdlib";
 import { stdlibImports } from "../compiler/stdlib";
-import type { Program, Stmt } from "../compiler/ir";
+import { bodiesOf, type Program, type Stmt } from "../compiler/ir";
 import { ProgramSimulation } from "../compiler/simulateIr";
 
 const LIB = defaultLib();
@@ -283,5 +284,154 @@ program(async () => { const hs: number[] = [80]; const sh: number[] = [1]; while
     for (const r of [8, 9, 10, 11, 84, 85, 86, 87]) lit.add(r);
     for (const at of [10, 20, 30]) for (let d = -2; d < 2; d++) { lit.add(48 - at + d); lit.add(48 + at + d); }
     expect(column).toBe(Array.from({ length: 96 }, (_, y) => (lit.has(y) ? "#" : ".")).join(""));
+  });
+});
+
+describe("trigscript/workers", () => {
+  const IMPORTED = `import { buildAutoMiningProgram } from "trigscript/workers";\n`;
+
+  it("buildAutoMiningProgram() at the top of a script is the library's program: a listener for new orders that gives the gather order", () => {
+    const r = ok(`${IMPORTED}buildAutoMiningProgram();`);
+    expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
+    const statements = bodiesOf(r.ir[0]).flatMap((body) => walk(body));
+    expect(statements.some((s) => s.kind === "unitLoop" && s.source === "ordered")).toBe(true);
+    expect(statements.some((s) => s.kind === "unitDo" && s.verb.do === "gather")).toBe(true);
+  });
+
+  it("imported and not called, it adds nothing", () => {
+    expect(ok(`${IMPORTED}program(() => {});`).ir.map((p) => p.at?.file)).toEqual(["main.ts"]);
+  });
+
+  it("stands beside the script's own on.order() listeners", () => {
+    const r = ok(`${IMPORTED}buildAutoMiningProgram();\non.order((u, order) => { if (order == orders.Move) print("moved"); });\nprogram(async () => { on.order((u) => { print("ordered"); }); });`);
+    expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts", "main.ts", "main.ts"]);
+  });
+
+  it("called again, in the same file or another, it adds nothing", () => {
+    expect(ok(`${IMPORTED}buildAutoMiningProgram();\nbuildAutoMiningProgram();`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
+    const r = compileScript(ts, { "main.ts": `${IMPORTED}import "./more";\nbuildAutoMiningProgram();`, "more.ts": `${IMPORTED}buildAutoMiningProgram();` }, NAMES, { lib: LIB });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
+  });
+
+  it("is on again in the next build", () => {
+    ok(`${IMPORTED}buildAutoMiningProgram();`);
+    expect(ok(`${IMPORTED}buildAutoMiningProgram();`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
+  });
+});
+
+describe("trigscript/spells", () => {
+  const IMPORTED = `import { buildAutoRestoreProgram } from "trigscript/spells";\n`;
+  const statementsOf = (r: CompileResult) => bodiesOf(r.ir[0]).flatMap((body) => walk(body));
+
+  it("buildAutoRestoreProgram() at the top of a script is the library's program: a loop that casts Restoration and stops a Medic", () => {
+    const r = ok(`${IMPORTED}buildAutoRestoreProgram();`);
+    expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
+    const statements = statementsOf(r);
+    expect(statements.some((s) => s.kind === "unitDo" && s.verb.do === "cast" && s.verb.tech === 24)).toBe(true);
+    expect(statements.some((s) => s.kind === "unitDo" && s.verb.do === "stop")).toBe(true);
+  });
+
+  it("takes a switch of the map by its name, and the energy to keep", () => {
+    const r = ok(`${IMPORTED}buildAutoRestoreProgram({ switch: "Switch3", keepEnergy: 25 });`);
+    expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
+    // (The condition Switch, "set": Switch3 is switch 2, counted from 0.)
+    expect(JSON.stringify(r.ir[0])).toContain('"comparison":2,"type":11,"resource":2,');
+  });
+
+  it("refuses a switch the map does not have", () => {
+    expect(compile(`${IMPORTED}buildAutoRestoreProgram({ switch: "Medics trained" });`).diagnostics.map((d) => d.message).join("\n")).toContain('"Medics trained"');
+  });
+
+  it("imported and not called, it adds nothing", () => {
+    expect(ok(`${IMPORTED}program(() => {});`).ir.map((p) => p.at?.file)).toEqual(["main.ts"]);
+  });
+
+  it("called again, in the same file or another, it adds nothing", () => {
+    expect(ok(`${IMPORTED}buildAutoRestoreProgram();\nbuildAutoRestoreProgram({ keepEnergy: 10 });`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
+    const r = compileScript(ts, { "main.ts": `${IMPORTED}import "./more";\nbuildAutoRestoreProgram();`, "more.ts": `${IMPORTED}buildAutoRestoreProgram();` }, NAMES, { lib: LIB });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
+  });
+});
+
+/** A script's own tests, run in the simulator: the outcome of each by its name. */
+const tested = (main: string): Record<string, string> => {
+  const r = compileScript(ts, { "main.ts": main }, NAMES, { lib: LIB, tests: { world: { locations: { 1: { left: 100, top: 100, right: 200, bottom: 200 } }, unitStats: {} } } });
+  expect(r.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`)).toEqual([]);
+  return Object.fromEntries((r.tests?.results ?? []).map((t) => [t.id.replace(/^.*?::/, ""), t.status === "failed" ? `failed: ${t.message}` : t.status]));
+};
+/** Restore's button in Classic graphics, on the map with the camera at its corner: the middle of the bottom row. */
+const RESTORE = "sim.moveMouse(569, 455)";
+
+describe("trigscript/card", () => {
+  const PROGRAM = `program(async () => {
+  const button = new CardButton(techs.Restoration, cardSlots.Restoration);
+  await button.begin();
+  let clicks = 0;
+  while (true) {
+    if (await button.rightClicked()) { clicks += 1; print(\`click \${clicks}\`, { to: CurrentPlayer }); }
+    await nextFrame();
+  }
+}, { owner: AllPlayers });`;
+
+  it("says yes to a right-click on the slot while the card shows the ability's units, and to nothing else", () => {
+    expect(tested(`import { test, expect, program, print, nextFrame, AllPlayers, CurrentPlayer, P1, units, techs, type Location } from "trigscript";
+import { CardButton, cardSlots } from "trigscript/card";
+${PROGRAM}
+test("clicks", (sim) => {
+  const medics = sim.place(P1, units.TerranMedic, 1 as Location);
+  const marines = sim.place(P1, units.TerranMarine, 1 as Location);
+  sim.frames(5).selectUnits(medics);
+  ${RESTORE}.click("right").frames(10);
+  sim.moveMouse(615, 455).click("right").frames(10);
+  sim.selectUnits(marines);
+  ${RESTORE}.click("right").frames(10);
+  sim.selectUnits(medics);
+  ${RESTORE}.click("left").frames(10);
+  ${RESTORE}.click("right").frames(10);
+  expect(sim.printed(P1).join("|")).toBe("click 1|click 2");
+});`)).toEqual({ clicks: "passed" });
+  });
+
+  it("cardSetup: afterCalibration runs once the start's measurement is done, and showMeasurements numbers its lines", () => {
+    expect(tested(`import { test, expect, program, print, nextFrame, AllPlayers, CurrentPlayer, P1, techs } from "trigscript";
+import { CardButton, cardSlots, cardSetup } from "trigscript/card";
+cardSetup({ afterCalibration: () => print("measured"), showMeasurements: true });
+${PROGRAM}
+test("after", (sim) => {
+  sim.frames(60);
+  expect(sim.printed(P1).join("|")).toContain("#1 card: the view starts at 0,0");
+  expect(sim.printed(P1).join("|")).toContain("measured");
+});`)).toEqual({ after: "passed" });
+  });
+});
+
+describe("trigscript/spells: allowPlayersToTurnOffAutoCast", () => {
+  const SCRIPT = (options: string, body: string) => `import { test, expect, P1, units, switches, type Location } from "trigscript";
+import { buildAutoRestoreProgram } from "trigscript/spells";
+buildAutoRestoreProgram(${options});
+test("toggle", (sim) => {
+  const medics = sim.place(P1, units.TerranMedic, 1 as Location);
+  sim.frames(5).selectUnits(medics);
+${body}
+});`;
+
+  it("a right-click on Restore turns auto-restore off, and another on again, told to the player", () => {
+    expect(tested(SCRIPT("{ allowPlayersToTurnOffAutoCast: true }", `  ${RESTORE}.click("right").frames(10);
+  ${RESTORE}.click("right").frames(10);
+  expect(sim.printed(P1).join("|")).toBe("Auto-restore off|Auto-restore on");`))).toEqual({ toggle: "passed" });
+  });
+
+  it("while the map's switch is cleared, the right-click is ignored and says nothing", () => {
+    expect(tested(SCRIPT(`{ switch: "Switch3", allowPlayersToTurnOffAutoCast: true }`, `  ${RESTORE}.click("right").frames(10);
+  expect(sim.printed(P1)).toEqual([]);`))).toEqual({ toggle: "passed" });
+  });
+
+  it("without the option, a right-click on Restore does nothing, and the program is Player 1's as before", () => {
+    expect(tested(SCRIPT("{}", `  ${RESTORE}.click("right").frames(10);
+  expect(sim.printed(P1)).toEqual([]);`))).toEqual({ toggle: "passed" });
+    const plain = JSON.stringify(ok(`import { buildAutoRestoreProgram } from "trigscript/spells";\nbuildAutoRestoreProgram();`).ir[0]);
+    expect(plain).not.toContain(String(0x68c14c));
   });
 });

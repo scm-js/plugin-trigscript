@@ -90,6 +90,21 @@ export const LOCAL_FIELDS: MemoryField[] = [
     doc: "Where this computer's mouse is on the screen, from its top edge, in the game's pixels: 0 to 479.",
     remastered: "Remastered: its input record, read live. Played.",
   },
+  {
+    path: ["mouse", "buttons"], base: 0x6cddc0, width: 4, readonly: true,
+    doc: "Which of this computer's mouse buttons are down now, as bits: 2 the left, 8 the right. clicked(p, \"right\") is the same press sent to every computer, frames later; this is where the mouse was when it went down.",
+    remastered: "Remastered: its input record, read live (its own EUD emulator). Played.",
+  },
+  {
+    path: ["card", "buttonSet"], base: 0x68c14c, width: 2, readonly: true,
+    doc: "Which buttons this computer's command card shows: the button set's number. One unit type, or several of one type, shows that type's own set (a Medic's is 34); units of several types show 244; 229 is the Cancel card a targeting cursor brings up.",
+    remastered: "Remastered: read allowed (its own EUD emulator), read live. Played: 34 for one Medic or several, 0 for a Marine, 244 for a Medic and a Marine, 229 while a targeting cursor is up.",
+  },
+  {
+    path: ["screen", "width"], base: 0x6ceff0, width: 2, readonly: true,
+    doc: "The width of this computer's game screen bitmap, in the game's pixels: in Remastered graphics, how wide the game is drawn, which follows the shape of the display (853 at 16:9, 640 at 4:3). Classic graphics always draws 640 wide and pillarboxes the rest, but this still reads the display's width, so it does not tell the two apart.",
+    remastered: "Remastered: read allowed (its own EUD emulator). Played: the same value in Classic and Remastered graphics on one display.",
+  },
 ];
 
 /** The memory that is one computer's own: what a read of it gives is a `Local` value. Not only `LOCAL_FIELDS`: the keys and the selection too. */
@@ -101,6 +116,8 @@ export const LOCAL_MEMORY: readonly { name: string; from: number; size: number }
   { name: "the selection", from: 0x6284b8, size: 48 },
   { name: "the mouse buttons", from: 0x6cddc0, size: 4 },
   { name: "the mouse", from: 0x6cddc4, size: 8 },
+  { name: "the command card", from: 0x68c14c, size: 2 },
+  { name: "the screen", from: 0x6ceff0, size: 2 },
 ];
 
 /** What of `LOCAL_MEMORY` an address is in, if any. */

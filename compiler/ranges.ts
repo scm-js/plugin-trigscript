@@ -48,7 +48,7 @@ const UNIT_FIELD: Record<string, Range> = {
   hp: [0, 16777216], maxHp: [0, 16777215], shields: [0, 16777215], maxShields: [0, 65535], energy: [0, 255],
   owner: [0, 255], type: [0, 65535], x: [0, 65535], y: [0, 65535], kills: [0, 255], orderId: [0, 255], cooldown: [0, 255],
   resources: [0, 65535], stim: [0, 65535], ensnare: [0, 65535], plague: [0, 65535], lockdown: [0, 65535], maelstrom: [0, 65535],
-  irradiate: [0, 65535], stasis: [0, 65535],
+  irradiate: [0, 65535], stasis: [0, 65535], acidSpores: [0, 255], orderState: [0, 255], queuedOrders: [0, 255],
 };
 
 const STMT_KINDS = new Set(["declare", "assignText", "storeText", "releaseText", "textLoop", "assign", "declareArray", "store", "push", "pop", "setLength",
@@ -235,6 +235,7 @@ export function rangeNumbers(program: Program): void {
       case "read": return ANY;
       case "randomInt": { const b = num(e.bound, facts); return nonNeg(b) ? [0, Math.max(0, b[1] - 1)] : ANY; }
       case "unitField": unit(e.unit, facts); return UNIT_FIELD[e.field] ?? ANY;
+      case "unitDistance": unit(e.from, facts); unit(e.to, facts); return [0, 65535];
       case "tableRead": return ANY;
       case "input": return ANY;
       case "ternary": bool(e.cond, facts); return join(num(e.whenTrue, withFacts(facts, e.cond, true)), num(e.whenFalse, withFacts(facts, e.cond, false)))!;
@@ -339,6 +340,7 @@ export function rangeNumbers(program: Program): void {
   function unit(u: UnitExpr, facts: Facts): void {
     if (u.kind === "unitAt") { num(u.ptr, facts); num(u.epd, facts); num(u.uid, facts); }
     else if (u.kind === "call") call(u.call, new Map());
+    else if (u.kind === "unitOrderTarget") unit(u.unit, facts);
   }
 
   /**
@@ -435,7 +437,7 @@ export function rangeNumbers(program: Program): void {
         return;
       }
       case "unitWrite": unit(s.unit, facts); if (FLAGS.has(s.field)) bool(s.value as BoolExpr, facts); else num(s.value as NumExpr, facts); return;
-      case "unitDo": unit(s.unit, facts); if (s.verb.do === "damage" || s.verb.do === "heal") num(s.verb.amount, facts); return;
+      case "unitDo": unit(s.unit, facts); if (s.verb.do === "damage" || s.verb.do === "heal") num(s.verb.amount, facts); if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target, facts); return;
       case "tableWrite": if (isTextExpr(s.value as { kind: string })) text(s.value as TextExpr, facts); else if (s.boolean) bool(s.value as BoolExpr, facts); else num(s.value as NumExpr, facts); return;
       case "if": {
         if (holdsCall(s.cond, callCache)) forget(facts);
@@ -604,6 +606,7 @@ function pure(e: NumExpr): boolean {
   switch (e.kind) {
     case "const": case "var": case "length": case "read": case "taskHandle": return true;
     case "unitField": case "unitPart": return e.unit.kind === "unitVar" || e.unit.kind === "unitNull";
+    case "unitDistance": return [e.from, e.to].every((u) => u.kind === "unitVar" || u.kind === "unitNull");
     case "element": return pure(e.index);
     case "unary": case "cast": return pure(e.expr);
     case "binary": return pure(e.left) && pure(e.right);

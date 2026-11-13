@@ -14,7 +14,7 @@ import type { ArrayDecl, FuncDecl, Program, Stmt } from "./ir";
 export interface View { dirty: string; declare: Stmt; build: Stmt[] }
 
 /** What a view reads that only the game knows: never followed. */
-const GAME_READS: ReadonlySet<string> = new Set(["input", "randomInt", "random", "read", "tableRead", "unitField", "cond", "edge", "running", "unitAlive", "unitFlag", "pick", "pop"]);
+const GAME_READS: ReadonlySet<string> = new Set(["input", "randomInt", "random", "read", "tableRead", "unitField", "unitDistance", "cond", "edge", "running", "unitAlive", "unitFlag", "pick", "pop"]);
 
 /** The statements that hold lists of statements, by the fields that hold them. */
 const LISTS = ["body", "then", "else", "update"] as const;

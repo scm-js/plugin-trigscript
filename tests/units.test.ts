@@ -201,6 +201,11 @@ describe("stats(): the game's tables", () => {
     expect([sim.value("cost"), sim.value("time"), sim.value("cloaked"), sim.value("other"), sim.value("level"), sim.value("has")]).toEqual([30, 1, true, 50, 3, true]);
     expect(sim.tables.get("unit.buildTime:0")).toBe(23);
   });
+  it("a Brood War tech is a cell of its own, apart from the original tech at its place in the row", () => {
+    const sim = run(`stats(P2).researched[techs.StimPacks] = true; let restoration = stats(P1).researched[techs.Restoration]; let reactor = stats(P1).upgrades[upgrades.CaduceusReactor];
+      stats(P1).researched[techs.Restoration] = true; let after = stats(P1).researched[techs.Restoration]; let stim = stats(P1).researched[techs.StimPacks];`);
+    expect([sim.value("restoration"), sim.value("reactor"), sim.value("after"), sim.value("stim")]).toEqual([false, 0, true, false]);
+  });
   it("a cell holds what its width allows", () => {
     const sim = run(`let big = 300; stats(units.TerranMarine).armor = big; stats(units.ZergZergling).name = "Dog"; stats(CurrentPlayer).color = colors.green;`);
     expect(sim.tables.get("unit.armor:0")).toBe(255);

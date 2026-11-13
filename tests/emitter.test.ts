@@ -6,7 +6,7 @@
 // lifted game, for fewer loops.
 import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarDecl } from "../compiler/ir";
+import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TableCell, TextPart, VarDecl } from "../compiler/ir";
 import { emitBody, emitterCounts } from "../compiler/backend/emit";
 import type { ConditionRecord } from "../vendor/triggers";
 import { END, SWITCHES, TRIGGER_BYTES, type Dword, type Graph, type Num } from "../compiler/backend/graph";
@@ -1455,8 +1455,10 @@ describe("a map of our own, functions that call themselves", () => {
 describe("a map of our own, units", () => {
   const TABLE = 0x59cca8;
   /** The groups a trigger's unit classes go by, as units.dat has them for the types these tests use (Men, Buildings, Factories). */
-  const GROUPS: Record<number, number> = { 0: 0x08, 1: 0x08, 37: 0x08, 106: 0x30, 109: 0x10 };
-  const MAX_HP: Record<number, number> = { 0: 40, 1: 45, 37: 35, 106: 1500, 109: 500 };
+  const GROUPS: Record<number, number> = { 0: 0x08, 1: 0x08, 34: 0x08, 37: 0x08, 106: 0x30, 109: 0x10 };
+  const MAX_HP: Record<number, number> = { 0: 40, 1: 45, 34: 60, 37: 35, 106: 1500, 109: 500 };
+  /** units.dat's dimensions (left, up, right, down) of the types whose distances these tests measure: a Marine's and a Medic's. */
+  const DIMENSIONS: Record<number, number[]> = { 0: [8, 9, 8, 10], 34: [8, 9, 8, 10] };
   /**
    * The units laid out where the game keeps them, in the places it hands out first — place 0, then 1 699 down — and the
    * tables a unit's numbers come from; the simulator's world holds the same units, made in the same order.
@@ -1481,14 +1483,21 @@ describe("a map of our own, units", () => {
       put(at + 0xa2, (u.energy ?? 0) * 256, 2);
       put(at + 0x38, u.speed ?? 0);
       put(at + 0x5c, u.hasTarget ? 0x700000 + 4 : 0);
+      put(at + 0x58, u.orderTargetX ?? 0, 2);
+      put(at + 0x5a, u.orderTargetY ?? 0, 2);
       put(at + 0x8e, u.rank ?? 0, 1);
       if (u.underAttack) put(at + 0x87, 12, 1);
       put(at + 0xac, u.buildTime ?? 0, 2);
       put(at + 0x114, u.matrix ?? 0, 1);
+      put(at + 0x4e, u.orderState ?? 0, 1);
+      put(at + 0x84, u.queuedOrders ?? 0, 1);
+      put(at + 0x123, u.opticalFlare ? 1 : 0, 1);
+      put(at + 0x126, u.acidSpores ?? 0, 1);
       put(at + 0xdc, (u.invincible ? 0x04000000 : 0) | (u.hallucinated ? 0x40000000 : 0) | (u.speedUpgrade ? 0x10000000 : 0) | (u.inTransport ? 0x40 : 0) | (u.burrowed ? 0x10 : 0));
     });
     for (const [type, hp] of Object.entries(MAX_HP)) put(0x662350 + 4 * Number(type), hp * 256);
     for (const [type, g] of Object.entries(GROUPS)) put(0x6637a0 + Number(type), g, 1);
+    for (const [type, sides] of Object.entries(DIMENSIONS)) sides.forEach((side, i) => put(0x6617c8 + 8 * Number(type) + 2 * i, side, 2));
     for (const [n, b] of Object.entries(locations)) {
       const at = 0x58dc60 + 20 * (Number(n) - 1);
       [b.left, b.top, b.right, b.bottom].forEach((v, i) => put(at + 4 * i, v));
@@ -1503,7 +1512,8 @@ describe("a map of our own, units", () => {
     const full = units.map((u) => ({ hp: MAX_HP[u.type], maxHp: MAX_HP[u.type], orderId: 3, ...u }));
     const world = new Simulation([], { units: full, locations, strings: r.strings, unitClass: (type, cls) => cls === 229 || ((GROUPS[type] ?? 0) & ({ 230: 0x08, 231: 0x10, 232: 0x20 }[cls] ?? 0)) !== 0 });
     // (The texts shown: a unit killed is an event of its own, with a text that says which.)
-    const want = simulatePrograms(r.ir, 1, { world, strings: r.strings }).events.filter((e) => e.text !== undefined && e.action.type === 9).map((e) => hex(e.text!));
+    const table = (c: TableCell) => (c.name === "unit.dimensions" ? DIMENSIONS[c.index]?.[(c.key ?? 0) / 2] : undefined);
+    const want = simulatePrograms(r.ir, 1, { world, strings: r.strings, table }).events.filter((e) => e.text !== undefined && e.action.type === 9).map((e) => hex(e.text!));
     const o = emitOwn(r);
     if (typeof o === "string") throw new Error(o);
     PRINTED.got = [];
@@ -1603,6 +1613,155 @@ describe("a map of our own, units", () => {
       "  m.matrix = 0; cc.buildTime = 70000; m.rank = 300;",
       "  print(`${m.matrix} ${cc.buildTime} ${m.rank}`);",
     ].join("\n"), units, HOME);
+  });
+
+  describe("gather()", () => {
+    const place = (slot: number) => TABLE + 336 * slot;
+    // Places 0, 1 699, 1 698 …: a mineral field, an SCV moving onto its centre, a Refinery, a Probe following it, a Marine.
+    const GATHERING: SimUnitInit[] = [
+      { type: 176, owner: 11, x: 200, y: 100, hp: 100000, maxHp: 100000 },
+      { type: 7, owner: 0, x: 100, y: 100, hp: 60, maxHp: 60, orderId: 6, orderTargetX: 200, orderTargetY: 100 },
+      { type: 110, owner: 0, x: 400, y: 100, hp: 750, maxHp: 750 },
+      { type: 64, owner: 0, x: 400, y: 150, hp: 20, maxHp: 20, orderId: 49 },
+      { type: 0, owner: 0, x: 500, y: 150, hp: 40, maxHp: 40 },
+    ];
+    const SCRIPT = [
+      "  const scv = first({ type: units.TerranSCV })!;",
+      "  const probe = first({ type: units.ProtossProbe })!;",
+      "  const marine = first({ type: units.TerranMarine })!;",
+      "  const refinery = first({ type: units.TerranRefinery })!;",
+      "  for (const m of allUnits({ type: units.MineralFieldType1 })) if (m.x == scv.orderTargetX && m.y == scv.orderTargetY) scv.gather(m);",
+      "  probe.gather(refinery);",
+      "  marine.gather(refinery);",
+      "  scv.gather(marine);",
+      "  print(`${scv.orderId} ${probe.orderId} ${marine.orderId} ${scv.orderTarget == first({ type: units.MineralFieldType1 })} ${probe.orderTarget == refinery}`);",
+    ].join("\n");
+
+    it("is MoveToMinerals at a mineral field and MoveToGas at a gas building, in the simulator as in the game", () => {
+      same(SCRIPT, GATHERING);
+    });
+
+    it("writes the order target, the order state and the order, and leaves anything but a worker alone", () => {
+      const r = compileScript(ts, { "main.ts": `program(() => {\n${SCRIPT}\n});\n` }, defaultScriptNames(), { lib: defaultLib() });
+      expect(r.diagnostics).toEqual([]);
+      const o = emitOwn(r);
+      if (typeof o === "string") throw new Error(o);
+      const memory = memoryOf(GATHERING, {});
+      // (A state the game had moved on from, which the order is to start again.)
+      for (const slot of [1699, 1697]) memory.set(place(slot) + 0x4c, (memory.get(place(slot) + 0x4c)! | 0x00030000) >>> 0);
+      const marineWord = memory.get(place(1696) + 0x4c);
+      // (The game's memory as the first frame left it, read before the second frame runs.)
+      const after = new Map<number, number>();
+      runOwn(o.runs[0].graph, memory, o.values, undefined, 2, (frame, _write, read) => {
+        if (frame === 2) for (const slot of [1699, 1697, 1696]) for (const offset of [0x4c, 0x5c]) after.set(place(slot) + offset, read(place(slot) + offset));
+      });
+      const dword = (slot: number, offset: number) => after.get(place(slot) + offset) ?? 0;
+      expect([(dword(1699, 0x4c) >>> 8) & 0xff, (dword(1699, 0x4c) >>> 16) & 0xff, dword(1699, 0x5c)]).toEqual([85, 0, place(0)]);
+      expect([(dword(1697, 0x4c) >>> 8) & 0xff, (dword(1697, 0x4c) >>> 16) & 0xff, dword(1697, 0x5c)]).toEqual([81, 0, place(1698)]);
+      expect([dword(1696, 0x4c), dword(1696, 0x5c)]).toEqual([marineWord, 0]);
+    });
+
+    it("reads the unit a Follow is aimed at", () => {
+      const r = compileScript(ts, { "main.ts": "program(() => {\n  const probe = first({ type: units.ProtossProbe })!;\n  const t = probe.orderTarget;\n  if (t && t.type == units.TerranRefinery && t.owner == probe.owner && t.buildTime == 0) print(`aimed at ${t.x}`);\n  if (!first({ type: units.TerranSCV })!.orderTarget) print(\"none\");\n});\n" }, defaultScriptNames(), { lib: defaultLib() });
+      expect(r.diagnostics).toEqual([]);
+      const o = emitOwn(r);
+      if (typeof o === "string") throw new Error(o);
+      const memory = memoryOf(GATHERING, {});
+      memory.set(place(1697) + 0x5c, place(1698));
+      PRINTED.got = [];
+      runOwn(o.runs[0].graph, memory, o.values);
+      expect(PRINTED.got).toEqual(["aimed at 400", "none"].map((text) => shown([...new TextEncoder().encode(text)])));
+    });
+  });
+
+  describe("cast() and stop()", () => {
+    const place = (slot: number) => TABLE + 336 * slot;
+    // Places 0, 1 699, 1 698: a Medic healing, a Marine, a second Medic attack-moving.
+    const CASTING: SimUnitInit[] = [
+      { type: 34, owner: 0, x: 100, y: 100, energy: 100, orderId: 176 },
+      { type: 0, owner: 0, x: 120, y: 100 },
+      { type: 34, owner: 0, x: 140, y: 100, energy: 100, orderId: 177 },
+    ];
+    const SCRIPT = [
+      "  const medic = first({ type: units.TerranMedic })!;",
+      "  const marine = first({ type: units.TerranMarine })!;",
+      "  let other: Unit | null = null;",
+      "  for (const m of allUnits({ type: units.TerranMedic })) other = m;",
+      "  medic.cast(techs.Restoration, marine);",
+      "  marine.cast(techs.Restoration, medic);",
+      "  if (other) other.stop();",
+      "  if (other) print(`${medic.orderId} ${medic.orderState} ${marine.orderId} ${medic.orderTarget == marine} ${other.orderId} ${other.orderState}`);",
+    ].join("\n");
+
+    it("is CastRestoration at the target and Stop, in the simulator as in the game", () => {
+      same(SCRIPT, CASTING);
+    });
+
+    it("writes the order target, and the order with its state put back to the start; leaves a caster that is not a Medic alone", () => {
+      const r = compileScript(ts, { "main.ts": `program(() => {\n${SCRIPT}\n});\n` }, defaultScriptNames(), { lib: defaultLib() });
+      expect(r.diagnostics).toEqual([]);
+      const o = emitOwn(r);
+      if (typeof o === "string") throw new Error(o);
+      const memory = memoryOf(CASTING, {});
+      // (States the game had moved on to, which the orders are to start again.)
+      for (const slot of [0, 1698]) memory.set(place(slot) + 0x4c, (memory.get(place(slot) + 0x4c)! | 0x00010000) >>> 0);
+      const marineWord = memory.get(place(1699) + 0x4c);
+      const after = new Map<number, number>();
+      runOwn(o.runs[0].graph, memory, o.values, undefined, 2, (frame, _write, read) => {
+        if (frame === 2) for (const slot of [0, 1699, 1698]) for (const offset of [0x4c, 0x5c]) after.set(place(slot) + offset, read(place(slot) + offset));
+      });
+      const dword = (slot: number, offset: number) => after.get(place(slot) + offset) ?? 0;
+      expect([(dword(0, 0x4c) >>> 8) & 0xff, (dword(0, 0x4c) >>> 16) & 0xff, dword(0, 0x5c)]).toEqual([180, 0, place(1699)]);
+      expect([dword(1699, 0x4c), dword(1699, 0x5c)]).toEqual([marineWord, 0]);
+      expect([(dword(1698, 0x4c) >>> 8) & 0xff, (dword(1698, 0x4c) >>> 16) & 0xff]).toEqual([1, 0]);
+    });
+
+    it("with any other technology is an error that names it", () => {
+      const r = compileScript(ts, { "main.ts": "program(() => {\n  const m = first({ type: units.TerranMedic })!;\n  m.cast(techs.OpticalFlare, m);\n});\n" }, defaultScriptNames(), { lib: defaultLib() });
+      expect(r.diagnostics.map((d) => d.message)).toEqual(["cast() casts techs.Restoration only: Optical Flare has no cast yet."]);
+    });
+  });
+
+  it("reads Optical Flare, acid spores, the order's state and the orders queued where the game keeps them", () => {
+    same([
+      "  for (const u of allUnits({})) print(`${u.opticalFlare} ${u.acidSpores} ${u.orderState} ${u.queuedOrders}`);",
+    ].join("\n"), [
+      { type: 0, owner: 0, x: 100, y: 100, opticalFlare: true, acidSpores: 3, orderState: 1, queuedOrders: 0 },
+      { type: 34, owner: 0, x: 120, y: 100, orderId: 176, orderState: 2, queuedOrders: 1 },
+      { type: 0, owner: 1, x: 140, y: 100, acidSpores: 9 },
+    ]);
+  });
+
+  it("measures how far apart two units are as the game measures a range: between their boxes", () => {
+    const units: SimUnitInit[] = [
+      { type: 34, owner: 0, x: 400, y: 300 },
+      { type: 0, owner: 0, x: 600, y: 300 },
+      { type: 0, owner: 0, x: 612, y: 300 },
+      { type: 0, owner: 0, x: 500, y: 400 },
+      { type: 0, owner: 0, x: 405, y: 305 },
+    ];
+    const r = both([
+      "  const medic = first({ type: units.TerranMedic })!;",
+      "  let within = 0;",
+      "  for (const t of allUnits({ type: units.TerranMarine })) { print(`${medic.distanceTo(t)}`); if (medic.distanceTo(t) <= 192) within += 1; }",
+      "  print(`${within}`);",
+    ].join("\n"), units);
+    // 183 and 195 across (centres 200 and 212 apart, each box 8 wide either side); 83 by 80 is the game's 107; overlapping is 0.
+    const want = ["183", "195", "107", "0", "3"].map((text) => shown([...new TextEncoder().encode(text)]));
+    expect(r.want).toEqual(want);
+    expect(r.got).toEqual(want);
+  });
+
+  it("reads whether one player has another as an ally, one way", () => {
+    const r = compileScript(ts, { "main.ts": "program(() => {\n  print(`${stats(P1).allied[P2]} ${stats(P1).allied[P3]} ${stats(P1).allied[P4]} ${stats(P2).allied[P1]}`);\n});\n" }, defaultScriptNames(), { lib: defaultLib() });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r);
+    if (typeof o === "string") throw new Error(o);
+    // The alliance table, a byte a pair: P1's row is itself (1), P2 allied (1), P3 allied for victory (2), P4 enemy (0); P2's row has P1 as an enemy.
+    const memory = new Map<number, number>([[0x58d634, 0x00020101], [0x58d640, 0]]);
+    PRINTED.got = [];
+    runOwn(o.runs[0].graph, memory, o.values);
+    expect(PRINTED.got).toEqual([shown([...new TextEncoder().encode("true true false false")])]);
   });
 
   it("reads a location's bounds and moves one edge at a time", () => {

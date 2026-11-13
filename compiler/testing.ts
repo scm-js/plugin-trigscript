@@ -115,6 +115,8 @@ export interface TestWorld {
   stackDepth?: number;
   /** Unit types by their name in lower case, for a `{…:unit}` typed in chat. */
   unitNames?: Record<string, number>;
+  /** The map's size in tiles: what `memory.map.width` and `memory.map.height` read, and where Center View stops the camera. */
+  mapSize?: { width: number; height: number };
 }
 
 export interface TestRunOptions {
@@ -377,7 +379,9 @@ export class TestSim implements TestWorldLike {
       ...(as !== undefined ? { player: as } : options.players ? {} : { player: ir[0]?.owner !== undefined && ir[0].owner < 12 ? ir[0].owner : undefined }),
     });
     const names = options.unitNames ?? {};
-    this.programs = new ProgramSimulation(ir, { world: this.world, strings, random, heapCells: options.heapCells, stackDepth: options.stackDepth, unitStats: (type) => stats[type], unitByName: (lower) => names[lower] });
+    this.programs = new ProgramSimulation(ir, { world: this.world, strings, random, heapCells: options.heapCells, stackDepth: options.stackDepth, unitStats: (type) => stats[type], unitByName: (lower) => names[lower],
+      table: (cell) => (cell.name === "memory.map.width" ? options.mapSize?.width : cell.name === "memory.map.height" ? options.mapSize?.height : undefined),
+    });
   }
 
   /** How many frames have run: the game's frame number. */

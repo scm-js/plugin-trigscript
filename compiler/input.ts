@@ -211,10 +211,11 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
   const sources: InputSource[] = [];
   let mouse = false;
   let at: At | null = null;
-  const unit = (u: UnitExpr) => {
+  const unit = (u: UnitExpr): void => {
     if (u.kind === "call") call(u.call);
     else if (u.kind === "pick" && u.mouse !== undefined) { mouse = true; at ??= u.at; }
     else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); }
+    else if (u.kind === "unitOrderTarget") unit(u.unit);
   };
   const any = (e: NumExpr | BoolExpr | UnitExpr | TextExpr) => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e));
   const looks: TextMap = { num: (e) => { expr(e); return e; }, bool: (e) => { expr(e); return e; }, call: (c) => { call(c); return c; } };
@@ -225,6 +226,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "input": sources.push(e.input); at ??= e.at; if (e.input.source === "mouse") mouse = true; break;
       case "unitField": case "unitPart": case "unitAlive": case "unitFlag": unit(e.unit); break;
       case "unitSame": unit(e.left); unit(e.right); break;
+      case "unitDistance": unit(e.from); unit(e.to); break;
       case "unary": case "cast": expr(e.expr); break;
       case "element": expr(e.index); break;
       case "binary": case "compare": expr(e.left); expr(e.right); break;
@@ -254,7 +256,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "textLoop": text(s.of); s.body.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
-      case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
+      case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target); break;
       case "select": s.units.forEach(unit); break;
       case "tableWrite": any(s.value); break;
       case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;

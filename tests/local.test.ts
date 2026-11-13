@@ -40,6 +40,21 @@ describe("local values: read", () => {
     const cells = JSON.stringify(r.ir[0]).match(/"base":\d+/g);
     expect(cells).toEqual([`"base":${0x62848c}`, `"base":${0x6cddc8}`]);
   });
+  it("the mouse buttons, the command card's button set and the screen's width", () => {
+    const r = compile(`program(() => { print(\`\${local.mouse.buttons} \${local.card.buttonSet} \${local.screen.width}\`); });`);
+    const cells = JSON.stringify(r.ir[0]).match(/"base":\d+/g);
+    expect(cells).toEqual([`"base":${0x6cddc0}`, `"base":${0x68c14c}`, `"base":${0x6ceff0}`]);
+  });
+  it("in the simulator, a click is its button down for its frame, and the card is the selection's one type", () => {
+    const r = compile(`program(async () => { while (true) { print(\`\${local.mouse.buttons} \${local.card.buttonSet}\`); await nextFrame(); } });`);
+    const s = new ProgramSimulation(r.ir, { strings: r.strings, players: [0], units: [
+      { type: 34, owner: 0, x: 100, y: 100, hp: 60 }, { type: 34, owner: 0, x: 120, y: 100, hp: 60 }, { type: 0, owner: 0, x: 140, y: 100, hp: 40 },
+    ] });
+    const [medic, other, marine] = s.game.listed(undefined);
+    s.selectUnits([medic, other]).click("right").run(1);
+    s.selectUnits([medic, marine]).run(1);
+    expect(printed(s).map((p) => p.slice(p.indexOf(":") + 1))).toEqual(["8 34", "0 244"]);
+  });
   it("are no value when the script is built", () => {
     expect(messages(`const x = local.camera.x + 1; program(() => { print(\`\${x}\`); });`).join(" ")).toContain("local.camera.x");
   });

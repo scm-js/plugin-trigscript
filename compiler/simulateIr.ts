@@ -40,10 +40,10 @@
 import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "./fixedMath";
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
-import { ORDER_OF_VERB } from "./orders";
+import { CAST_ORDERS, GATHER_ORDERS, GATHER_WORKERS, ORDER_OF_VERB, STOP_ORDER } from "./orders";
 import { BUILD_BYTES, ERROR_CODES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, STACK_OVERFLOW_MESSAGE, TEXT_BYTES, TEXT_FIELD_BYTES, UNIT_FLAGS, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
 import type { TextExpr, ArrayDecl, At, BoolExpr, Call, EventSource, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
-import { cellMax } from "./tables";
+import { cellMax, UNIT_DIMENSIONS } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
 import { TABLE_FIELDS } from "./tables";
@@ -531,6 +531,7 @@ class ProgramRun {
       case "unitAt": { const ptr = (yield* this.num(e.ptr)) >>> 0; yield* this.num(e.epd); const uid = (yield* this.num(e.uid)) >>> 0; return ptr >= 1 ? this.sim.game.at(ptr - 1, uid) : null; }
       case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
       case "selected": return this.sim.selectedUnit(e.index);
+      case "unitOrderTarget": return (yield* this.living(e.unit))?.orderTarget ?? null;
     }
   }
 
@@ -546,6 +547,7 @@ class ProgramRun {
     const u = yield* this.living(e);
     // The amount is computed whether or not there is a unit, as the game computes it.
     const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
+    const target = verb.do === "gather" || verb.do === "cast" ? yield* this.living(verb.target) : null;
     if (!u) return;
     switch (verb.do) {
       case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill", undefined, false); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
@@ -553,6 +555,21 @@ class ProgramRun {
       // (The unit takes up the order and keeps it here: the simulator moves nothing, so it never arrives.)
       case "order": u.orderId = ORDER_OF_VERB[verb.order]; this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
       case "locate": this.sim.centre(verb.location, u.x, u.y); break;
+      // (The worker takes up the order and keeps it here: the simulator mines nothing.)
+      case "gather": {
+        if (!target || !GATHER_WORKERS.includes(u.type)) break;
+        const order = GATHER_ORDERS.find((g) => g.targets.includes(target.type))?.order;
+        if (order !== undefined) { u.orderId = order; u.orderTarget = target; }
+        break;
+      }
+      // (The caster takes up the order and keeps it here: the simulator casts nothing.)
+      case "cast": {
+        const spell = CAST_ORDERS.find((c) => c.tech === verb.tech);
+        if (!target || !spell?.casters.includes(u.type)) break;
+        u.orderId = spell.order; u.orderState = 0; u.orderTarget = target;
+        break;
+      }
+      case "stop": u.orderId = STOP_ORDER; u.orderState = 0; u.orderTarget = undefined; break;
       case "damage": case "heal": {
         // In the game's own units, 256 to a point, as the lowering computes it.
         const step = verb.percent ? Math.floor((u.maxHp * 256 * amount) / 100) : amount * 256;
@@ -603,6 +620,22 @@ class ProgramRun {
       }
       case "read": return this.sim.read(e.read) | 0;
       case "unitField": { const u = yield* this.living(e.unit); return u ? u[e.field] | 0 : 0; }
+      case "unitDistance": {
+        const a = yield* this.living(e.from), b = yield* this.living(e.to);
+        if (!a || !b) return 0;
+        // Each unit's box from its type's dimensions (left, up, right, down), as the game's unit_sprite_bounding_box has it.
+        const box = (u: SimUnit) => {
+          const side = (key: number) => this.sim.tableRead({ name: "unit.dimensions", base: UNIT_DIMENSIONS, stride: 8, index: u.type, key, width: 2 });
+          return { left: u.x - side(0), top: u.y - side(2), right: u.x + side(4) + 1, bottom: u.y + side(6) + 1 };
+        };
+        const p = box(a), q = box(b);
+        const gap = (from1: number, to1: number, from2: number, to2: number) => (from1 > to2 ? from1 - to2 : from2 > to1 ? from2 - to1 : 0);
+        let x = gap(p.left, p.right, q.left, q.right), y = gap(p.top, p.bottom, q.top, q.bottom);
+        if (x < y) [x, y] = [y, x];
+        // The game's xy_length: the longer side, with a share of the shorter added once they are far enough from a line.
+        if (Math.floor(x / 4) < y) x = x - Math.floor(x / 16) + Math.floor((y * 3) / 8) - Math.floor(x / 64) + Math.floor((y * 3) / 256);
+        return x | 0;
+      }
       case "unitPart": { const u = yield* this.unit(e.unit); return u ? (e.part === "uid" ? u.uid : u.slot + 1) : 0; }
       case "tableRead": return this.sim.tableRead(e.cell) | 0;
       case "input": return this.sim.input(e.input) | 0;
@@ -1590,6 +1623,15 @@ export class ProgramSimulation {
       case "local.camera.y": return camera.y;
       case "local.mouse.x": return mouse.x - camera.x;
       case "local.mouse.y": return mouse.y - camera.y;
+      // A click is a button down for the frame it arrives on.
+      case "local.mouse.buttons": return (this.current.events.has(`click:${at}:left`) ? 2 : 0) + (this.current.events.has(`click:${at}:right`) ? 8 : 0);
+      case "local.card.buttonSet": {
+        // The selection's own type when it is one type, as the game's sets are numbered for most units; 244 for several.
+        const selected = (this.selections.get(at) ?? []).filter((u) => u.alive);
+        if (selected.length === 0) return 0xffff;
+        return selected.every((u) => u.type === selected[0].type) ? selected[0].type : 244;
+      }
+      case "local.screen.width": return 640;
       default: {
         // A selection slot: the unit's place in the table, from 1, as a kept unit's number is here; 0 for none.
         const slot = /^local\.selection\[(\d+)\]$/.exec(name);
@@ -1660,7 +1702,7 @@ export class ProgramSimulation {
   centre(location: number, x: number, y: number, size?: { width: number; height: number }): void { this.game.centre(location, x, y, size); }
 
   private cellKey(c: TableCell): string {
-    return `${c.name}:${c.player ? this.slotOf(c.index) : c.index}${c.key !== undefined ? `:${c.key}` : ""}`;
+    return `${c.name}:${c.player ? this.slotOf(c.index) : c.index}${c.key !== undefined ? `:${c.base.toString(16)}:${c.key}` : ""}`;
   }
 
   /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
@@ -1709,11 +1751,34 @@ export class ProgramSimulation {
     for (const v of this.vision.values()) for (let i = 0; i < v.length; i++) if (v[i] === 2) v[i] = 1;
     for (const u of this.world.game.units) if (u.alive) this.reveal(u);
   }
+  /** The map's size in tiles: what `memory.map.width` and `memory.map.height` read, else 128 by 128. */
+  private mapTiles(): { width: number; height: number } {
+    return {
+      width: this.tableOf?.({ name: "memory.map.width", base: 0x57f1d4, stride: 0, index: 0, width: 2 }) || 128,
+      height: this.tableOf?.({ name: "memory.map.height", base: 0x57f1d6, stride: 0, index: 0, width: 2 }) || 128,
+    };
+  }
+
+  /**
+   * Center View: the player's 640 × 480 screen (Classic graphics) centered on the location, snapped down to 8 pixels and
+   * kept on the map. The mouse stays where it is on the screen.
+   */
+  private centerCamera(player: number, location: number): void {
+    const { x, y } = this.game.centreOf(location);
+    const map = this.mapTiles();
+    const kept = (value: number, most: number) => Math.max(0, Math.min(value, most)) & ~7;
+    // Played in Classic graphics: Center View stops the screen 648 pixels short of the map's right edge and 488 short of its bottom.
+    const now = { x: kept(x - 320, map.width * 32 - 648), y: kept(y - 240, map.height * 32 - 488) };
+    const was = this.cameras.get(player) ?? { x: 0, y: 0 };
+    const mouse = this.mice.get(player);
+    if (mouse) this.mice.set(player, { x: mouse.x + now.x - was.x, y: mouse.y + now.y - was.y });
+    this.cameras.set(player, now);
+  }
+
   /** What a player sees of the fog, as GameSim.fog gives it from the game: "#" now, "+" before, "." never. */
   fog(player: number, area?: { x: number; y: number; width: number; height: number }): string[] {
-    const w = this.tableOf?.({ name: "memory.map.width", base: 0x57f1d4, stride: 0, index: 0, width: 2 }) || 128;
-    const h = this.tableOf?.({ name: "memory.map.height", base: 0x57f1d6, stride: 0, index: 0, width: 2 }) || 128;
-    const { x = 0, y = 0, width = w, height = h } = area ?? {};
+    const map = this.mapTiles();
+    const { x = 0, y = 0, width = map.width, height = map.height } = area ?? {};
     const v = this.visionOf(player), rows: string[] = [];
     for (let ty = y; ty < Math.min(y + height, FOG_SIZE); ty++) {
       let row = "";
@@ -1765,6 +1830,7 @@ export class ProgramSimulation {
         if (a.unitId === ResourceType.Gas || a.unitId === ResourceType.OreAndGas) stock[1] = set(stock[1]);
       }
     }
+    if (a.type === ActionType.CenterView) this.centerCamera(run.player, a.location);
     switch (a.type) {
       case ActionType.SetDeaths:
         this.world.changeDeath(a.player, a.unitId, a.modifier, a.target);

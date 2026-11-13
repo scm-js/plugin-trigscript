@@ -264,7 +264,12 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
           const [left, right] = operands([{ e: e.left, kind: "unit" }, { e: e.right, kind: "unit" }], pre, w) as UnitExpr[];
           return { ...e, left, right };
         }
+        case "unitDistance": {
+          const [from, to] = operands([{ e: e.from, kind: "unit" }, { e: e.to, kind: "unit" }], pre, w) as UnitExpr[];
+          return { ...e, from, to };
+        }
         case "intrinsic": return { ...e, args: operands(e.args.map((a) => ({ e: a, kind: "number" as const })), pre, w) as NumExpr[] };
+        case "unitOrderTarget": return { ...e, unit: one(e.unit, "unit") as UnitExpr };
         case "unitAt": {
           const [ptr, epd, uid] = operands([e.ptr, e.epd, e.uid].map((x) => ({ e: x, kind: "number" as const })), pre, w) as NumExpr[];
           return { ...e, ptr, epd, uid };
@@ -320,9 +325,11 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
           case "unitDo": {
             const items: { e: Expr; kind: Kind }[] = [{ e: s.unit, kind: "unit" }];
             if (s.verb.do === "damage" || s.verb.do === "heal") items.push({ e: s.verb.amount, kind: "number" });
+            if (s.verb.do === "gather" || s.verb.do === "cast") items.push({ e: s.verb.target, kind: "unit" });
             const done = operands(items, pre, w);
             s.unit = done[0] as UnitExpr;
             if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = done[1] as NumExpr;
+            if (s.verb.do === "gather" || s.verb.do === "cast") s.verb.target = done[1] as UnitExpr;
             break;
           }
           case "tableWrite": s.value = isTextExpr(s.value) ? rewriteText(s.value, pre, w) : (value(s.value, s.boolean ? "boolean" : "number") as NumExpr | BoolExpr); break;
