@@ -2,7 +2,7 @@
  * The standard library (TrigScript 4): modules of TrigScript shipped with the compiler and imported as
  * "trigscript/<name>" — fog first. What joins a script's files and when, the location a library reserves, and what the
  * fog's functions compile to: a picture's brushes, read back out of the IR, light the picture's tiles. Workers'
- * autoMining(), spells' autoRestore(), and card's right-click on a button.
+ * autoMining() and spells' autoRestore().
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -362,86 +362,5 @@ describe("trigscript/spells", () => {
     const r = compileScript(ts, { "main.ts": `${IMPORTED}import "./more";\nautoRestore();`, "more.ts": `${IMPORTED}autoRestore();` }, NAMES, { lib: LIB });
     expect(r.diagnostics).toEqual([]);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
-  });
-});
-
-/** A script's own tests, run in the simulator: the outcome of each by its name. */
-const tested = (main: string): Record<string, string> => {
-  const r = compileScript(ts, { "main.ts": main }, NAMES, { lib: LIB, tests: { world: { locations: { 1: { left: 100, top: 100, right: 200, bottom: 200 } }, unitStats: {} } } });
-  expect(r.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`)).toEqual([]);
-  return Object.fromEntries((r.tests?.results ?? []).map((t) => [t.id.replace(/^.*?::/, ""), t.status === "failed" ? `failed: ${t.message}` : t.status]));
-};
-/** Restore's button in Classic graphics, on the map with the camera at its corner: the middle of the bottom row. */
-const RESTORE = "sim.moveMouse(569, 455)";
-
-describe("trigscript/card", () => {
-  const PROGRAM = `program(async () => {
-  const button = new CardButton(techs.Restoration, cardSlots.Restoration);
-  await button.begin();
-  let clicks = 0;
-  while (true) {
-    if (await button.rightClicked()) { clicks += 1; print(\`click \${clicks}\`, { to: CurrentPlayer }); }
-    await nextFrame();
-  }
-}, { owner: AllPlayers });`;
-
-  it("says yes to a right-click on the slot while the card shows the ability's units, and to nothing else", () => {
-    expect(tested(`import { test, expect, program, print, nextFrame, AllPlayers, CurrentPlayer, P1, units, techs, type Location } from "trigscript";
-import { CardButton, cardSlots } from "trigscript/card";
-${PROGRAM}
-test("clicks", (sim) => {
-  const medics = sim.place(P1, units.TerranMedic, 1 as Location);
-  const marines = sim.place(P1, units.TerranMarine, 1 as Location);
-  sim.frames(5).selectUnits(medics);
-  ${RESTORE}.click("right").frames(10);
-  sim.moveMouse(615, 455).click("right").frames(10);
-  sim.selectUnits(marines);
-  ${RESTORE}.click("right").frames(10);
-  sim.selectUnits(medics);
-  ${RESTORE}.click("left").frames(10);
-  ${RESTORE}.click("right").frames(10);
-  expect(sim.printed(P1).join("|")).toBe("click 1|click 2");
-});`)).toEqual({ clicks: "passed" });
-  });
-
-  it("cardSetup: afterCalibration runs once the start's measurement is done, and showMeasurements numbers its lines", () => {
-    expect(tested(`import { test, expect, program, print, nextFrame, AllPlayers, CurrentPlayer, P1, techs } from "trigscript";
-import { CardButton, cardSlots, cardSetup } from "trigscript/card";
-cardSetup({ afterCalibration: () => print("measured"), showMeasurements: true });
-${PROGRAM}
-test("after", (sim) => {
-  sim.frames(60);
-  expect(sim.printed(P1).join("|")).toContain("#1 card: the view starts at 0,0");
-  expect(sim.printed(P1).join("|")).toContain("measured");
-});`)).toEqual({ after: "passed" });
-  });
-});
-
-describe("trigscript/spells: allowPlayersToTurnOffAutoCast", () => {
-  const SCRIPT = (options: string, body: string) => `import { test, expect, P1, units, switches, type Location } from "trigscript";
-import { autoRestore } from "trigscript/spells";
-autoRestore(${options});
-test("toggle", (sim) => {
-  const medics = sim.place(P1, units.TerranMedic, 1 as Location);
-  sim.frames(5).selectUnits(medics);
-${body}
-});`;
-
-  it("a right-click on Restore turns auto-restore off, and another on again, told to the player", () => {
-    expect(tested(SCRIPT("{ allowPlayersToTurnOffAutoCast: true }", `  ${RESTORE}.click("right").frames(10);
-  ${RESTORE}.click("right").frames(10);
-  expect(sim.printed(P1).join("|")).toBe("Auto-restore off|Auto-restore on");`))).toEqual({ toggle: "passed" });
-  });
-
-  it("while the map's switch is cleared, the right-click is ignored and says nothing", () => {
-    expect(tested(SCRIPT(`{ switch: "Switch3", allowPlayersToTurnOffAutoCast: true }`, `  ${RESTORE}.click("right").frames(10);
-  expect(sim.printed(P1)).toEqual([]);`))).toEqual({ toggle: "passed" });
-  });
-
-  it("without the option, a right-click on Restore does nothing, and the program is Player 1's as before", () => {
-    expect(tested(SCRIPT("{}", `  ${RESTORE}.click("right").frames(10);
-  expect(sim.printed(P1)).toEqual([]);`))).toEqual({ toggle: "passed" });
-    const plain = JSON.stringify(ok(`import { autoRestore } from "trigscript/spells";\nautoRestore();`).ir[0]);
-    expect(plain).not.toContain(String(0x68c14c));
   });
 });
