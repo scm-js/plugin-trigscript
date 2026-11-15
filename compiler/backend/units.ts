@@ -96,6 +96,11 @@ const ATTACKED = word(0x87, 1);
 const FLARED = word(0x123, 1);
 /** The status bits a flag is (cloaked: both of two). */
 const FLAG_BITS: Partial<Record<UnitFlag, number>> = { invincible: 0x04000000, hallucinated: 0x40000000, burrowed: 0x10, cloaked: 0x300, speedUpgrade: 0x10000000, inTransport: 0x40 };
+/**
+ * Burrowed, or loaded in a transport or a Bunker: a unit the player has no command for. `gather()`, `cast()` and
+ * `stop()` write an order into the unit past everything a command checks, so they leave such a unit as it is.
+ */
+const TAKES_NO_ORDER = 0x10 | 0x40;
 /** The unit an order is aimed at (a pointer, 0 for none), and the defensive matrix's hit points (a word, 256 a point) beside its timer. */
 const ORDER_TARGET = 0x5c >> 2, MATRIX_HP = word(0x112, 2), MATRIX_POINTS = 250 * 256;
 /** The most a field written holds, as the simulator stops it: points for hit points and shields, a byte, a word. */
@@ -832,10 +837,12 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
     const e = u.e;
     const body: Stmt[] = [];
     const is = (id: string, types: readonly number[]) => any(types.map((type) => cmp("==", ranged(V(id), 0, 0xffff), k(type))));
+    /** Neither burrowed nor loaded: the unit may be handed an order (`TAKES_NO_ORDER`). */
+    const free = (): BoolExpr => cmp("==", peek(of(e, STATUS), TAKES_NO_ORDER), k(0));
     switch (v.do) {
       case "kill": body.push(die(e)); break;
       // (The order and its state share a dword: both written at once, the state back to the start.)
-      case "stop": body.push(poke(of(e, ORDER.dword), k(STOP_ORDER * 2 ** ORDER.shift), (ORDER.mask | ORDER_STATE.mask) >>> 0)); break;
+      case "stop": body.push(...when(free(), [poke(of(e, ORDER.dword), k(STOP_ORDER * 2 ** ORDER.shift), (ORDER.mask | ORDER_STATE.mask) >>> 0)])); break;
       // (eudplib's `CUnit.remove()`: the unit leaves without dying.)
       case "remove": body.push(poke(of(e, USER_ACTION.dword), k(4 * 2 ** USER_ACTION.shift), USER_ACTION.mask), die(e)); break;
       case "locate": {
@@ -893,7 +900,7 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
         if (!target || isNone(target)) break;
         const worker = fresh("ty"), aimed = fresh("ty"), order = fresh("order");
         body.push(dec(worker, k(0), 0xffff), dec(aimed, k(0), 0xffff), dec(order, k(0), 255), ...readInto(worker, e, TYPE));
-        body.push(...when(all([is(worker, GATHER_WORKERS), alive(target)]), [
+        body.push(...when(all([is(worker, GATHER_WORKERS), free(), alive(target)]), [
           ...readInto(aimed, target.e, TYPE),
           ...GATHER_ORDERS.flatMap((g) => when(is(aimed, g.targets), [set(order, k(g.order))])),
         ]));
@@ -910,7 +917,7 @@ export function unitValues(program: Program, events?: { sources: Set<EventSource
         if (!spell || !target || isNone(target)) break;
         const caster = fresh("ty");
         body.push(dec(caster, k(0), 0xffff), ...readInto(caster, e, TYPE));
-        body.push(...when(all([is(caster, spell.casters), alive(target)]), [
+        body.push(...when(all([is(caster, spell.casters), free(), alive(target)]), [
           poke(of(e, ORDER_TARGET), bin("+", bin("*", target.e, k(4)), k(DEATHS))),
           poke(of(e, ORDER.dword), k(spell.order * 2 ** ORDER.shift), (ORDER.mask | ORDER_STATE.mask) >>> 0),
         ]));

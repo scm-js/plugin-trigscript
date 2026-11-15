@@ -217,17 +217,22 @@ ${kw}interface Unit {
   /** Centre a location on the unit, its size kept: then createUnit(), moveUnit() and the rest can happen where the unit is. */
   locate(location: Location): void;
   /**
-   * Send an SCV, Probe or Drone to mine a mineral field or harvest a Refinery, Extractor or Assimilator, as a right-click
-   * on it does. Anything else, either way round, is left as it is.
+   * Send an SCV, Probe or Drone to mine a mineral field or harvest a Refinery, Extractor or Assimilator: the order a
+   * right-click on it gives. The order is written into the worker, with no command sent, so nothing a command checks is
+   * checked. A worker that is burrowed or loaded in a transport is left as it is, and so is anything else, either way round.
    */
   gather(target: Unit): void;
   /**
-   * Cast a spell at a unit, as a player's command does: \`medic.cast(techs.Restoration, marine)\`. Restoration is the one
-   * spell so far, cast by a Medic; any other technology is an error when the script is built. Nothing checks the
-   * research or the energy: the game drops a cast it has no energy for, and walks the caster into range.
+   * Cast a spell at a unit: \`medic.cast(techs.Restoration, marine)\`, the order a player's command gives. Restoration is
+   * the one spell so far, cast by a Medic; any other technology is an error when the script is built. The order is
+   * written into the caster, with no command sent: nothing checks the research or the energy (the game drops a cast it
+   * has no energy for, and walks the caster into range), and a caster loaded in a transport or a Bunker is left as it is.
    */
   cast(tech: Tech, target: Unit): void;
-  /** Stop, as the Stop button does: the unit gives up its order where it stands and takes up the next one it has queued, or stands idle. */
+  /**
+   * Stop: the order the Stop button gives. The unit gives up its order where it stands and takes up the next one it has
+   * queued, or stands idle. A unit that is burrowed or loaded in a transport is left as it is.
+   */
   stop(): void;
   /**
    * How far apart two units are, in pixels, as the game measures a weapon's or a spell's range: from the edge of one's
