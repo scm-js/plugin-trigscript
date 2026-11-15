@@ -579,9 +579,9 @@ type EventSource$1 = "created" | "died" | "killed" | "ordered" | "morphed";
  * A number of a unit on the map. Hit points, shields and energy are whole points; the timers, the cooldown and the
  * remaining build time frames; `matrix` the defensive matrix's frames; `speed` the current speed in 256ths of a pixel a frame.
  */
-export type UnitNumField = "hp" | "maxHp" | "shields" | "maxShields" | "energy" | "owner" | "type" | "x" | "y" | "kills" | "orderId" | "cooldown" | "resources" | "stim" | "ensnare" | "plague" | "lockdown" | "maelstrom" | "irradiate" | "stasis" | "buildTime" | "rank" | "matrix" | "speed";
+export type UnitNumField = "hp" | "maxHp" | "shields" | "maxShields" | "energy" | "owner" | "type" | "x" | "y" | "kills" | "orderId" | "cooldown" | "resources" | "stim" | "ensnare" | "plague" | "lockdown" | "maelstrom" | "irradiate" | "stasis" | "buildTime" | "rank" | "matrix" | "speed" | "orderTargetX" | "orderTargetY" | "acidSpores" | "orderState" | "queuedOrders";
 /** A true / false of a unit on the map; `invincible`, `hallucinated` and `speedUpgrade` take a write. */
-export type UnitFlag = "hallucinated" | "cloaked" | "burrowed" | "invincible" | "underAttack" | "speedUpgrade" | "hasTarget" | "inTransport";
+export type UnitFlag = "hallucinated" | "cloaked" | "burrowed" | "invincible" | "underAttack" | "speedUpgrade" | "hasTarget" | "inTransport" | "opticalFlare";
 /** A unit on the map, or none. */
 export type UnitExpr = {
 	kind: "unitNull";
@@ -626,6 +626,12 @@ export type UnitExpr = {
 	kind: "selected";
 	index: number;
 	at: At;
+}
+/** The unit `unit`'s order is aimed at (`u.orderTarget`), or none. */
+ | {
+	kind: "unitOrderTarget";
+	unit: UnitExpr;
+	at: At;
 };
 /** What a unit is told to do. `to` and `target` are known when the script is built; an amount is the program's. */
 export type UnitVerb = {
@@ -652,6 +658,21 @@ export type UnitVerb = {
  | {
 	do: "locate";
 	location: number;
+}
+/** A worker sent to mine a mineral field or harvest a gas building, as a right-click on it sends one. */
+ | {
+	do: "gather";
+	target: UnitExpr;
+}
+/** A spell cast at a unit, as a player's command gives it: `tech` is one of `CAST_ORDERS`'. */
+ | {
+	do: "cast";
+	tech: number;
+	target: UnitExpr;
+}
+/** The order Stop, as the Stop button gives it. */
+ | {
+	do: "stop";
 };
 /**
  * One cell of the game's tables (`tables.ts`): `base + index × stride + key`, `width` bytes or one
@@ -761,6 +782,14 @@ export type NumExpr =
 	kind: "unitField";
 	unit: UnitExpr;
 	field: UnitNumField;
+	at: At;
+	label: string;
+}
+/** How far apart two units are, in pixels, as the game measures a weapon's or a spell's range: between the edges of their boxes. 0 when either is none or gone. */
+ | {
+	kind: "unitDistance";
+	from: UnitExpr;
+	to: UnitExpr;
 	at: At;
 	label: string;
 }
@@ -1696,6 +1725,13 @@ export interface SimUnit {
 	rank: number;
 	matrix: number;
 	speed: number;
+	orderTargetX: number;
+	orderTargetY: number;
+	acidSpores: number;
+	orderState: number;
+	queuedOrders: number;
+	/** The unit its order is aimed at, if any. */
+	orderTarget?: SimUnit;
 	hallucinated: boolean;
 	cloaked: boolean;
 	burrowed: boolean;
@@ -1704,6 +1740,7 @@ export interface SimUnit {
 	speedUpgrade: boolean;
 	hasTarget: boolean;
 	inTransport: boolean;
+	opticalFlare: boolean;
 	/** Still on the map. */
 	alive: boolean;
 	/** Its place in the unit table, from 0; another unit's once this one is gone. */
@@ -2075,6 +2112,11 @@ export interface TestWorld {
 	stackDepth?: number;
 	/** Unit types by their name in lower case, for a `{…:unit}` typed in chat. */
 	unitNames?: Record<string, number>;
+	/** The map's size in tiles: what `memory.map.width` and `memory.map.height` read, and where Center View stops the camera. */
+	mapSize?: {
+		width: number;
+		height: number;
+	};
 }
 export interface TestRunOptions {
 	world?: TestWorld;

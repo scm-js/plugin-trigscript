@@ -777,6 +777,15 @@ var ORDER_NAMES = [
   "Fatal"
 ];
 var ORDER_OF_VERB = { move: 6, patrol: 152, attack: 14 };
+var GATHER_WORKERS = [7, 41, 64];
+var GATHER_ORDERS = [
+  { order: 85, targets: [176, 177, 178] },
+  { order: 81, targets: [110, 149, 157] }
+];
+var CAST_ORDERS = [
+  { tech: 24, casters: [34], order: 180 }
+];
+var STOP_ORDER = 1;
 
 // compiler/api.ts
 function keyOf(table2, value) {
@@ -1028,6 +1037,11 @@ var World = class {
       rank: 0,
       matrix: 0,
       speed: 0,
+      orderTargetX: 0,
+      orderTargetY: 0,
+      acidSpores: 0,
+      orderState: 0,
+      queuedOrders: 0,
       hallucinated: false,
       cloaked: false,
       burrowed: false,
@@ -1036,6 +1050,7 @@ var World = class {
       speedUpgrade: false,
       hasTarget: false,
       inTransport: false,
+      opticalFlare: false,
       ...init,
       hp,
       maxHp: init.maxHp ?? hp,
@@ -1544,8 +1559,8 @@ function stackDepth(value) {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(STACK_DEPTH_MAX, Math.max(STACK_DEPTH_MIN, Math.floor(value))) : STACK_DEPTH;
 }
 var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "buildTime", "rank", "matrix", "invincible", "hallucinated", "speedUpgrade"]);
-var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "buildTime", "rank", "matrix", "speed"];
-var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack", "speedUpgrade", "hasTarget", "inTransport"];
+var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "buildTime", "rank", "matrix", "speed", "orderTargetX", "orderTargetY", "acidSpores", "orderState", "queuedOrders"];
+var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack", "speedUpgrade", "hasTarget", "inTransport", "opticalFlare"];
 var I32_MAX = 2147483647;
 var I32_MIN = -2147483648;
 var U32_MAX = 4294967295;
@@ -1642,7 +1657,7 @@ function eachStart(root, visit) {
   if (o.kind === "start" && typeof o.task === "number" && o.call && typeof o.call === "object") visit(o);
   for (const v of Object.values(o)) if (v && typeof v === "object") eachStart(v, visit);
 }
-var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
+var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "unitOrderTarget" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
   switch (e.kind) {
     case "textLength":
@@ -1668,6 +1683,7 @@ var isNumExpr = (e) => {
     case "read":
     case "randomInt":
     case "unitField":
+    case "unitDistance":
     case "tableRead":
     case "input":
     case "taskHandle":
@@ -1738,6 +1754,7 @@ function declarations(body2) {
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target);
         break;
       case "select":
         s.units.forEach(unit);
@@ -1871,13 +1888,17 @@ function declarations(body2) {
       expr(u3.ptr);
       expr(u3.epd);
       expr(u3.uid);
-    }
+    } else if (u3.kind === "unitOrderTarget") unit(u3.unit);
   };
   const expr = (e) => {
     switch (e.kind) {
       case "unitField":
       case "unitPart":
         unit(e.unit);
+        break;
+      case "unitDistance":
+        unit(e.from);
+        unit(e.to);
         break;
       case "element":
         expr(e.index);
@@ -2030,10 +2051,12 @@ var TABLE_FIELDS = {
   ],
   player: [
     { name: "color", doc: `The colour the player's units and minimap dots are drawn in: one of colors.*, or "teal". Takes effect at once.`, base: 5774710, stride: 1, width: 1, writeOnly: true, special: "color", type: "PlayerColor | ColorName" },
-    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade" } },
-    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech" } }
+    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade", broodWar: { from: 46, base: 5829420, stride: 15 } } },
+    { name: "allied", doc: "Whether the player has set another player as an ally, as Set Alliance Status does: stats(P1).allied[P2]. It goes one way: P2 may not have P1. Read only.", base: 5822004, stride: 12, width: 1, boolean: true, readonly: true, keyed: { kind: "player", type: "Player" } },
+    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech", broodWar: { from: 24, base: 5828928, stride: 20 } } }
   ]
 };
+var UNIT_DIMENSIONS = 6690760;
 var PLAYER_COLORS = { red: 111, blue: 165, teal: 159, purple: 164, orange: 179, brown: 19, white: 255, yellow: 135, green: 117 };
 var MINIMAP_COLOR_OFFSET = 5774806 - 5774710;
 var TABLE_BRAND = { unit: "unit", weapon: "weapon", upgrade: "upgrade", tech: "tech", player: "player" };
@@ -2188,7 +2211,7 @@ function inputsOf(programs) {
       expr(u3.ptr);
       expr(u3.epd);
       expr(u3.uid);
-    }
+    } else if (u3.kind === "unitOrderTarget") unit(u3.unit);
   };
   const any = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e);
   const looks = { num: (e) => {
@@ -2221,6 +2244,10 @@ function inputsOf(programs) {
       case "unitSame":
         unit(e.left);
         unit(e.right);
+        break;
+      case "unitDistance":
+        unit(e.from);
+        unit(e.to);
         break;
       case "unary":
       case "cast":
@@ -2318,6 +2345,7 @@ function inputsOf(programs) {
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target);
         break;
       case "select":
         s.units.forEach(unit);
@@ -2878,6 +2906,8 @@ var ProgramRun = class {
       }
       case "selected":
         return this.sim.selectedUnit(e.index);
+      case "unitOrderTarget":
+        return (yield* this.living(e.unit))?.orderTarget ?? null;
     }
   }
   /** The unit, when there is one and it is still on the map. */
@@ -2889,6 +2919,7 @@ var ProgramRun = class {
   *unitDo(e, verb, at) {
     const u3 = yield* this.living(e);
     const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
+    const target = verb.do === "gather" || verb.do === "cast" ? yield* this.living(verb.target) : null;
     if (!u3) return;
     switch (verb.do) {
       case "kill":
@@ -2908,6 +2939,30 @@ var ProgramRun = class {
         break;
       case "locate":
         this.sim.centre(verb.location, u3.x, u3.y);
+        break;
+      // (The worker takes up the order and keeps it here: the simulator mines nothing.)
+      case "gather": {
+        if (!target || !GATHER_WORKERS.includes(u3.type)) break;
+        const order = GATHER_ORDERS.find((g) => g.targets.includes(target.type))?.order;
+        if (order !== void 0) {
+          u3.orderId = order;
+          u3.orderTarget = target;
+        }
+        break;
+      }
+      // (The caster takes up the order and keeps it here: the simulator casts nothing.)
+      case "cast": {
+        const spell = CAST_ORDERS.find((c2) => c2.tech === verb.tech);
+        if (!target || !spell?.casters.includes(u3.type)) break;
+        u3.orderId = spell.order;
+        u3.orderState = 0;
+        u3.orderTarget = target;
+        break;
+      }
+      case "stop":
+        u3.orderId = STOP_ORDER;
+        u3.orderState = 0;
+        u3.orderTarget = void 0;
         break;
       case "damage":
       case "heal": {
@@ -2984,6 +3039,20 @@ var ProgramRun = class {
       case "unitField": {
         const u3 = yield* this.living(e.unit);
         return u3 ? u3[e.field] | 0 : 0;
+      }
+      case "unitDistance": {
+        const a2 = yield* this.living(e.from), b = yield* this.living(e.to);
+        if (!a2 || !b) return 0;
+        const box = (u3) => {
+          const side2 = (key) => this.sim.tableRead({ name: "unit.dimensions", base: UNIT_DIMENSIONS, stride: 8, index: u3.type, key, width: 2 });
+          return { left: u3.x - side2(0), top: u3.y - side2(2), right: u3.x + side2(4) + 1, bottom: u3.y + side2(6) + 1 };
+        };
+        const p = box(a2), q = box(b);
+        const gap = (from1, to1, from2, to2) => from1 > to2 ? from1 - to2 : from2 > to1 ? from2 - to1 : 0;
+        let x = gap(p.left, p.right, q.left, q.right), y = gap(p.top, p.bottom, q.top, q.bottom);
+        if (x < y) [x, y] = [y, x];
+        if (Math.floor(x / 4) < y) x = x - Math.floor(x / 16) + Math.floor(y * 3 / 8) - Math.floor(x / 64) + Math.floor(y * 3 / 256);
+        return x | 0;
       }
       case "unitPart": {
         const u3 = yield* this.unit(e.unit);
@@ -4127,6 +4196,16 @@ var ProgramSimulation = class {
         return mouse.x - camera.x;
       case "local.mouse.y":
         return mouse.y - camera.y;
+      // A click is a button down for the frame it arrives on.
+      case "local.mouse.buttons":
+        return (this.current.events.has(`click:${at}:left`) ? 2 : 0) + (this.current.events.has(`click:${at}:right`) ? 8 : 0);
+      case "local.card.buttonSet": {
+        const selected = (this.selections.get(at) ?? []).filter((u3) => u3.alive);
+        if (selected.length === 0) return 65535;
+        return selected.every((u3) => u3.type === selected[0].type) ? selected[0].type : 244;
+      }
+      case "local.screen.width":
+        return 640;
       default: {
         const slot = /^local\.selection\[(\d+)\]$/.exec(name);
         if (!slot) return void 0;
@@ -4206,7 +4285,7 @@ var ProgramSimulation = class {
     this.game.centre(location, x, y, size2);
   }
   cellKey(c2) {
-    return `${c2.name}:${c2.player ? this.slotOf(c2.index) : c2.index}${c2.key !== void 0 ? `:${c2.key}` : ""}`;
+    return `${c2.name}:${c2.player ? this.slotOf(c2.index) : c2.index}${c2.key !== void 0 ? `:${c2.base.toString(16)}:${c2.key}` : ""}`;
   }
   /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
   tableRead(c2) {
@@ -4258,11 +4337,31 @@ var ProgramSimulation = class {
     for (const v of this.vision.values()) for (let i = 0; i < v.length; i++) if (v[i] === 2) v[i] = 1;
     for (const u3 of this.world.game.units) if (u3.alive) this.reveal(u3);
   }
+  /** The map's size in tiles: what `memory.map.width` and `memory.map.height` read, else 128 by 128. */
+  mapTiles() {
+    return {
+      width: this.tableOf?.({ name: "memory.map.width", base: 5763540, stride: 0, index: 0, width: 2 }) || 128,
+      height: this.tableOf?.({ name: "memory.map.height", base: 5763542, stride: 0, index: 0, width: 2 }) || 128
+    };
+  }
+  /**
+   * Center View: the player's 640 × 480 screen (Classic graphics) centered on the location, snapped down to 8 pixels and
+   * kept on the map. The mouse stays where it is on the screen.
+   */
+  centerCamera(player, location) {
+    const { x, y } = this.game.centreOf(location);
+    const map = this.mapTiles();
+    const kept3 = (value, most) => Math.max(0, Math.min(value, most)) & ~7;
+    const now = { x: kept3(x - 320, map.width * 32 - 648), y: kept3(y - 240, map.height * 32 - 488) };
+    const was = this.cameras.get(player) ?? { x: 0, y: 0 };
+    const mouse = this.mice.get(player);
+    if (mouse) this.mice.set(player, { x: mouse.x + now.x - was.x, y: mouse.y + now.y - was.y });
+    this.cameras.set(player, now);
+  }
   /** What a player sees of the fog, as GameSim.fog gives it from the game: "#" now, "+" before, "." never. */
   fog(player, area) {
-    const w = this.tableOf?.({ name: "memory.map.width", base: 5763540, stride: 0, index: 0, width: 2 }) || 128;
-    const h = this.tableOf?.({ name: "memory.map.height", base: 5763542, stride: 0, index: 0, width: 2 }) || 128;
-    const { x = 0, y = 0, width: width2 = w, height = h } = area ?? {};
+    const map = this.mapTiles();
+    const { x = 0, y = 0, width: width2 = map.width, height = map.height } = area ?? {};
     const v = this.visionOf(player), rows = [];
     for (let ty = y; ty < Math.min(y + height, FOG_SIZE); ty++) {
       let row = "";
@@ -4310,6 +4409,7 @@ var ProgramSimulation = class {
         if (a2.unitId === ResourceType.Gas || a2.unitId === ResourceType.OreAndGas) stock[1] = set(stock[1]);
       }
     }
+    if (a2.type === ActionType.CenterView) this.centerCamera(run.player, a2.location);
     switch (a2.type) {
       case ActionType.SetDeaths:
         this.world.changeDeath(a2.player, a2.unitId, a2.modifier, a2.target);
@@ -4675,7 +4775,16 @@ var TestSim = class {
       ...as !== void 0 ? { player: as } : options.players ? {} : { player: ir[0]?.owner !== void 0 && ir[0].owner < 12 ? ir[0].owner : void 0 }
     });
     const names = options.unitNames ?? {};
-    this.programs = new ProgramSimulation(ir, { world: this.world, strings, random, heapCells: options.heapCells, stackDepth: options.stackDepth, unitStats: (type) => stats[type], unitByName: (lower) => names[lower] });
+    this.programs = new ProgramSimulation(ir, {
+      world: this.world,
+      strings,
+      random,
+      heapCells: options.heapCells,
+      stackDepth: options.stackDepth,
+      unitStats: (type) => stats[type],
+      unitByName: (lower) => names[lower],
+      table: (cell) => cell.name === "memory.map.width" ? options.mapSize?.width : cell.name === "memory.map.height" ? options.mapSize?.height : void 0
+    });
   }
   /** How many frames have run: the game's frame number. */
   get frame() {
@@ -5932,6 +6041,30 @@ var LOCAL_FIELDS = [
     readonly: true,
     doc: "Where this computer's mouse is on the screen, from its top edge, in the game's pixels: 0 to 479.",
     remastered: "Remastered: its input record, read live. Played."
+  },
+  {
+    path: ["mouse", "buttons"],
+    base: 7134656,
+    width: 4,
+    readonly: true,
+    doc: `Which of this computer's mouse buttons are down now, as bits: 2 the left, 8 the right. clicked(p, "right") is the same press sent to every computer, frames later; this is where the mouse was when it went down.`,
+    remastered: "Remastered: its input record, read live (its own EUD emulator). Played."
+  },
+  {
+    path: ["card", "buttonSet"],
+    base: 6865228,
+    width: 2,
+    readonly: true,
+    doc: "Which buttons this computer's command card shows: the button set's number. One unit type, or several of one type, shows that type's own set (a Medic's is 34); units of several types show 244; 229 is the Cancel card a targeting cursor brings up.",
+    remastered: "Remastered: read allowed (its own EUD emulator), read live. Played: 34 for one Medic or several, 0 for a Marine, 244 for a Medic and a Marine, 229 while a targeting cursor is up."
+  },
+  {
+    path: ["screen", "width"],
+    base: 7139312,
+    width: 2,
+    readonly: true,
+    doc: "The width of this computer's game screen bitmap, in the game's pixels: in Remastered graphics, how wide the game is drawn, which follows the shape of the display (853 at 16:9, 640 at 4:3). Classic graphics always draws 640 wide and pillarboxes the rest, but this still reads the display's width, so it does not tell the two apart.",
+    remastered: "Remastered: read allowed (its own EUD emulator). Played: the same value in Classic and Remastered graphics on one display."
   }
 ];
 var LOCAL_MEMORY = [
@@ -5941,7 +6074,9 @@ var LOCAL_MEMORY = [
   { name: "the camera", from: 6456488, size: 4 },
   { name: "the selection", from: 6456504, size: 48 },
   { name: "the mouse buttons", from: 7134656, size: 4 },
-  { name: "the mouse", from: 7134660, size: 8 }
+  { name: "the mouse", from: 7134660, size: 8 },
+  { name: "the command card", from: 6865228, size: 2 },
+  { name: "the screen", from: 7139312, size: 2 }
 ];
 function localMemoryAt(address) {
   return LOCAL_MEMORY.find((m) => address >= m.from && address < m.from + m.size)?.name;
@@ -8614,13 +8749,15 @@ function createRuntime(names, collector, options = {}) {
     })));
   };
   const tableValue = (kind, field, index, ident, key) => {
+    const broodWar = field.keyed?.broodWar;
+    const row = broodWar && key !== void 0 && key >= broodWar.from ? { base: broodWar.base, stride: broodWar.stride, key: key - broodWar.from } : { base: field.base, stride: field.stride, key };
     const cell = {
       name: `${kind}.${field.name}`,
-      base: field.base,
-      stride: field.stride,
+      base: row.base,
+      stride: row.stride,
       index,
       width: field.width,
-      ...key !== void 0 ? { key } : {},
+      ...row.key !== void 0 ? { key: row.key } : {},
       ...field.bit !== void 0 ? { bit: field.bit } : {},
       ...field.scale ? { scale: field.scale } : {},
       ...kind === "player" ? { player: true } : {},
@@ -8902,6 +9039,19 @@ ${kw}interface Unit {
   kills: number;
   /** What the unit is doing: \`if (u.orderId == orders.Move)\`. orders.PlayerGuard is standing guard, orders.AttackUnit attacking. */
   readonly orderId: Order;
+  /** The unit the order is aimed at (the one followed, attacked, mined \u2026), or null when it is aimed at a place or at nothing. */
+  readonly orderTarget: Unit | null;
+  /** Where the order is aimed, in pixels: where a Move goes, or the target unit's centre. */
+  readonly orderTargetX: number;
+  readonly orderTargetY: number;
+  /** How far the unit has got with its order, 0 \u2026 255: 0 as an order starts. What each number means is the order's own. */
+  readonly orderState: number;
+  /**
+   * How many orders wait behind the one it is doing: what a shift-click adds, and what the game queues for itself (an
+   * attack-moving or patrolling Medic that stops to heal has its attack-move or patrol waiting). Orders the game shows no
+   * button for are not counted.
+   */
+  readonly queuedOrders: number;
   /** Frames until the unit can attack or cast again, 0 \u2026 255; writing it holds the unit's fire that long (the ground weapon's, the air weapon's and the spells' alike). */
   cooldown: number;
   /**
@@ -8926,6 +9076,10 @@ ${kw}interface Unit {
   maelstrom: number;
   irradiate: number;
   stasis: number;
+  /** Acid spores on the unit, 0 \u2026 9: each Devourer hit adds one, and they wear off one by one. Read only. */
+  readonly acidSpores: number;
+  /** Whether the unit is blinded by Optical Flare, which only a Medic's Restoration cures. Read only. */
+  readonly opticalFlare: boolean;
   /** Whether the unit cannot be hurt. */
   invincible: boolean;
   /** Whether the unit is a hallucination: made so, it takes double damage and dies after a while, as a Templar's do. */
@@ -8956,6 +9110,24 @@ ${kw}interface Unit {
   heal(amount: number | { percent: number }): void;
   /** Centre a location on the unit, its size kept: then createUnit(), moveUnit() and the rest can happen where the unit is. */
   locate(location: Location): void;
+  /**
+   * Send an SCV, Probe or Drone to mine a mineral field or harvest a Refinery, Extractor or Assimilator, as a right-click
+   * on it does. Anything else, either way round, is left as it is.
+   */
+  gather(target: Unit): void;
+  /**
+   * Cast a spell at a unit, as a player's command does: \`medic.cast(techs.Restoration, marine)\`. Restoration is the one
+   * spell so far, cast by a Medic; any other technology is an error when the script is built. Nothing checks the
+   * research or the energy: the game drops a cast it has no energy for, and walks the caster into range.
+   */
+  cast(tech: Tech, target: Unit): void;
+  /** Stop, as the Stop button does: the unit gives up its order where it stands and takes up the next one it has queued, or stands idle. */
+  stop(): void;
+  /**
+   * How far apart two units are, in pixels, as the game measures a weapon's or a spell's range: from the edge of one's
+   * box to the edge of the other's (0 when they touch). 0 when either is gone.
+   */
+  distanceTo(other: Unit): number;
 }
 /** Which units a loop or a pick looks at; a part left out matches all. units.Men, units.Buildings and units.Factories work as a type. */
 ${kw}interface UnitFilter {
@@ -9926,7 +10098,7 @@ export interface Sim {
   /** A line of chat, for the next frame: what chatted() finds. */
   type(line: string, player?: Player): this;
   moveMouse(x: number, y: number, player?: Player): this;
-  /** The player's screen to a place on the map, its top left corner in pixels: what local.camera reads. The mouse stays where it is on the map. */
+  /** The player's screen to a place on the map, its top left corner in pixels: what local.camera reads. The mouse stays where it is on the map. centerView() moves it too. */
   moveCamera(x: number, y: number, player?: Player): this;
   /** The player selects these units (up to twelve), as a drag would at their computer: what local.selected reads. */
   selectUnits(units: readonly SimUnit[], player?: Player): this;
@@ -11485,6 +11657,7 @@ function mapPosition(mapJson, line, column) {
 
 // compiler/generated/stdlib.ts
 var STDLIB_SOURCES = {
+  "card": "/**\n * A right-click on a command card button: the standard library's \"trigscript/card\" (TrigScript 4). Single-player maps.\n *\n *   import { CardButton, cardSlots } from \"trigscript/card\";\n *\n *   program(async () => {\n *     const restore = new CardButton(techs.Restoration, cardSlots.Restoration);\n *     await restore.begin();\n *     let on = true;\n *     while (true) {\n *       if (await restore.rightClicked()) {\n *         on = !on;\n *         print(on ? \"On\" : \"Off\", { to: CurrentPlayer });\n *       }\n *       \u2026\n *       await nextFrame();\n *     }\n *   }, { owner: AllPlayers });\n *\n * The game keeps no record of which card button a right-click landed on, and a right-click on a button does nothing in\n * the game. So the button tests where the mouse was when the right button went down against where the button is drawn,\n * while the card shows the buttons of the units that have the ability (a Medic's for Restoration). Make it inside a\n * program run for the human player, and call rightClicked() once on every pass of the program's loop.\n *\n * Where a button is drawn depends on the graphics. Classic graphics draws the game 640 pixels wide; Remastered's draws it\n * as wide as the display's shape (`local.screen.width`), and that width reads the same in both. The card sits against the\n * right edge, so the button needs to know which graphics are on. At the start it centers the view on the middle of the\n * map, reads where the camera stopped (half the drawn width left of the middle) and sends the view back; after that, a\n * click on the minimap and the camera going further right than Remastered's can keep it current when the player switches\n * graphics mid-game. Until it knows, a press on either layout's place for the button counts.\n *\n * Played in StarCraft: Remastered (2026-11-12), on a Mac in Classic and Remastered graphics:\n * - Center View glides: the camera takes a few frames to arrive. A second Center View sent during the glide was lost,\n *   and moving a location and centering the view on it in one frame while the camera already sat there hung the game.\n * - A Center View after an await in the same branch, or in a task beside the program, misbehaved (the view locked);\n *   each step here is its own pass of the caller's loop, and the only awaits are sync()s followed by nothing but sums.\n * - The card's buttons: columns 132, 86 and 40 pixels in from the drawn width's right edge, rows at 352, 396 and 440,\n *   each about 31 by 30, in both graphics.\n * - A minimap click lands the camera half the drawn width, and one minimap pixel's worth more, left of the spot clicked.\n */\nimport { sync, clicked, centerLocation, centerView, reserveLocation, print, memory, local, techs, CurrentPlayer, type Tech } from \"trigscript\";\n\n/** The nine places on the command card, left to right and top to bottom, and each ability's own place. */\nexport const cardSlots = {\n  topLeft: 0,\n  topMiddle: 1,\n  topRight: 2,\n  middleLeft: 3,\n  center: 4,\n  middleRight: 5,\n  bottomLeft: 6,\n  bottomMiddle: 7,\n  bottomRight: 8,\n  Restoration: 7,\n};\n\nconst VIEW = reserveLocation(\"card: where the camera is sent to measure the screen\");\n\nlet afterCalibrationHandler: (() => void) | undefined = undefined;\nlet showMeasurements = false;\n\n/**\n * At the top of the script, before any CardButton: `afterCalibration` runs once the start's measurement is done, in\n * place of sending the view back \u2014 where an opening cinematic starts. `showMeasurements` prints each step of it, and each\n * right-click the button tests, as numbered lines.\n */\nexport function cardSetup(options: { afterCalibration?: () => void; showMeasurements?: boolean } = {}) {\n  afterCalibrationHandler = options.afterCalibration;\n  showMeasurements = options.showMeasurements === true;\n}\n\n/** One button of the command card, watched for a right-click. */\nexport class CardButton {\n  /** The button set the card shows for the units that have the ability: a Medic's for Restoration. */\n  buttonSet = 0xffff;\n  /** How far in from the drawn width's right edge the button's column starts, and the top of its row. */\n  fromRight = 132;\n  top = 352;\n  mapWidth = 0;\n  mapHeight = 0;\n  middleX = 0;\n  middleY = 0;\n  /** 0 the location is moved, 1 the view is sent, 2 waiting for it to settle, 3 read, 4 the location goes back, 5 the view goes back, 6 done. */\n  phase = 6;\n  passes = 0;\n  startX = 0;\n  startY = 0;\n  settledX = 0;\n  settledY = 0;\n  /** Kept on this computer only: equal camera readings in a row while it settles, and the reading a pass ago. */\n  steady = 0;\n  lastX = 0;\n  lastY = 0;\n  /** Kept on this computer only: 0 not known, 1 Classic graphics, 2 Remastered's. */\n  graphics = 0;\n  pressed = 0;\n  wasDown = 0;\n  lastCameraX = 0;\n  line = 0;\n\n  constructor(tech: Tech, slot: number) {\n    if (tech == techs.Restoration) this.buttonSet = 34;\n    const column = slot % 3;\n    if (column == 1) this.fromRight = 86;\n    if (column == 2) this.fromRight = 40;\n    if (slot >= 3) this.top = 396;\n    if (slot >= 6) this.top = 440;\n  }\n\n  /** Before the program's loop: where the view starts, sent to every computer, so the view can be sent back there. */\n  async begin() {\n    this.mapWidth = memory.map.width * 32;\n    this.mapHeight = memory.map.height * 32;\n    this.middleX = (this.mapWidth - this.mapWidth % 64) / 2;\n    this.middleY = (this.mapHeight - this.mapHeight % 64) / 2;\n    const [x, y] = await sync(CurrentPlayer, local.camera.x, local.camera.y);\n    this.startX = x;\n    this.startY = y;\n    this.lastCameraX = x;\n    if (showMeasurements) {\n      this.line += 1;\n      print(`#${this.line} card: the view starts at ${x},${y}; the map is ${this.mapWidth} by ${this.mapHeight} pixels`);\n    }\n    // A map narrower or shorter than this would stop the camera before it is centered, and the reading would mean nothing.\n    if (this.mapWidth >= 1024 && this.mapHeight >= 1024) this.phase = 0;\n    else {\n      if (showMeasurements) {\n        this.line += 1;\n        print(`#${this.line} card: the map is too small to measure the screen; both layouts count`);\n      }\n      const after = afterCalibrationHandler;\n      if (after) after();\n    }\n  }\n\n  /** On every pass of the program's loop: whether the player right-clicked the button since the last pass that said so. */\n  async rightClicked(): Promise<boolean> {\n    const cameraX = local.camera.x;\n    const cameraY = local.camera.y;\n    if (this.phase == 0) {\n      centerLocation(VIEW, this.middleX, this.middleY);\n      this.phase = 1;\n    } else if (this.phase == 1) {\n      centerView(VIEW);\n      this.phase = 2;\n      this.passes = 0;\n      this.steady = 0;\n      this.lastX = cameraX;\n      this.lastY = cameraY;\n    } else if (this.phase == 2) {\n      this.passes += 1;\n      if (cameraX == this.lastX && cameraY == this.lastY) this.steady += 1;\n      else this.steady = 0;\n      this.lastX = cameraX;\n      this.lastY = cameraY;\n      if (this.passes >= 16) this.phase = 3;\n    }\n    if (this.phase == 3) {\n      const [x, y] = await sync(CurrentPlayer, local.camera.x, local.camera.y);\n      this.settledX = x;\n      this.settledY = y;\n      this.phase = 4;\n    } else if (this.phase == 4) {\n      if (this.steady >= 2 && this.settledX + 296 <= this.middleX && this.settledX + 344 >= this.middleX) this.graphics = 1;\n      if (this.steady >= 2 && this.settledX + 352 <= this.middleX && this.settledX + 460 >= this.middleX) this.graphics = 2;\n      if (showMeasurements) {\n        this.line += 1;\n        print(`#${this.line} card: centered on the middle, the camera settled at ${this.settledX},${this.settledY} (${this.steady} equal readings)`);\n        this.line += 1;\n        if (this.graphics == 1) print(`#${this.line} card: Classic graphics, the camera ${this.middleX - this.settledX} left of the middle`);\n        else if (this.graphics == 2) print(`#${this.line} card: Remastered graphics, the camera ${this.middleX - this.settledX} left of the middle`);\n        else print(`#${this.line} card: graphics not known; both layouts count`);\n      }\n      const after = afterCalibrationHandler;\n      if (after) {\n        after();\n        this.phase = 6;\n      } else if (this.settledX != this.startX || this.settledY != this.startY) {\n        centerLocation(VIEW, this.startX + this.middleX - this.settledX, this.startY + this.middleY - this.settledY);\n        this.phase = 5;\n      } else this.phase = 6;\n    } else if (this.phase == 5) {\n      centerView(VIEW);\n      this.phase = 6;\n      if (showMeasurements) {\n        this.line += 1;\n        print(`#${this.line} card: the view is sent back`);\n      }\n    }\n\n    const width = local.screen.width;\n    const mouseX = local.mouse.x;\n    const mouseY = local.mouse.y;\n    const buttons = local.mouse.buttons;\n    if (this.phase == 6) {\n      const before = this.graphics;\n      // A minimap click or drag (a square map's minimap is 128 pixels across, from 6,348): the camera jumps to the spot\n      // under the cursor, half the drawn width and a minimap pixel left of it.\n      const scale = this.mapWidth / 128;\n      if (this.mapWidth == this.mapHeight && buttons % 4 >= 2 && mouseX >= 6 && mouseX <= 133 && mouseY >= 348 && mouseY <= 475 && (cameraX > this.lastCameraX + 96 || this.lastCameraX > cameraX + 96) && cameraX > 0) {\n        const spot = (mouseX - 6) * scale;\n        if (spot >= cameraX + scale + 296 && spot <= cameraX + scale + 344) this.graphics = 1;\n        if (spot >= cameraX + scale + 352 && spot <= cameraX + scale + 460) this.graphics = 2;\n      }\n      // Remastered's camera stops a drawn width short of the map's right edge; only Classic's gets further.\n      if (width > 648 && cameraX + width > this.mapWidth) this.graphics = 1;\n      if (showMeasurements && this.graphics != before) {\n        this.line += 1;\n        if (this.graphics == 1) print(`#${this.line} card: now Classic graphics, the camera at ${cameraX},${cameraY}`);\n        else print(`#${this.line} card: now Remastered graphics, the camera at ${cameraX},${cameraY}`);\n      }\n    }\n    this.lastCameraX = cameraX;\n\n    const down = buttons % 16 >= 8 ? 1 : 0;\n    if (down == 1 && this.wasDown == 0) {\n      const inRow = mouseY >= this.top && mouseY < this.top + 30;\n      const inClassic = mouseX + this.fromRight >= 640 && mouseX + this.fromRight < 640 + 31;\n      const inRemastered = mouseX + this.fromRight >= width && mouseX + this.fromRight < width + 31;\n      let inSlot = false;\n      if (this.graphics == 1) inSlot = inClassic;\n      else if (this.graphics == 2) inSlot = inRemastered;\n      else inSlot = inClassic || inRemastered;\n      const shown = local.card.buttonSet;\n      this.pressed = shown == this.buttonSet && inRow && inSlot ? 1 : 0;\n      if (showMeasurements) {\n        this.line += 1;\n        const verdict = this.pressed == 1 ? \"on the button\" : \"not on the button\";\n        if (shown == 34) print(`#${this.line} card: right button down at ${mouseX},${mouseY}, Medic buttons (34): ${verdict}`);\n        else if (shown == 0) print(`#${this.line} card: right button down at ${mouseX},${mouseY}, Marine buttons (0): ${verdict}`);\n        else if (shown == 244) print(`#${this.line} card: right button down at ${mouseX},${mouseY}, mixed group buttons (244): ${verdict}`);\n        else if (shown == 229) print(`#${this.line} card: right button down at ${mouseX},${mouseY}, Cancel, a targeting cursor is up (229): ${verdict}`);\n        else print(`#${this.line} card: right button down at ${mouseX},${mouseY}, button set (${shown}): ${verdict}`);\n      }\n    }\n    this.wasDown = down;\n\n    if (clicked(CurrentPlayer, \"right\")) {\n      const onButton = await sync(CurrentPlayer, this.pressed);\n      this.pressed = 0;\n      return onButton == 1;\n    }\n    return false;\n  }\n}\n",
   "cutscene": '/**\n * Scenes acted out in the game: the standard library\'s "trigscript/cutscene" (TrigScript 4).\n *\n *   import { Camera, walk, line, play, SECOND } from "trigscript/cutscene";\n *\n *   async function intro(raider: Unit) {\n *     const cam = new Camera(raider.x, raider.y);\n *     await line(units.JimRaynorMarine, "Something\'s moving out there.", 3 * SECOND);\n *     const there = start(walk(raider, 1200, 640));   // the walk goes on while the camera follows\n *     await cam.follow(raider, 2 * SECOND);\n *     await there;\n *     await cam.pan(1600, 400, 2 * SECOND);\n *     await cam.shake(12);\n *   }\n *\n *   program(async () => {\n *     const raider = first(unitsAt(locations.Base, { owner: P1, type: units.TerranMarine }));\n *     if (!raider) return;\n *     const skipped = await play(P1, start(intro(raider)));   // Escape skips the rest of it\n *     if (skipped) print("Skipped.");\n *   });\n *\n * Everything here is what a trigger can do, done a frame at a time: the camera is Center View on a location the library\n * keeps for itself, moved to where the camera should look; a unit walks by a Move order to another; a line is the\n * speaker\'s portrait talking and the words in the middle of the screen. Places are pixels (32 a tile), (0, 0) the map\'s\n * top left; time is frames of the game, 24 a second on Fastest (`SECOND`). The camera is the one of the player the\n * program runs as, as Center View\'s is.\n */\nimport { centerLocation, centerView, reserveLocation, talkingPortrait, print, sleep, frames, nextFrame, keyPressed, type Player, type Task, type Unit, type UnitType } from "trigscript";\nimport { easeInOutQuad, easeInQuad, easeOutQuad, easeOutBack } from "trigscript/math";\n\n/** Frames a second of game time on Fastest, the speed a map is played at. */\nexport const SECOND = 24;\n\nconst VIEW = reserveLocation("cutscene: where the camera looks");\nconst GOAL = reserveLocation("cutscene: where a unit is sent");\n\n/** How a glide speeds up and slows down: evenly, starting slow, ending slow, both, or ending past the mark and back. */\nexport type Ease = "linear" | "in" | "out" | "inOut" | "back";\n\n/** How far along a glide is at `t` (0 at its start, 1 at its end), as `ease` has it. */\nfunction eased(t: fixed, ease: Ease): fixed {\n  if (ease === "in") return easeInQuad(t);\n  if (ease === "out") return easeOutQuad(t);\n  if (ease === "inOut") return easeInOutQuad(t);\n  if (ease === "back") return easeOutBack(t);\n  return t;\n}\n\n/**\n * The camera of the player the program runs as: where it looks, and how it gets somewhere else. It looks at its first\n * place as soon as it is made.\n */\nexport class Camera {\n  /** The point the camera is centred on, in pixels. */\n  x: number;\n  y: number;\n\n  constructor(x: number, y: number) {\n    this.x = x;\n    this.y = y;\n    centerLocation(VIEW, x, y);\n    centerView(VIEW);\n  }\n\n  /** Look at a point, now. */\n  look(x: number, y: number) {\n    this.x = x;\n    this.y = y;\n    centerLocation(VIEW, x, y);\n    centerView(VIEW);\n  }\n\n  /**\n   * Glide to a point over `time` frames, looking at each place on the way a frame at a time.\n   * @param ease How it speeds up and slows down; "inOut" unless it says.\n   */\n  async pan(x: number, y: number, time: number, ease: Ease = "inOut") {\n    const fromX = this.x;\n    const fromY = this.y;\n    let i = 1;\n    while (i <= time) {\n      const k = eased(fixed(i) / time, ease);\n      this.look(fromX + Math.round((x - fromX) * k), fromY + Math.round((y - fromY) * k));\n      await nextFrame();\n      i++;\n    }\n    this.look(x, y);\n  }\n\n  /** Keep a unit in the middle of the screen for `time` frames, or until it is gone. */\n  async follow(u: Unit, time: number) {\n    let i = 0;\n    while (i < time && u) {\n      this.look(u.x, u.y);\n      await nextFrame();\n      i++;\n    }\n  }\n\n  /** Shake for `time` frames, `size` pixels each way (8 unless it says), and settle where it was. */\n  async shake(time: number, size: number = 8) {\n    const x = this.x;\n    const y = this.y;\n    let i = 0;\n    while (i < time) {\n      const left = (i % 4) < 2;\n      const up = (i % 2) === 0;\n      centerLocation(VIEW, left ? x - size : x + size, up ? y - size : y + size);\n      centerView(VIEW);\n      await nextFrame();\n      i++;\n    }\n    this.look(x, y);\n  }\n}\n\n/**\n * Send a unit to a point by a Move order, and wait until it is there \u2014 within `near` pixels (48 unless it says) \u2014 or\n * `limit` frames have passed (30 seconds unless it says), or it is gone.\n * @returns Whether it got there.\n */\nexport async function walk(u: Unit, x: number, y: number, near: number = 48, limit: number = 30 * SECOND): Promise<boolean> {\n  return go(u, x, y, "move", near, limit);\n}\n\n/** The same with an Attack order: the unit fights what it meets on the way. */\nexport async function charge(u: Unit, x: number, y: number, near: number = 48, limit: number = 30 * SECOND): Promise<boolean> {\n  return go(u, x, y, "attack", near, limit);\n}\n\nasync function go(u: Unit, x: number, y: number, how: "move" | "attack", near: number, limit: number): Promise<boolean> {\n  centerLocation(GOAL, x, y);\n  u.order(how, GOAL);\n  let waited = 0;\n  while (u && Math.abs(u.x - x) + Math.abs(u.y - y) > near && waited < limit) {\n    await nextFrame();\n    waited++;\n  }\n  return !!u && Math.abs(u.x - x) + Math.abs(u.y - y) <= near;\n}\n\n/**\n * Send every unit of a group to a point together, and wait until each is there, gone, or `limit` frames have passed.\n * @returns How many got there.\n */\nexport async function walkAll(group: Unit[], x: number, y: number, near: number = 64, limit: number = 30 * SECOND): Promise<number> {\n  centerLocation(GOAL, x, y);\n  for (const u of group) if (u) u.order("move", GOAL);\n  let waited = 0;\n  let there = 0;\n  while (waited < limit) {\n    there = 0;\n    let moving = 0;\n    for (const u of group) {\n      if (!u) continue;\n      if (Math.abs(u.x - x) + Math.abs(u.y - y) <= near) there++;\n      else moving++;\n    }\n    if (moving === 0) break;\n    await nextFrame();\n    waited++;\n  }\n  return there;\n}\n\n/**\n * A line of the scene: the speaker\'s portrait talks and the words show in the middle of the screen, for `time` frames\n * (3 seconds unless it says), and then the scene goes on.\n */\nexport async function line(speaker: UnitType, text: string, time: number = 3 * SECOND) {\n  talkingPortrait(speaker, Math.round((time * 1000) / SECOND));\n  print(text, { position: "center" });\n  await sleep(frames(time));\n}\n\n/**\n * Play a scene, started as a task (`start(intro())`), for a player who may skip it: when they press `key` (Escape unless\n * it says) the scene stops where it is. Put things where the scene would have left them when it gives true.\n * @returns Whether it was skipped.\n */\nexport async function play(player: Player, scene: Task, key: "Escape" | "Space" | "Enter" = "Escape"): Promise<boolean> {\n  while (scene.running) {\n    if (keyPressed(player, key)) {\n      scene.cancel();\n      return true;\n    }\n    await nextFrame();\n  }\n  return false;\n}\n',
   "fog": '/**\n * Fog of war as a picture: the standard library\'s "trigscript/fog" (TrigScript 4).\n *\n *   import { fog } from "trigscript/fog";\n *\n *   const heart = fog.picture([".##.##.", "#######", ".#####.", "..###.."]);\n *\n *   program(async () => {\n *     fog.reveal(P1);                  // the whole map lit once: from now on dark is fog, not black\n *     while (true) {\n *       fog.light(P1, 30, 20, 5);       // a disc of size 5 around tile (30, 20), this frame only\n *       fog.light(P1, 60, 40, heart);   // a picture, its top left on tile (60, 40)\n *       await nextFrame();\n *     }\n *   });\n *\n * The fog is a canvas that starts every frame dark: what a program lights this frame is what shows this frame, and\n * nothing else needs doing. There is no dark brush \u2014 the game\'s sight only ever reveals \u2014 so dark is whatever is not\n * lit; to draw dark shapes, light around them (a picture with `{ ink: "dark" }`). Dark is also the sharper ink: a lit\n * part is at least a brush wide (3 tiles across, 4 down), while a dark line one tile wide stays exactly that. Nothing\n * else needs doing \u2014 the library writes the game\'s vision countdown after every frame (memory.vision.countdown), so\n * the next frame starts from a wiped board. Watch it on the minimap. With Classic graphics (Options > Graphics) a tile\n * of the map is a pixel there, sharp; Remastered graphics blurs it a few tiles wide.\n *\n * What the board is made of decides how far apart lit and fog look. Remastered draws a tile on the minimap as the\n * average of its art and fog as 0.64 of lit, whatever the tile, so the brightest art is the best board there: plain\n * Ice snow (lit 130 against fog 82, measured 2026-10-19). Classic draws a tile as one colour of its own; Badlands\n * tile 23778 is the widest apart there, and dim and textured in Remastered. Snow played the better of the two.\n *\n * How it draws, played in StarCraft: Remastered (2026-10-17): a brush is a unit made on a tile and taken away in the\n * same trigger pass; the tiles its sight revealed stay lit through the frame. A brush\'s size is the unit\'s sight\n * range, so each size is a unit type of its own \u2014 the flying heroes below, which no ordinary map places \u2014 whose sight\n * is set every frame (Remastered takes a sight write a frame late, so one type cannot change size within a frame).\n * Coordinates are tiles, (0, 0) the map\'s top left. About 800 brushes a frame is the most the game makes: it keeps a\n * removed unit\'s place until the next frame.\n */\nimport { game, program, sleep, frames, stats, createUnit, removeUnit, centerLocation, reserveLocation, memory, cover, nextFrame, type Player, type UnitType, type Video } from "trigscript";\n\n/**\n * Each brush\'s shape, sizes 1 to 11: the tiles a flying unit of that sight range reveals, read out of the game.\n * "@" is the tile the brush is centred on. The game\'s air sight leaves the centre\'s row one short below, so every\n * shape reaches a row further up than down.\n */\nexport const SHAPES: readonly (readonly string[])[] = [\n  // 1\n  ["###", "###", "#@#", "###"],\n  // 2\n  [".###.", "#####", "#####", "##@##", "#####", "#####"],\n  // 3\n  ["..###..", "#######", "#######", "#######", "###@###", "#######", "#######", "#######"],\n  // 4\n  ["..#####...", ".#######..", "#########.", "##########", "##########", "####@#####", "##########", "##########", "#########.", ".#######..", "......#..."],\n  // 5\n  ["...#####....", "..#######...", ".#########..", "###########.", "############", "############", "#####@######", "############", "############", "###########.", ".#########..", "..#######...", ".......#...."],\n  // 6\n  ["....#####.....", "..#########...", ".###########..", "#############.", "#############.", "##############", "##############", "######@#######", "##############", "##############", "#############.", "#############.", ".###########..", "..#########...", "........#....."],\n  // 7\n  [".....#####......", "...#########....", "..###########...", ".#############..", "###############.", "###############.", "################", "################", "#######@########", "################", "################", "###############.", "###############.", ".#############..", "..###########...", "...#########....", ".........#......"],\n  // 8\n  ["......#####.......", "....#########.....", "..#############...", ".###############..", ".###############..", "#################.", "#################.", "##################", "##################", "########@#########", "##################", "##################", "#################.", "#################.", ".###############..", ".###############..", "..#############...", "....#########.....", "..........#......."],\n  // 9\n  ["......#######.......", "....###########.....", "...#############....", "..###############...", ".#################..", "###################.", "###################.", "####################", "####################", "####################", "#########@##########", "####################", "####################", "####################", "###################.", "###################.", ".#################..", "..###############...", "...#############....", "....###########.....", "........#####......."],\n  // 10\n  [".......#######........", ".....###########......", "....#############.....", "..#################...", "..#################...", ".###################..", "#####################.", "#####################.", "######################", "######################", "######################", "##########@###########", "######################", "######################", "######################", "#####################.", "#####################.", ".###################..", "..#################...", "..#################...", "....#############.....", ".....###########......", ".........#####........"],\n  // 11\n  ["........#######.........", "......###########.......", "....###############.....", "...#################....", "..###################...", ".#####################..", ".#####################..", "#######################.", "#######################.", "########################", "########################", "########################", "###########@############", "########################", "########################", "########################", "#######################.", "#######################.", ".#####################..", ".#####################..", "..###################...", "...#################....", "....###############.....", "......###########.......", "..........#####........."],\n];\n\n/** Each size\'s unit, size 1 first: flying heroes without a sight upgrade, by the game\'s own ids (the same under a mod\'s names). A map that places one gets odd sight from it. */\nconst BRUSHES: readonly UnitType[] = [\n  55 /* Kukulza (Mutalisk) */, 56 /* Kukulza (Guardian) */, 57 /* Yggdrasill (Overlord) */, 22 /* Magellan (Science Vessel) */,\n  82 /* Gantrithor (Carrier) */, 28 /* Hyperion (Battlecruiser) */, 29 /* Norad II (Battlecruiser) */, 21 /* Tom Kazansky (Wraith) */,\n  86 /* Danimoth (Arbiter) */, 80 /* Mojo (Scout) */, 88 /* Artanis (Scout) */,\n] as UnitType[];\n\n/** Where each brush is made: a location the map does not use, taken when the script is built. */\nconst SPOT = reserveLocation("fog: where each brush is made");\n\n/**\n * One disc: the tiles a brush of `size` covers (SHAPES), centred on tile (x, y). What light() does with a size. A brush\n * is a unit made where SPOT is and taken away again at once; each branch makes its own size\'s, so that the unit type\n * of the action is known when the script is built (one given by the program costs writing it into the action).\n */\nconst disc = game((player: Player, x: number, y: number, size: number) => {\n  discPx(player, x * 32 + 16, y * 32 + 16, size);\n});\n\n/**\n * disc() in pixels, (px, py) the centre of the tile: what a caller with many brushes uses, its products by 32 worked\n * out once and the brushes\' offsets added (a product by 32 of a number the game holds is a test a bit, about 0.4 \xB5s).\n */\nconst discPx = game((player: Player, px: number, py: number, size: number) => {\n  centerLocation(SPOT, px, py, 32, 32);\n  switch (size) {\n    case 0: case 1: createUnit(player, BRUSHES[0], 1, SPOT); removeUnit(player, BRUSHES[0]); break;\n    case 2: createUnit(player, BRUSHES[1], 1, SPOT); removeUnit(player, BRUSHES[1]); break;\n    case 3: createUnit(player, BRUSHES[2], 1, SPOT); removeUnit(player, BRUSHES[2]); break;\n    case 4: createUnit(player, BRUSHES[3], 1, SPOT); removeUnit(player, BRUSHES[3]); break;\n    case 5: createUnit(player, BRUSHES[4], 1, SPOT); removeUnit(player, BRUSHES[4]); break;\n    case 6: createUnit(player, BRUSHES[5], 1, SPOT); removeUnit(player, BRUSHES[5]); break;\n    case 7: createUnit(player, BRUSHES[6], 1, SPOT); removeUnit(player, BRUSHES[6]); break;\n    case 8: createUnit(player, BRUSHES[7], 1, SPOT); removeUnit(player, BRUSHES[7]); break;\n    case 9: createUnit(player, BRUSHES[8], 1, SPOT); removeUnit(player, BRUSHES[8]); break;\n    case 10: createUnit(player, BRUSHES[9], 1, SPOT); removeUnit(player, BRUSHES[9]); break;\n    default: createUnit(player, BRUSHES[10], 1, SPOT); removeUnit(player, BRUSHES[10]);\n  }\n});\n\n/**\n * Light the whole map once, so that from now on a tile left dark shows as fog (grey) rather than as never seen\n * (black) \u2014 every picture then has the same two tones. Takes one frame.\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n */\nexport const reveal = game((player: Player) => {\n  const width = memory.map.width;\n  const height = memory.map.height;\n  // Size 11 is 23 tiles wide: a brush every 14 tiles leaves no gap, and one more past the end, kept inside, reaches the edge.\n  for (let y = 2; y < height + 12; y += 14) {\n    for (let x = 2; x < width + 12; x += 14) disc(player, Math.min(x, width - 3), Math.min(y, height - 3), 11);\n  }\n});\n\n/**\n * Light a rectangle of tiles for this frame, worked out while the game runs: its top left on tile (x, y), `width`\n * tiles across and `height` down. Every one of the five may change from frame to frame \u2014 the walls of a raycaster, a\n * bar of a chart. It is exact from 3 \xD7 4 up (the smallest brush); a thinner one is lit a brush wide, centred.\n *\n *   fog.rect(P1, 10, 20, 3, wall);        // a column 3 tiles wide, `wall` tall\n *\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n * @param x The column of its left edge.\n * @param y The row of its top edge.\n * @param width How many tiles across.\n * @param height How many tiles down.\n */\nexport const rect = game((player: Player, x: number, y: number, width: number, height: number) => {\n  if (width < 1 || height < 1) return;\n  // Size 1 is 3 tiles across and 4 down, its centre the middle column and the third row: a grid of them, the last\n  // column and row moved back to end on the edge (overlapping the one before), covers the rectangle exactly.\n  const right = Math.max(x + width - 2, x + 1);\n  const bottom = Math.max(y + height - 2, y + 2);\n  // (The brush made here, not through disc(): its unit type is then known when the script is built, which makes the\n  // action a constant \u2014 a size from the program costs a branch and a written field a brush.)\n  let cy = y + 2;\n  while (true) {\n    let cx = x + 1;\n    while (true) {\n      centerLocation(SPOT, cx * 32 + 16, cy * 32 + 16, 32, 32);\n      createUnit(player, BRUSHES[0], 1, SPOT);\n      removeUnit(player, BRUSHES[0]);\n      if (cx >= right) break;\n      cx = Math.min(cx + 3, right);\n    }\n    if (cy >= bottom) break;\n    cy = Math.min(cy + 4, bottom);\n  }\n});\n\n/** A picture for the fog, made when the script is built: its size in tiles and the brushes that draw it. */\nexport interface Picture {\n  readonly width: number;\n  readonly height: number;\n  readonly brushes: readonly { readonly x: number; readonly y: number; readonly size: number }[];\n}\n\n/**\n * A picture from rows of text, worked out when the script is built: `#` is the ink, anything else is not.\n *\n *   fog.picture(["..##..", ".####.", "######"])                     // light ink: the # tiles are lit\n *   fog.picture(["..##..", ".####.", "######"], { ink: "dark" })    // dark ink: the # tiles stay dark, the rest is lit\n *\n * With light ink a lit part thinner than a brush (3 tiles across, 4 down) is drawn a tile or two thicker. An image\'s\n * halftone (`fog.picture(photo.halftone(6))`) is drawn with the brushes it was made of, one a cell. With dark\n * ink every tile of the picture\'s rectangle that is not `#` is lit and the `#` tiles keep their shape exactly,\n * however thin \u2014 the ink for line art and silhouettes.\n */\nexport function picture(rows: readonly string[], options: { readonly ink?: "light" | "dark" } = {}): Picture {\n  const height = rows.length;\n  const width = Math.max(0, ...rows.map((r) => r.length));\n  // An image\'s halftone (image.halftone(6)) comes with the brushes that drew it: a brush a cell, as they are.\n  const drawn = (rows as { readonly brushes?: readonly { readonly x: number; readonly y: number; readonly shape: number }[] }).brushes;\n  if (drawn && options.ink !== "dark") return Object.freeze({ width, height, brushes: Object.freeze(drawn.map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }))) });\n  // Dark ink: the picture\'s rectangle lit but for the # tiles, so what is covered is the rest.\n  const ink = options.ink === "dark" ? Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => (rows[y][x] === "#" ? "." : "#")).join("")) : rows;\n  const brushes = cover(ink, SHAPES).map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }));\n  return Object.freeze({ width, height, brushes: Object.freeze(brushes) });\n}\n\n/**\n * A video\'s frames as brushes, worked out when the script is built: a word a brush (x | y << 8 | size << 16), the\n * frames one after another, and where each one starts \u2014 the tables the game reads a frame from. Once a build.\n */\ninterface Film { readonly words: readonly number[]; readonly starts: readonly number[] }\nconst films = new Map<Video, Film>();\nfunction film(video: Video): Film {\n  const had = films.get(video);\n  if (had) return had;\n  const words: number[] = [], starts: number[] = [0];\n  for (const brushes of cover(video, SHAPES)) {\n    for (const b of brushes) words.push(b.x | (b.y << 8) | ((b.shape + 1) << 16));\n    starts.push(words.length);\n  }\n  const made = { words, starts };\n  films.set(video, made);\n  return made;\n}\n\n/**\n * Light the fog for this frame: a disc, a picture or a frame of a video. Tiles count from the map\'s top left, (0, 0).\n *\n *   fog.light(P1, 30, 20, 5);              // a disc of size 5 centred on tile (30, 20)\n *   fog.light(P1, 60, 40, heart);          // a picture (fog.picture), its top left on tile (60, 40)\n *   fog.light(P1, 0, 0, badApple, f);      // frame f of a video the script imports, its top left on tile (0, 0)\n *\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n * @param x The tile\'s column: a disc\'s centre, a picture\'s left edge.\n * @param y The tile\'s row: a disc\'s centre, a picture\'s top edge.\n * @param shape A size, 1 (3 tiles wide) to 11 (23 wide) \u2014 it may change while the game runs \u2014 a picture, or a video.\n * @param frame Of a video, which frame, from 0: it may change while the game runs. Past the end, nothing is lit.\n */\nexport const light = game((player: Player, x: number, y: number, shape: number | Picture | Video, frame: number = 0) => {\n  if (typeof shape === "number") disc(player, x, y, shape);\n  else {\n    // The picture\'s corner in pixels once; each brush is its offset from there (a constant of a picture).\n    const px = x * 32 + 16, py = y * 32 + 16;\n    if ("brushes" in shape) for (const b of shape.brushes) discPx(player, px + b.x * 32, py + b.y * 32, b.size);\n    else {\n      const { words, starts } = film(shape);\n      const end = starts[frame + 1];\n      for (let i = starts[frame]; i < end; i++) {\n        const w = words[i];\n        // (A row\'s offset in pixels straight from its byte: the same as ((w >> 8) & 255) * 32, and the shift only has\n        // the byte\'s eight bits to look at.)\n        discPx(player, px + (w & 255) * 32, py + ((w & 0xff00) >> 3), w >> 16);\n      }\n    }\n  }\n});\n\n/**\n * Play a video in the fog, a frame of it every frame of the game, from its first to its last; resolves when it ends.\n * Inside an async program: `await fog.play(P1, badApple)`. On Fastest a game frame is 42 ms, which is what Import\n * Video makes a video\'s frames by default; the game runs a little slower when a frame is heavy, and so does the video.\n *\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n * @param video A video the script imports.\n * @param x The column of its left edge, 0 by default.\n * @param y The row of its top edge, 0 by default.\n */\nexport const play = game(async (player: Player, video: Video, x: number = 0, y: number = 0) => {\n  // (A while: a for over a length known when the script is built would be unrolled, a copy of the body a frame.)\n  let f = 0;\n  while (f < video.length) {\n    light(player, x, y, video, f);\n    await nextFrame();\n    f++;\n  }\n});\n\n/**\n * How fog.columns() lays its columns out, known when the script is built: `count` columns side by side, each `width`\n * tiles across (3, a brush\'s width, by default) and up to `height` tiles tall, centred on the middle row. `ink`:\n * "light" lights each column (the walls of a raycaster bright, on fog), "dark" lights all but the columns (dark walls\n * between a lit ceiling and floor); dark is cheaper when columns fill most of the board, light when they are short.\n */\nexport interface ColumnLayout {\n  readonly count: number;\n  readonly height: number;\n  readonly width?: number;\n  readonly ink?: "light" | "dark";\n  /**\n   * How the walls are told apart, with fog.columns()\'s `faces`. "outline", the default: every wall drawn as its edges \u2014\n   * its top and bottom, a brush deep, and a column lit whole wherever one face meets another (on the nearer of the\n   * two) \u2014 so that blocks read as boxes, the look of the raycasters of monochrome screens; with dark ink, the edges are\n   * lit lines through dark walls. A few brushes a column. Chosen over the rest when played (2026-10-17).\n   *\n   * The others shade the faces whose number is odd (a raycaster\'s other side) and leave the rest whole: "hollow" \u2014\n   * dark, lit only along its top and bottom edges; "ribbed" \u2014 hollow and lit across the middle of each half; "panelled"\n   * \u2014 hollow and lit across its quarters; "line" / "lines" \u2014 dark lines a tile thick across it at its middle or its\n   * quarters (the finest, and two dozen brushes a column near the eye: for a view with room to spare).\n   */\n  readonly shading?: "outline" | "lines" | "line" | "hollow" | "ribbed" | "panelled";\n}\n\n/**\n * What fog.columns() reads, worked out once a layout when the script is built: for each level of the drawing that is\n * wider than a column (all the columns, a group of them, the last group) and each depth from 0 to half the height, the\n * brushes that cover a rectangle that wide and that deep exactly \u2014 the encoder\'s covers (cover()), a few large brushes\n * in the middle and small ones at the edges. A brush is a word, dx | dy << 8 | size << 16 from the rectangle\'s top\n * left; `starts` says where each (level, depth) begins.\n */\ninterface ColumnPlan { readonly words: readonly number[]; readonly starts: readonly number[]; readonly group: number; readonly half: number }\nconst columnPlans = new Map<string, ColumnPlan>();\nconst COLUMN_GROUP = 6;\nfunction columnPlan(layout: ColumnLayout): ColumnPlan {\n  const width = layout.width ?? 3, half = layout.height >> 1, group = Math.min(COLUMN_GROUP, layout.count);\n  const key = `${layout.count}:${width}:${half}`;\n  const had = columnPlans.get(key);\n  if (had) return had;\n  const words: number[] = [], starts: number[] = [];\n  for (const columns of [layout.count, group, layout.count % group || group]) {\n    for (let depth = 0; depth <= half; depth++) {\n      starts.push(words.length);\n      if (depth === 0) continue;\n      // A rectangle shallower than a brush is drawn a brush deep, the rest of it on what the level before lit.\n      const rows = Array.from({ length: Math.max(depth, 4) }, () => "#".repeat(columns * width));\n      for (const b of cover(rows, SHAPES)) words.push(b.x | (b.y << 8) | ((b.shape + 1) << 16));\n    }\n  }\n  starts.push(words.length);\n  const made = { words, starts, group, half };\n  columnPlans.set(key, made);\n  return made;\n}\n\n/**\n * One rectangle of fog.columns() wider than a column: the cover at `at` (a level and a depth) drawn twice, the half\n * above the middle and the half below, its top rows `top` and `bottom`, from column `x`.\n */\nconst columnRect = game((player: Player, words: readonly number[], starts: readonly number[], at: number, x: number, top: number, bottom: number) => {\n  let i = starts[at];\n  const end = starts[at + 1];\n  // In pixels once; each brush is its offset (a few bits, a few tests) from there.\n  const px = x * 32 + 16, pt = top * 32 + 16, pb = bottom * 32 + 16;\n  while (i < end) {\n    const w = words[i];\n    const dx = (w & 255) * 32, dy = (w & 0xff00) >> 3, size = w >> 16;\n    discPx(player, px + dx, pt + dy, size);\n    discPx(player, px + dx, pb + dy, size);\n    i++;\n  }\n});\n\n/**\n * One column\'s part of fog.columns(), in pixels: brushes (3 \xD7 4) a column of 4 rows apart and the last moved back to\n * end on the edge, twice \u2014 from `pt` and from `pb`, the centres of the first brush of each \u2014 down a column `k32`\n * pixels deep (32 a row; under 4 rows, a brush deep), centred on `px`. What the smallest brush covers exactly, worked out\n * here rather than read: it is the most common rectangle by far. In pixels because the caller has them, stepped: a\n * product by 32 of a number the game holds is a test a bit, about 0.4 \xB5s, where a step is an add.\n */\nconst columnBarPx = game((player: Player, px: number, pt: number, pb: number, k32: number) => {\n  // How far down the last brush is from the first.\n  const end = Math.max(k32, 128) - 128;\n  let r = 0;\n  while (true) {\n    centerLocation(SPOT, px, pt, 32, 32);\n    createUnit(player, BRUSHES[0], 1, SPOT);\n    removeUnit(player, BRUSHES[0]);\n    centerLocation(SPOT, px, pb, 32, 32);\n    createUnit(player, BRUSHES[0], 1, SPOT);\n    removeUnit(player, BRUSHES[0]);\n    if (r >= end) break;\n    const step = Math.min(end - r, 128);\n    r += step;\n    pt += step;\n    pb += step;\n  }\n});\n\n/** columnBarPx() in tiles: `k` rows from row `top` down and from row `bottom` down, centred on column `x`. */\nconst columnBar = game((player: Player, x: number, top: number, bottom: number, k: number) => {\n  columnBarPx(player, x * 32 + 16, top * 32 + 80, bottom * 32 + 80, k * 32);\n});\n\n/**\n * A shaded column of fog.columns() (ColumnLayout\'s `shading`): `a` is half its height, `lines` how many lines across\n * each half \u2014 0 hollow, 1 at its middle, 3 at its quarters. A line is a dark row through a lit column (light ink), or\n * a lit band a brush deep through a dark one; a column too short for its lines is drawn plain.\n */\nconst columnShaded = game((player: Player, cx: number, mid: number, a: number, dark: boolean, lines: number) => {\n  if (lines <= 0) {\n    if (dark) { if (a >= 6) columnBar(player, cx, mid - 4, mid, 4); }\n    else if (a < 8) columnBar(player, cx, mid - a, mid, a);\n    else {\n      // Hollow: the edges. Ribbed (-1) and panelled (-3): bands across each half too, centred on its middle or\n      // quarters, where there is room for them between the edges.\n      columnBar(player, cx, mid - a, mid + a - 4, 4);\n      const ribs = -lines;\n      if (ribs > 0 && a >= 6 * (ribs + 1)) {\n        let k = 1;\n        while (k <= ribs) {\n          const at = (a * k) / (ribs + 1);\n          columnBar(player, cx, mid - at - 2, mid + at - 2, 4);\n          k++;\n        }\n      }\n    }\n  } else if (a < 5 * (lines + 1)) {\n    if (!dark) columnBar(player, cx, mid - a, mid, a);\n  } else {\n    // From the middle out: lit up to each line, the line\'s row dark (light ink); or a lit band on each line (dark ink).\n    let from = 0, k = 1;\n    while (k <= lines + 1) {\n      const to = k > lines ? a : (a * k) / (lines + 1);\n      if (dark) { if (k <= lines) columnBar(player, cx, mid - to - 2, mid + to - 2, 4); }\n      else columnBar(player, cx, mid - to, mid + from, to - from);\n      from = to + 1;\n      k++;\n    }\n  }\n});\n\n/**\n * Light columns for this frame \u2014 the walls of a raycaster, a bar chart \u2014 each as tall as the program says, centred on\n * the layout\'s middle row. The covers are worked out when the script is built (see ColumnLayout), so a frame costs a\n * brush for each part of the picture that differs from its neighbours, not one for every few tiles: a wall that fills\n * the board is a few large brushes.\n *\n *   const VIEW = { count: 42, height: 96, ink: "dark" } as const;\n *   fog.columns(P1, 1, 0, VIEW, heights);          // heights: one a column, in tiles, the program\'s\n *   fog.columns(P1, 1, 0, VIEW, heights, faces);   // faces: which face of which wall each column shows\n *\n * @param player Whose fog: P1 \u2026 P8, known when the script is built.\n * @param x The column of the layout\'s left edge.\n * @param y The row of its top edge.\n * @param layout How the columns are laid out: known when the script is built.\n * @param heights Each column\'s height in tiles (0 to the layout\'s height), an array of the program\'s.\n * @param faces Which face of which wall each column shows, a number the same for every column of one face \u2014 in a\n *   raycaster, \\`(mapY * width + mapX) * 2 + side\\` \u2014 an array of the program\'s as long as `heights`: what the\n *   layout\'s `shading` tells walls apart by. Optional: without it, every column is lit whole (a bar chart).\n */\nexport const columns = game((player: Player, x: number, y: number, layout: ColumnLayout, heights: readonly number[], faces?: readonly number[]) => {\n  const { words, starts, half, group } = columnPlan(layout);\n  const count = layout.count, width = layout.width ?? 3, dark = layout.ink === "dark";\n  // (Dark lines through a lit column count up; lit bands through a dark one, ribbed and panelled, down.)\n  // (Without faces there is nothing to tell apart, and every column is whole.)\n  const outline = faces !== undefined && (layout.shading === undefined || layout.shading === "outline");\n  const lines = layout.shading === "lines" ? 3 : layout.shading === "line" ? 1 : layout.shading === "ribbed" ? -1 : layout.shading === "hollow" ? 0 : -3;\n  const span = half + 1;\n  // Each column\'s depth from where its lit part starts: the middle row for light ink, the top and bottom for dark.\n  // A shaded column of light ink is drawn on its own, after the rest: to the rest it is as if it were not there \u2014 and\n  // so is every column of a light outline, which is all edges.\n  const depth: number[] = new Array(count).fill(0);\n  // Half of each column\'s height, at most half the layout\'s: worked out once. (Clamped before the shift, the same\n  // number: the shift then has the few bits the clamp leaves, where a height from the program could have any.)\n  const halves: number[] = new Array(count).fill(0);\n  // And in pixels (32 a row), for the bars, which place their brushes in pixels: a small number times 32 is a few tests.\n  const halves32: number[] = new Array(count).fill(0);\n  let least = half, most = 0;\n  // (A light outline is all edges: every depth is 0, nothing to work out.)\n  const flat = !dark && outline;\n  if (flat) least = 0;\n  let i = 0;\n  while (i < count) {\n    const a = Math.min(Math.max(heights[i], 0), 2 * half + 1) >> 1;\n    halves[i] = a;\n    halves32[i] = a * 32;\n    if (!flat) {\n      let d = dark ? half - a : a;\n      if (faces !== undefined && !dark && !outline && (faces[i] & 1) != 0) d = 0;\n      depth[i] = d;\n      if (d < least) least = d;\n      if (d > most) most = d;\n    }\n    i++;\n  }\n  // A rectangle from depth p, k deep, starts on the rows above and below the middle (light) or below the top and above\n  // the bottom (dark); one shallower than 4 is drawn 4 deep, reaching back over what is lit already.\n  const mid = y + half;\n  // Every column, from depth 0 to the least.\n  if (least > 0) {\n    const k = Math.max(least, 4);\n    if (dark) columnRect(player, words, starts, least, x, y + least - k, y + 2 * half - least);\n    else columnRect(player, words, starts, least, x, mid - least, mid + least - k);\n  }\n  // Each group of columns, from the least to the group\'s least; then each column, from there to its own. (Nothing,\n  // when every column\'s depth is the least: a light outline\'s always.)\n  let g = most > least ? 0 : count;\n  while (g < count) {\n    const last = Math.min(g + group, count);\n    let gl = half;\n    let j = g;\n    while (j < last) { if (depth[j] < gl) gl = depth[j]; j++; }\n    const level = last - g === group ? 1 : 2;\n    if (gl > least) {\n      const k = gl - least, kk = Math.max(k, 4);\n      if (dark) columnRect(player, words, starts, level * span + k, x + g * width, y + gl - kk, y + 2 * half - gl);\n      else columnRect(player, words, starts, level * span + k, x + g * width, mid - gl, mid + gl - kk);\n    }\n    j = g;\n    while (j < last) {\n      const k = depth[j] - gl;\n      if (k > 0) {\n        const kk = Math.max(k, 4), cx = x + j * width + 1;\n        if (dark) columnBar(player, cx, y + depth[j] - kk, y + 2 * half - depth[j], k);\n        else columnBar(player, cx, mid - depth[j], mid + depth[j] - kk, k);\n      }\n      j++;\n    }\n    g = last;\n  }\n  if (outline) {\n    // Where one face meets another, the nearer (taller) of the two columns is an edge.\n    const edge: number[] = new Array(count).fill(0);\n    let face = faces[0], tall = heights[0];\n    i = 1;\n    while (i < count) {\n      const f = faces[i], h = heights[i];\n      if (f != face) { if (h >= tall) edge[i] = 1; else edge[i - 1] = 1; }\n      face = f;\n      tall = h;\n      i++;\n    }\n    // The bars in pixels: a column\'s centre stepped across, the middle row\'s worked out once.\n    const mid80 = mid * 32 + 80;\n    let px = (x + 1) * 32 + 16;\n    i = 0;\n    while (i < count) {\n      const a = halves[i], a32 = halves32[i];\n      if (dark) { if (edge[i] != 0 && a >= 2) columnBarPx(player, px, mid80 - a32, mid80, a32); }\n      else if (a > 0) {\n        if (edge[i] != 0 || a < 8) columnBarPx(player, px, mid80 - a32, mid80, a32);\n        else columnBarPx(player, px, mid80 - a32, mid80 + a32 - 128, 128);\n      }\n      px += width * 32;\n      i++;\n    }\n  } else if (faces !== undefined) {\n    i = 0;\n    while (i < count) {\n      if ((faces[i] & 1) != 0) columnShaded(player, x + i * width + 1, mid, halves[i], dark, lines);\n      i++;\n    }\n  }\n});\n\n/**\n * Keep what was lit this frame on the board for `n` frames, and wait them out: \\`await fog.show(2)\\` in place of\n * \\`await nextFrame()\\` draws every other frame at half the cost. StarCraft: Remastered redraws the fog on the minimap\n * every other frame (measured in two played recordings, 2026-10-17), so a picture drawn every other frame looks the\n * same there as one drawn every frame. The board is wiped at the start of the frame after them, ready for the next.\n *\n * @param n How many frames, 1 to 24, known when the script is built.\n */\nexport const show = game(async (n: number) => {\n  memory.vision.countdown = n;\n  await sleep(frames(n));\n});\n\n/** Everything above as one name: import { fog } from "trigscript/fog"; fog.light(P1, x, y, 3). */\nexport const fog = { light, rect, columns, show, play, reveal, picture, SHAPES };\n\n/** The longest fog.show() keeps a picture: the countdown the game sets itself after a wipe is longer than this. */\nconst SHOW_MOST = 24;\n\n// The canvas: every brush\'s sight set, every frame, and the board wiped on the next \u2014 for as long as the game runs \u2014\n// unless a program asked for the picture to stay (fog.show), when the countdown is that program\'s to run down.\nprogram(() => {\n  while (true) {\n    for (let s = 1; s <= 11; s++) stats(BRUSHES[s - 1]).sight = s;\n    const left = memory.vision.countdown;\n    if (left == 0 || left > SHOW_MOST) memory.vision.countdown = 1;\n    sleep(frames(1));\n  }\n});\n',
   "math": '/**\n * Numbers for motion and play: the standard library\'s "trigscript/math" (TrigScript 4).\n *\n *   import { Vec, lerp, easeOutQuad, distance, angleTo, approach, wrap } from "trigscript/math";\n *\n *   const t = fixed(frame) / 48;                          // 0 to 1 over two seconds\n *   const x = lerp(fromX, toX, easeOutQuad(t));           // eased from one place to another\n *   const v = Vec.fromAngle(angleTo(x, y, tx, ty), fixed(4));\n *   pos = pos.add(v);\n *\n * Fractions are the language\'s fixed numbers (16.16: four decimal places or so, from about \u221232 768 to 32 767): a\n * number becomes one when a fraction is stored into it, or written `fixed(\u2026)`. Angles are radians, as JavaScript\'s are.\n * Whole numbers stay whole where they can \u2014 `distanceSq`, `manhattan`, `wrap`, `sign` \u2014 and cost less.\n */\n\n/** \u03C0, and a whole turn. */\nexport const PI = Math.PI;\nexport const TAU = Math.PI * 2;\n\n/** From a to b by t: a at 0, b at 1, between them in between (t outside 0 \u2026 1 goes past). */\nexport function lerp(a: fixed, b: fixed, t: fixed): fixed {\n  return a + (b - a) * t;\n}\n\n/** Where v is from a to b, as lerp\'s t: 0 at a, 1 at b. */\nexport function inverseLerp(a: fixed, b: fixed, v: fixed): fixed {\n  return b === a ? fixed(0) : (v - a) / (b - a);\n}\n\n/** v from the range a1 \u2026 b1 into a2 \u2026 b2. */\nexport function remap(v: fixed, a1: fixed, b1: fixed, a2: fixed, b2: fixed): fixed {\n  return lerp(a2, b2, inverseLerp(a1, b1, v));\n}\n\n/** t kept inside 0 \u2026 1. */\nexport function clamp01(t: fixed): fixed {\n  return t < 0 ? fixed(0) : t > 1 ? fixed(1) : t;\n}\n\n/** From `current` towards `target` by at most `step`, never past it: a value that follows another at a speed. */\nexport function approach(current: number, target: number, step: number): number {\n  if (current < target) return current + step > target ? target : current + step;\n  return current - step < target ? target : current - step;\n}\n\n/** n into 0 \u2026 size \u2212 1, going round: wrap(-1, 10) is 9, wrap(12, 10) is 2. */\nexport function wrap(n: number, size: number): number {\n  return ((n % size) + size) % size;\n}\n\n/** \u22121, 0 or 1, by whether n is below, at or above zero. */\nexport function sign(n: number): number {\n  return n > 0 ? 1 : n < 0 ? -1 : 0;\n}\n\n/** The distance from one point to another, as the crow flies. */\nexport function distance(x1: number, y1: number, x2: number, y2: number): fixed {\n  return Math.hypot(x2 - x1, y2 - y1);\n}\n\n/** The distance squared: whole, and cheaper \u2014 compare it with a range squared. */\nexport function distanceSq(x1: number, y1: number, x2: number, y2: number): number {\n  return (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);\n}\n\n/** The distance along the axes, |dx| + |dy|: what the game\'s own "nearest" goes by. */\nexport function manhattan(x1: number, y1: number, x2: number, y2: number): number {\n  return Math.abs(x2 - x1) + Math.abs(y2 - y1);\n}\n\n/** The angle from one point to another, in radians from \u2212\u03C0 to \u03C0: 0 is to the right (east), \u03C0 / 2 down (south, y grows down). */\nexport function angleTo(x1: number, y1: number, x2: number, y2: number): fixed {\n  return Math.atan2(y2 - y1, x2 - x1);\n}\n\n/** Degrees as radians. */\nexport function radians(degrees: fixed): fixed {\n  return (degrees * PI) / 180;\n}\n\n/** Radians as degrees. */\nexport function degrees(radians: fixed): fixed {\n  return (radians * 180) / PI;\n}\n\n/* Easing: t from 0 to 1, how far along a motion is at that point of its time \u2014 slow then fast, fast then slow, \u2026 */\n\n/** Slow at the start. */\nexport function easeInQuad(t: fixed): fixed {\n  return t * t;\n}\n\n/** Slow at the end. */\nexport function easeOutQuad(t: fixed): fixed {\n  return t * (2 - t);\n}\n\n/** Slow at both ends. */\nexport function easeInOutQuad(t: fixed): fixed {\n  return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;\n}\n\n/** Slower at the start than easeInQuad. */\nexport function easeInCubic(t: fixed): fixed {\n  return t * t * t;\n}\n\n/** Slower at the end than easeOutQuad. */\nexport function easeOutCubic(t: fixed): fixed {\n  const u = t - 1;\n  return u * u * u + 1;\n}\n\n/** Goes a little past the end and comes back. */\nexport function easeOutBack(t: fixed): fixed {\n  const u = t - 1;\n  return 1 + 2.70158 * u * u * u + 1.70158 * u * u;\n}\n\n/** Slow at both ends, smoothly (Hermite: 3t\xB2 \u2212 2t\xB3). */\nexport function smoothstep(t: fixed): fixed {\n  return t * t * (3 - 2 * t);\n}\n\n/**\n * A point, or a direction and a length: two fixed numbers. Each operation gives a new Vec.\n *\n *   let pos = new Vec(fixed(x), fixed(y));\n *   const toward = new Vec(fixed(tx), fixed(ty)).sub(pos).normalized().scale(fixed(3));\n *   pos = pos.add(toward);\n */\nexport class Vec {\n  x: fixed;\n  y: fixed;\n\n  constructor(x: fixed, y: fixed) {\n    this.x = x;\n    this.y = y;\n  }\n\n  /** A direction `length` long at `angle` radians (0 to the right, \u03C0 / 2 down). */\n  static fromAngle(angle: fixed, length: fixed): Vec {\n    return new Vec(Math.cos(angle) * length, Math.sin(angle) * length);\n  }\n\n  add(o: Vec): Vec {\n    return new Vec(this.x + o.x, this.y + o.y);\n  }\n\n  sub(o: Vec): Vec {\n    return new Vec(this.x - o.x, this.y - o.y);\n  }\n\n  scale(k: fixed): Vec {\n    return new Vec(this.x * k, this.y * k);\n  }\n\n  dot(o: Vec): fixed {\n    return this.x * o.x + this.y * o.y;\n  }\n\n  /** How long it is. */\n  length(): fixed {\n    return Math.sqrt(this.x * this.x + this.y * this.y);\n  }\n\n  /** The same direction, 1 long (or none, for none). */\n  normalized(): Vec {\n    const l = this.length();\n    const k: fixed = l === 0 ? fixed(0) : 1 / l;\n    return new Vec(this.x * k, this.y * k);\n  }\n\n  /** Its angle, in radians from \u2212\u03C0 to \u03C0. */\n  angle(): fixed {\n    return Math.atan2(this.y, this.x);\n  }\n\n  /** Turned by `angle` radians (clockwise on the map, where y grows down). */\n  rotate(angle: fixed): Vec {\n    const c = Math.cos(angle);\n    const s = Math.sin(angle);\n    return new Vec(this.x * c - this.y * s, this.x * s + this.y * c);\n  }\n\n  /** How far it is from another point. */\n  distanceTo(o: Vec): fixed {\n    return this.sub(o).length();\n  }\n\n  /** From this towards another by t (0 here, 1 there). */\n  lerp(o: Vec, t: fixed): Vec {\n    return new Vec(this.x + (o.x - this.x) * t, this.y + (o.y - this.y) * t);\n  }\n}\n',
@@ -11492,10 +11665,269 @@ var STDLIB_SOURCES = {
   "random": '/**\n * Chance: the standard library\'s "trigscript/random" (TrigScript 4).\n *\n *   import { chance, range, pick, shuffle, weighted, Random } from "trigscript/random";\n *\n *   if (chance(25)) dropLoot();                       // one time in four\n *   const lane = range(1, 3);                         // 1, 2 or 3\n *   const boss = pick(BOSSES);                        // any one of a list\n *   shuffle(order);                                   // an array of the program, in place\n *   const tier = weighted([70, 25, 5]);               // 0 most of the time, 2 rarely\n *\n *   const rng = new Random(seed);                     // the same numbers every time for the same seed\n *   const x = rng.range(0, 63);\n *\n * The functions use the game\'s own random numbers, which every player\'s game draws alike, so nothing goes out of step\n * in a game of several players. `Random` is a generator of your own (xorshift), seeded: the same seed gives the same\n * numbers, game after game \u2014 a level made from a seed, a save code that holds one.\n */\nimport { random } from "trigscript";\n\n/** True `percent` times in a hundred (25: one time in four). */\nexport function chance(percent: number): boolean {\n  return random(100) < percent;\n}\n\n/** A whole number from `min` to `max`, both included. */\nexport function range(min: number, max: number): number {\n  return min + random(max - min + 1);\n}\n\n/** The total of `count` dice of `sides` sides each (3, 6: from 3 to 18). */\nexport function dice(count: number, sides: number): number {\n  let total = 0;\n  let i = 0;\n  while (i < count) { total += 1 + random(sides); i++; }\n  return total;\n}\n\n/** One of a list, any one alike; a list the script has, or an array of the program (the first\'s 0 when it is empty). */\nexport function pick<T>(items: readonly T[]): T {\n  return items[random(items.length)];\n}\n\n/** The place of one of the weights, each as likely as its share of their total: [70, 25, 5] gives 0 most of the time. */\nexport function weighted(weights: readonly number[]): number {\n  let total = 0;\n  for (const w of weights) total += w;\n  let roll = random(total);\n  let i = 0;\n  while (i < weights.length) {\n    if (roll < weights[i]) return i;\n    roll -= weights[i];\n    i++;\n  }\n  return weights.length - 1;\n}\n\n/** An array of the program in a random order, in place (Fisher\u2013Yates: every order alike). */\nexport function shuffle<T>(items: T[]) {\n  let i = items.length - 1;\n  while (i > 0) {\n    const j = random(i + 1);\n    const held = items[i];\n    items[i] = items[j];\n    items[j] = held;\n    i--;\n  }\n}\n\n/**\n * A generator of random numbers of your own, seeded: the same seed gives the same numbers, in the game and when the\n * script is tested. Make it in the program (`const rng = new Random(1234)`).\n */\nexport class Random {\n  state: number;\n\n  /** Seeded with any whole number (0 is taken as 1). */\n  constructor(seed: number) {\n    this.state = seed === 0 ? 1 : seed;\n  }\n\n  /** The next number, from 0 to 2 147 483 647. */\n  next(): number {\n    let x = this.state;\n    x ^= x << 13;\n    x ^= x >>> 17;\n    x ^= x << 5;\n    this.state = x;\n    return x & 0x7fffffff;\n  }\n\n  /** A whole number from 0 to n \u2212 1. */\n  int(n: number): number {\n    return this.next() % n;\n  }\n\n  /** A whole number from `min` to `max`, both included. */\n  range(min: number, max: number): number {\n    return min + this.int(max - min + 1);\n  }\n\n  /** True `percent` times in a hundred. */\n  chance(percent: number): boolean {\n    return this.int(100) < percent;\n  }\n\n  /** One of a list, any one alike. */\n  pick<T>(items: readonly T[]): T {\n    return items[this.int(items.length)];\n  }\n\n  /** An array of the program in a random order, in place. */\n  shuffle<T>(items: T[]) {\n    let i = items.length - 1;\n    while (i > 0) {\n      const j = this.int(i + 1);\n      const held = items[i];\n      items[i] = items[j];\n      items[j] = held;\n      i--;\n    }\n  }\n}\n',
   "screen": '/**\n * Pixel screens: the standard library\'s "trigscript/screen" (TrigScript 4).\n *\n *   import { Screen, ScreenView, sprite } from "trigscript/screen";\n *\n *   const SHIP = sprite([".1.", "111", "1.1"]);\n *\n *   program(async () => {\n *     const screen = new Screen(4, 4, 24, 16);   // 24 \xD7 16 pixels, its corner on tile (4, 4)\n *     let x = 10;\n *     while (true) {\n *       screen.clear();\n *       screen.rect(0, 15, 24, 1, 5);           // the ground, in colour 5\n *       screen.blit(SHIP, x, 12);\n *       screen.number(score, 1, 1, 2);          // digits 3 \xD7 5 pixels, in colour 2\n *       screen.present();                       // on the map, and so on the minimap (screen.reveal(P1) once first)\n *       await nextFrame();\n *     }\n *   });\n *\n * A screen is a grid of pixels, each 0 (empty) or a colour from 1 to 7; drawing changes the grid, and `present()`\n * shows it: a pixel is a unit on the map, owned by the player whose colour it is, so the minimap shows the picture \u2014\n * neighbouring pixels of one colour join into a solid block there. Only the pixels that changed since the last\n * `present()` are made or taken away, and only the pixels drawn since are looked at, so a still picture costs nothing to\n * show. Draw through the methods (`set`, `clear`, `rect`, \u2026): a pixel written into `pixels` directly is not seen. The same grid can be shown in a\n * player\'s text lines too, as squares (`ScreenView` in a `ui.lines` view): one game, two screens, as the Tetris probe has it.\n *\n * A player sees the pixels only where they have vision: `screen.reveal(P1)` once gives them Map Revealers over it.\n *\n * Two looks (the constructor\'s last argument): "dots", Overlords, which fly \u2014 the minimap draws each as a dot with a gap\n * round it, the screen may be over Space; and "solid", Pylons, which the minimap draws as their whole two-tile\n * footprint, so pixels side by side are one block \u2014 on buildable ground (probes/lib/screen-map.mts --ground).\n *\n * What the map needs, found playing the unit-pixel probe in StarCraft: Remastered (2026-10-16): the owners of the\n * pixels (P3, P4, P5, P1, P6, P7, P8 below; their colours are theirs on the map, so give them the colours of TEXT_COLORS) must not\n * be computers \u2014 a computer moves its own units \u2014 and Remastered will not start a game without a computer, so one slot\n * (P2 here) is a computer that owns no pixel. A pixel is an Overlord, which sits on any ground and on nothing else; keep\n * the screen\'s tiles clear of buildings. A Pylon needs buildable ground, and none of the map\'s own units in the way. About 80 pixels made and taken away in a frame did not slow the game.\n */\nimport { centerLocation, createUnit, removeUnitAt, reserveLocation, textColors, P1, P3, P4, P5, P6, P7, P8, type Player, type UnitType } from "trigscript";\n\n/**\n * Whose units show colours 1 to 7 on the map, in the order of TEXT_COLORS: give each player that colour in the map\n * (cyan, yellow, purple, green, red, blue, orange). Green is P1\'s \u2014 your own units are green on the minimap anyway.\n * Not computers.\n */\nexport const OWNERS: readonly Player[] = [P3, P4, P5, P1, P6, P7, P8];\n/** The same colours in the text lines (`ScreenView`), 0 an empty square: cyan, yellow, purple, green, red, blue, orange. */\nexport const TEXT_COLORS: readonly number[] = [0, textColors.cyan, textColors.yellow, textColors.purple, textColors.green, textColors.red, textColors.blue, textColors.orange];\n\n/** Where each pixel\'s unit is made: a location the map does not use, taken when the script is built. */\nconst SPOT = reserveLocation("screen: where each pixel is made");\n\n/** A picture known when the script is built, to `blit` onto a screen: its size, and its pixels a row at a time (0 is see-through). */\nexport interface Sprite { readonly width: number; readonly height: number; readonly cells: readonly number[] }\n\n/**\n * A sprite from rows of text, when the script is built: "1" \u2026 "7" a pixel of that colour, anything else see-through.\n *\n *   const SHIP = sprite([".1.", "111", "1.1"]);\n */\nexport function sprite(rows: readonly string[]): Sprite {\n  const width = Math.max(0, ...rows.map((r) => r.length));\n  const cells: number[] = [];\n  for (const row of rows) for (let x = 0; x < width; x++) { const c = Number(row[x]); cells.push(c >= 1 && c <= 7 ? c : 0); }\n  return { width, height: rows.length, cells };\n}\n\n/** The digits 0 to 9, three pixels wide and five high, for `number()`: each fifteen pixels, a row at a time. */\nconst DIGITS: readonly number[] = [\n  "111101101101111", "010110010010111", "111001111100111", "111001111001111", "101101111001001",\n  "111100111001111", "111100111101111", "111001001010010", "111101111101111", "111101111001111",\n].flatMap((d) => d.split("").map(Number));\n\n/** The most pixels a screen has: 32 \xD7 32 at two tiles a pixel covers a 64 \xD7 64 map, 64 \xD7 32 half of a 128 \xD7 128 one. */\nexport const MAX_PIXELS = 2048;\n\nexport class Screen {\n  /** The picture being drawn: a colour a pixel, a row at a time (the first width \xD7 height of them). */\n  pixels: number[] = new Array(MAX_PIXELS).fill(0);\n  /** What the map shows now: the picture as it was at the last `present()`. */\n  shown: number[] = new Array(MAX_PIXELS).fill(0);\n  /** The pixels drawn a colour they were not since the last `present()`, in order: each one\'s place and its x and y. */\n  drawnAt: number[] = new Array(MAX_PIXELS).fill(0);\n  drawnX: number[] = new Array(MAX_PIXELS).fill(0);\n  drawnY: number[] = new Array(MAX_PIXELS).fill(0);\n  drawn = 0;\n  /** More drawn than the list holds: `present()` looks at every pixel instead. */\n  overflow = false;\n  x: number;\n  y: number;\n  width: number;\n  height: number;\n  cell: number;\n  /** The unit a pixel is: an Overlord ("dots"), or a Pylon ("solid"). */\n  unit = 0;\n\n  /**\n   * A screen `width` \xD7 `height` pixels (MAX_PIXELS at most), its top left corner on tile (x, y) of the map, a pixel two\n   * tiles across.\n   * @param look "dots" (the default): a pixel is an Overlord, which the minimap draws as a dot, a gap round it \u2014 it flies,\n   *   so the screen may be over anything, Space too. "solid": a pixel is a Pylon, which the minimap draws as its whole\n   *   footprint, two tiles square, so pixels side by side are one block \u2014 it needs buildable ground under the screen,\n   *   and gives its owner Protoss supply. (Overlords a tile apart do not fit: the game will not place most of them.)\n   */\n  constructor(x: number, y: number, width: number, height: number, look: "dots" | "solid" = "dots") {\n    this.x = x;\n    this.y = y;\n    this.width = width;\n    this.height = height;\n    this.cell = 64;\n    this.unit = (look === "solid" ? 156 : 42) as UnitType; // Protoss Pylon, Zerg Overlord: the game\'s own ids, the same under a mod\'s names\n  }\n\n  /** Every pixel the colour (0, empty, unless it says). */\n  clear(color: number = 0) {\n    let i = 0;\n    let y = 0;\n    while (y < this.height) {\n      let x = 0;\n      while (x < this.width) { this.put(i, x, y, color); i++; x++; }\n      y++;\n    }\n  }\n\n  /** One pixel; nothing happens outside the screen. */\n  set(x: number, y: number, color: number) {\n    if (x >= 0 && y >= 0 && x < this.width && y < this.height) this.put(y * this.width + x, x, y, color);\n  }\n\n  /** A pixel written, and listed for `present()` when its colour changed. */\n  private put(i: number, x: number, y: number, color: number) {\n    if (this.pixels[i] === color) return;\n    this.pixels[i] = color;\n    if (this.drawn < MAX_PIXELS) {\n      this.drawnAt[this.drawn] = i;\n      this.drawnX[this.drawn] = x;\n      this.drawnY[this.drawn] = y;\n      this.drawn++;\n    } else this.overflow = true;\n  }\n\n  /** The colour of a pixel; 0 outside the screen. */\n  get(x: number, y: number): number {\n    if (x >= 0 && y >= 0 && x < this.width && y < this.height) return this.pixels[y * this.width + x];\n    return 0;\n  }\n\n  /** A filled rectangle, its top left at (x, y); what is outside the screen is left out. */\n  rect(x: number, y: number, width: number, height: number, color: number) {\n    let j = 0;\n    while (j < height) {\n      let i = 0;\n      while (i < width) { this.set(x + i, y + j, color); i++; }\n      j++;\n    }\n  }\n\n  /** A line from (x0, y0) to (x1, y1), both ends drawn. */\n  line(x0: number, y0: number, x1: number, y1: number, color: number) {\n    const dx = Math.abs(x1 - x0);\n    const dy = -Math.abs(y1 - y0);\n    const sx = x0 < x1 ? 1 : -1;\n    const sy = y0 < y1 ? 1 : -1;\n    let err = dx + dy;\n    let x = x0;\n    let y = y0;\n    while (true) {\n      this.set(x, y, color);\n      if (x === x1 && y === y1) break;\n      const e2 = 2 * err;\n      if (e2 >= dy) { err += dy; x += sx; }\n      if (e2 <= dx) { err += dx; y += sy; }\n    }\n  }\n\n  /** A sprite with its top left at (x, y): its see-through pixels leave what is under them. */\n  blit(s: Sprite, x: number, y: number) {\n    let k = 0;\n    let j = 0;\n    while (j < s.height) {\n      let i = 0;\n      while (i < s.width) {\n        const c = s.cells[k];\n        if (c !== 0) this.set(x + i, y + j, c);\n        k++;\n        i++;\n      }\n      j++;\n    }\n  }\n\n  /** A whole number\'s digits, 3 \xD7 5 pixels each with a pixel between, its top left at (x, y): a score on the minimap. */\n  number(n: number, x: number, y: number, color: number) {\n    let rest = n < 0 ? -n : n;\n    let count = 1;\n    let probe = rest;\n    while (probe >= 10) { probe = Math.floor(probe / 10); count++; }\n    let place = x + (count - 1) * 4;\n    while (true) {\n      const d = rest % 10;\n      let k = 0;\n      while (k < 15) {\n        if (DIGITS[d * 15 + k] === 1) this.set(place + (k % 3), y + Math.floor(k / 3), color);\n        k++;\n      }\n      rest = Math.floor(rest / 10);\n      place -= 4;\n      if (rest === 0) break;\n    }\n  }\n\n  /**\n   * Let a player see the screen: Map Revealers of theirs over it, for the rest of the game. Without them its pixels,\n   * owned by other players, are hidden by the fog of war \u2014 on the map and on the minimap. Once, before the first\n   * `present()`.\n   * @param player Who sees it: P1 \u2026 P8, known when the script is built.\n   */\n  reveal(player: Player) {\n    // A Map Revealer sees ten tiles round; one every six tiles leaves no gap.\n    const right = this.x * 32 + this.width * this.cell;\n    const bottom = this.y * 32 + this.height * this.cell;\n    let py = this.y * 32 + 96;\n    while (py < bottom + 96) {\n      let px = this.x * 32 + 96;\n      while (px < right + 96) {\n        centerLocation(SPOT, px, py, 32, 32);\n        createUnit(player, 101 as UnitType, 1, SPOT); // Map Revealer\n        px += 192;\n      }\n      py += 192;\n    }\n  }\n\n  /**\n   * The picture on the map: each pixel that changed since the last time taken away and made again in its colour. Only\n   * the pixels drawn since are looked at (one drawn and drawn back is passed over), unless more were drawn than the list\n   * holds.\n   */\n  present() {\n    if (this.overflow) {\n      let i = 0;\n      let y = 0;\n      while (y < this.height) {\n        let x = 0;\n        while (x < this.width) { this.show(i, x, y); i++; x++; }\n        y++;\n      }\n      this.overflow = false;\n    } else {\n      for (let k = 0; k < this.drawn; k++) this.show(this.drawnAt[k], this.drawnX[k], this.drawnY[k]);\n    }\n    this.drawn = 0;\n  }\n\n  /** One pixel on the map as it is in the picture, when it is not already. */\n  private show(i: number, x: number, y: number) {\n    const now = this.pixels[i];\n    const was = this.shown[i];\n    if (now === was) return;\n    const half = this.cell >> 1;\n    centerLocation(SPOT, this.x * 32 + x * this.cell + half, this.y * 32 + y * this.cell + half, 32, 32);\n    OWNERS.forEach((owner, k) => { if (was === k + 1) removeUnitAt(owner, this.unit, 1, SPOT); });\n    OWNERS.forEach((owner, k) => { if (now === k + 1) createUnit(owner, this.unit, 1, SPOT); });\n    this.shown[i] = now;\n  }\n}\n\n/**\n * A screen in the text lines, a square a pixel \u2014 filled in its colour, or empty \u2014 a line a row. For a `ui.lines` view:\n * `<ScreenView screen={screen} width={10} height={8} />`, the screen\'s size known when the script is built. Eleven lines\n * show at once, sixty squares across.\n */\nexport function ScreenView({ screen, width, height }: { screen: Screen; width: number; height: number }) {\n  return <>{UP_TO_60.map((y) => y < height && <line>{UP_TO_60.map((x) => x < width && <cell color={TEXT_COLORS[screen.pixels[y * width + x]]} />)}</line>)}</>;\n}\n\n/** 0 \u2026 59: the places a view\'s rows and columns are counted over, the ones past its size left out when the script is built. */\nconst UP_TO_60: readonly number[] = Array.from({ length: 60 }, (_, i) => i);\n',
   "signals": '/**\n * Events of your own: the standard library\'s "trigscript/signals" (TrigScript 4).\n *\n *   import { Signal } from "trigscript/signals";\n *\n *   const waveCleared = new Signal<number>();\n *\n *   program(async () => {\n *     waveCleared.on((wave) => { setResources(P1, "add", 100 * wave, "ore"); });   // braces: a handler gives back no action\n *     waveCleared.once((wave) => print(`First wave down!`));\n *     const id = waveCleared.on((wave) => print(`Wave ${wave} cleared`));\n *     \u2026\n *     waveCleared.emit(3);       // every handler, in the order they were added\n *     waveCleared.off(id);\n *   });\n *\n * A signal lets one part of a map say that something happened without knowing who listens: the shop, the score and the\n * music each add a handler, and the wave code only emits. What it carries is one value of the type it is made with \u2014\n * a number, a boolean, a text or a unit (`new Signal<Unit>()`). Its handlers are functions kept as values: they may use\n * what the block they were written in has, and they run to their end, one after another, within the frame.\n *\n * Make a signal inside the program that uses it (`const s = new Signal<number>()` at its top): a signal is variables\n * of a program, as anything a program writes is.\n */\n\nexport class Signal<T> {\n  /** The handlers, by the number `on` gave; one taken off is undefined, and its place is given to the next one added. */\n  handlers: (((value: T) => void) | undefined)[] = [];\n  /** Which handlers go once they have run once. */\n  onceOnly: boolean[] = [];\n\n  /**\n   * Add a handler: it runs at every `emit`, handed the value.\n   * @returns Its number, for `off`.\n   */\n  on(handler: (value: T) => void): number {\n    return this.add(handler, false);\n  }\n\n  /** Add a handler that runs at the next `emit` only. @returns Its number, for `off` before then. */\n  once(handler: (value: T) => void): number {\n    return this.add(handler, true);\n  }\n\n  /** Take a handler off, by the number `on` or `once` gave. */\n  off(id: number) {\n    if (id >= 0 && id < this.handlers.length) this.handlers[id] = undefined;\n  }\n\n  /** Run every handler, in the order they were added, each handed `value`. */\n  emit(value: T) {\n    let i = 0;\n    while (i < this.handlers.length) {\n      const h = this.handlers[i];\n      if (h) {\n        if (this.onceOnly[i]) this.handlers[i] = undefined;\n        h(value);\n      }\n      i++;\n    }\n  }\n\n  /** How many handlers it has. */\n  count(): number {\n    let n = 0;\n    for (const h of this.handlers) if (h) n++;\n    return n;\n  }\n\n  /** Take every handler off. */\n  clear() {\n    let i = 0;\n    while (i < this.handlers.length) { this.handlers[i] = undefined; i++; }\n  }\n\n  private add(handler: (value: T) => void, once: boolean): number {\n    // A place one was taken off from, or a new one at the end.\n    let i = 0;\n    while (i < this.handlers.length) {\n      if (!this.handlers[i]) {\n        this.handlers[i] = handler;\n        this.onceOnly[i] = once;\n        return i;\n      }\n      i++;\n    }\n    this.handlers.push(handler);\n    this.onceOnly.push(once);\n    return this.handlers.length - 1;\n  }\n}\n',
+  "spells": `/**
+ * Spells that cast themselves: the standard library's "trigscript/spells" (TrigScript 4).
+ *
+ *   import { buildAutoRestoreProgram } from "trigscript/spells";
+ *
+ *   buildAutoRestoreProgram();                                            // at the top of the script, once
+ *   buildAutoRestoreProgram({ switch: "Medics trained", keepEnergy: 25 }); // or tied to a switch, keeping 25 energy
+ *   buildAutoRestoreProgram({ allowPlayersToTurnOffAutoCast: true });     // a single-player map: right-click Restore to turn it off
+ *
+ * With auto-restore on, a human player's Medic that is idle, or healing on its own from idle, casts Restoration on a
+ * unit of its owner's, or of a player its owner has allied, that is within the spell's range and carries Lockdown,
+ * Irradiate, Plague, Ensnare, Maelstrom, Acid Spores or Optical Flare. It is a real cast: the owner must have researched
+ * Restoration, the Medic must have its energy (and \`keepEnergy\` more), and the cast shows and costs as a player's
+ * does. The nearest Medic goes to the nearest afflicted unit, one Medic to a unit; one that is moving, attack-moving,
+ * holding, patrolling or casting for the player is never used, and a Medic never walks to reach a unit. Parasite
+ * alone, a unit in stasis or invincible, a hallucination (Restoration kills it) and the Medic itself are left alone.
+ * Computer players' Medics are left to the computer, which casts Restoration itself.
+ *
+ * With \`allowPlayersToTurnOffAutoCast\`, for single-player maps, the player turns auto-restore off and on again by
+ * right-clicking the Restore button on a Medic's command card ("trigscript/card"), and is told "Auto-restore off" or
+ * "Auto-restore on". It starts on. While the map's switch is cleared, the right-click does nothing and the setting is kept.
+ *
+ * Played in StarCraft: Remastered (2026-11-11): the order written to the Medic (CastRestoration at the unit) is cast,
+ * mid-heal too, and the Medic heals on afterwards. How it tells a Medic healing from idle from one the player sent,
+ * from \`map trace\` (2026-11-11): either way the order is MedicHeal, but an attack-move or a patrol waits behind it in
+ * the Medic's queue (\`queuedOrders\` 1 or 2), and the queue of one healing from idle holds nothing the game counts.
+ */
+import { program, nextFrame, isHuman, switchIs, switches, allUnits, stats, units, orders, techs, weapons, print, AllPlayers, CurrentPlayer, P1, P2, P3, P4, P5, P6, P7, P8, type Player, type Unit } from "trigscript";
+import { CardButton, cardSlots } from "trigscript/card";
+
+function ownerIsHuman(medic: Unit): boolean {
+  const owner = medic.owner;
+  if (owner == P1) return isHuman(P1);
+  if (owner == P2) return isHuman(P2);
+  if (owner == P3) return isHuman(P3);
+  if (owner == P4) return isHuman(P4);
+  if (owner == P5) return isHuman(P5);
+  if (owner == P6) return isHuman(P6);
+  if (owner == P7) return isHuman(P7);
+  if (owner == P8) return isHuman(P8);
+  return false;
+}
+
+function ownerHasRestoration(medic: Unit): boolean {
+  const owner = medic.owner;
+  if (owner == P1) return stats(P1).researched[techs.Restoration];
+  if (owner == P2) return stats(P2).researched[techs.Restoration];
+  if (owner == P3) return stats(P3).researched[techs.Restoration];
+  if (owner == P4) return stats(P4).researched[techs.Restoration];
+  if (owner == P5) return stats(P5).researched[techs.Restoration];
+  if (owner == P6) return stats(P6).researched[techs.Restoration];
+  if (owner == P7) return stats(P7).researched[techs.Restoration];
+  if (owner == P8) return stats(P8).researched[techs.Restoration];
+  return false;
+}
+
+function playerHasAllied(player: Player, target: Unit): boolean {
+  const owner = target.owner;
+  if (owner == P1) return stats(player).allied[P1];
+  if (owner == P2) return stats(player).allied[P2];
+  if (owner == P3) return stats(player).allied[P3];
+  if (owner == P4) return stats(player).allied[P4];
+  if (owner == P5) return stats(player).allied[P5];
+  if (owner == P6) return stats(player).allied[P6];
+  if (owner == P7) return stats(player).allied[P7];
+  if (owner == P8) return stats(player).allied[P8];
+  return false;
+}
+
+function isFriendly(medic: Unit, target: Unit): boolean {
+  const owner = medic.owner;
+  if (target.owner == owner) return true;
+  if (owner == P1) return playerHasAllied(P1, target);
+  if (owner == P2) return playerHasAllied(P2, target);
+  if (owner == P3) return playerHasAllied(P3, target);
+  if (owner == P4) return playerHasAllied(P4, target);
+  if (owner == P5) return playerHasAllied(P5, target);
+  if (owner == P6) return playerHasAllied(P6, target);
+  if (owner == P7) return playerHasAllied(P7, target);
+  if (owner == P8) return playerHasAllied(P8, target);
+  return false;
+}
+
+function isIdleOrHealingFromIdle(medic: Unit): boolean {
+  const order = medic.orderId;
+  if (order == orders.Medic) return true;
+  return (order == orders.MedicHeal || order == orders.MedicHealToIdle) && medic.queuedOrders == 0;
+}
+
+function hasRestorableEffect(target: Unit): boolean {
+  return target.lockdown > 0 || target.irradiate > 0 || target.plague > 0 || target.ensnare > 0 || target.maelstrom > 0 || target.acidSpores > 0 || target.opticalFlare;
+}
+
+function includes(list: Unit[], unit: Unit): boolean {
+  for (const each of list) if (each == unit) return true;
+  return false;
+}
+
+let programBuilt = false;
+
+/**
+ * Build the program that turns auto-restore on: every human player's idle or self-healing Medic casts Restoration on
+ * the nearest afflicted unit of its owner's or an ally's within range. \`switch\`: a switch of the map, by its name;
+ * auto-restore runs only while it is set. \`keepEnergy\`: the energy a Medic keeps after the cast (default 0).
+ * \`allowPlayersToTurnOffAutoCast\`: a single-player map's player turns it off and on by right-clicking Restore. Called at
+ * the top of a script, as programs are made when the map is built; a call after the first adds nothing.
+ */
+export function buildAutoRestoreProgram(options: { switch?: keyof typeof switches; keepEnergy?: number; allowPlayersToTurnOffAutoCast?: boolean } = {}) {
+  if (programBuilt) return;
+  programBuilt = true;
+  const keepEnergy = options.keepEnergy ?? 0;
+  const toggled = options.allowPlayersToTurnOffAutoCast === true;
+  program(async () => {
+    // Run for every player, so the card's watcher and its view moves are the human's: the others' copies end here.
+    if (toggled && !isHuman(CurrentPlayer)) return;
+    let autoRestoreOn = true;
+    const restoreButton = new CardButton(techs.Restoration, cardSlots.Restoration);
+    if (toggled) await restoreButton.begin();
+    const sentMedics: Unit[] = [];
+    const sentTargets: Unit[] = [];
+    while (true) {
+      if (toggled && (await restoreButton.rightClicked()) && (options.switch === undefined || switchIs(switches[options.switch], "set"))) {
+        autoRestoreOn = !autoRestoreOn;
+        print(autoRestoreOn ? "Auto-restore on" : "Auto-restore off", { to: CurrentPlayer });
+      }
+      const range = stats(weapons.Restoration).range;
+      for (let i = sentMedics.length - 1; i >= 0; i--) {
+        const medic = sentMedics[i], target = sentTargets[i];
+        if (medic.orderId == orders.CastRestoration && medic.orderTarget == target) {
+          // (State 2 is the cast under way, its energy spent: let it land.)
+          if (medic.orderState == 2 || medic.distanceTo(target) <= range) continue;
+          medic.stop();
+        }
+        sentMedics.splice(i, 1);
+        sentTargets.splice(i, 1);
+      }
+      if ((options.switch !== undefined && !switchIs(switches[options.switch], "set")) || !autoRestoreOn) {
+        await nextFrame();
+        continue;
+      }
+      const energy = stats(techs.Restoration).energy + keepEnergy;
+      const medics: Unit[] = [];
+      const castAt: Unit[] = [];
+      for (const medic of allUnits({ type: units.TerranMedic })) {
+        if (medic.orderId == orders.CastRestoration) {
+          const target = medic.orderTarget;
+          if (target) castAt.push(target);
+        } else if (isIdleOrHealingFromIdle(medic) && medic.energy >= energy && ownerIsHuman(medic) && ownerHasRestoration(medic)) {
+          medics.push(medic);
+        }
+      }
+      if (medics.length > 0) {
+        const pairMedics: Unit[] = [];
+        const pairTargets: Unit[] = [];
+        const pairDistances: number[] = [];
+        for (const target of allUnits({ type: units.Men })) {
+          if (!hasRestorableEffect(target) || target.stasis > 0 || target.hallucinated || target.invincible || includes(castAt, target)) continue;
+          for (const medic of medics) {
+            if (medic == target || !isFriendly(medic, target)) continue;
+            const distance = medic.distanceTo(target);
+            if (distance > range) continue;
+            pairMedics.push(medic);
+            pairTargets.push(target);
+            pairDistances.push(distance);
+          }
+        }
+        while (pairMedics.length > 0) {
+          let nearest = 0;
+          for (let i = 1; i < pairDistances.length; i++) if (pairDistances[i] < pairDistances[nearest]) nearest = i;
+          const medic = pairMedics[nearest], target = pairTargets[nearest];
+          medic.cast(techs.Restoration, target);
+          sentMedics.push(medic);
+          sentTargets.push(target);
+          for (let i = pairMedics.length - 1; i >= 0; i--) {
+            if (pairMedics[i] == medic || pairTargets[i] == target) {
+              pairMedics.splice(i, 1);
+              pairTargets.splice(i, 1);
+              pairDistances.splice(i, 1);
+            }
+          }
+        }
+      }
+      await nextFrame();
+    }
+  }, toggled ? { owner: AllPlayers } : {});
+}
+`,
   "timers": "/**\n * Time in a program: the standard library's \"trigscript/timers\" (TrigScript 4).\n *\n *   import { every, after, Cooldown, Countdown, SECOND } from \"trigscript/timers\";\n *\n *   program(async () => {\n *     const spawner = every(10 * SECOND, (n) => spawnWave(n));   // every ten seconds, the wave's number handed over\n *     after(3 * SECOND, () => print(\"Go!\"));\n *     const shot = new Cooldown(12);\n *     while (true) {\n *       if (keyPressed(P1, \"Space\") && shot.use()) fire();\n *       if (boss.hp <= 0) spawner.cancel();\n *       await nextFrame();\n *     }\n *   });\n *\n *   for await (const b of over(bullets, { per: 50 })) b.x += b.dx;   // fifty a frame, on to the next frame after each fifty\n *\n * Time is counted in frames of the game, 24 a second on Fastest (`SECOND`). `every` and `after` run their function in a\n * task beside the program, so the program goes on at once; the Task they give back stops it (`cancel()`) and says\n * whether it still runs (`running`). Their function is kept for the task, with what it uses of the block it was written\n * in \u2014 written in a loop, each turn's is its own, as JavaScript has it \u2014 and it runs to its end within the frame (it\n * does not wait). Sixteen of one `every` or `after` written once can run at a time. `Cooldown`, `Countdown` and\n * `Stopwatch` read the game's frame counter: no task, nothing to stop.\n */\nimport { game, start, sleep, frames, nextFrame, memory, type Task } from \"trigscript\";\n\n/** Frames a second of game time on Fastest, the speed a map is played at. */\nexport const SECOND = 24;\n\n/** The frames of game time since the game began. */\nexport function now(): number {\n  return memory.game.frame;\n}\n\nconst repeating = game(async (period: number, fn: (count: number) => void, times: number) => {\n  let count = 0;\n  while (times <= 0 || count < times) {\n    await sleep(frames(period < 1 ? 1 : period));\n    count++;\n    fn(count);\n  }\n});\n\nconst later = game(async (delay: number, fn: () => void) => {\n  await sleep(frames(delay < 1 ? 1 : delay));\n  fn();\n});\n\n/**\n * Run `fn` every `period` frames, from `period` frames from now: forever, or `times` times. It is handed how many times\n * it has run, 1 the first time.\n * @param period Frames between one run and the next (24 a second).\n * @param fn What to run; it runs to its end within the frame.\n * @param times How many times, or 0 (the default) for as long as the game lasts.\n * @returns The task: `cancel()` stops it.\n */\nexport const every = game((period: number, fn: (count: number) => void, times: number = 0): Task => start(repeating(period, fn, times)));\n\n/**\n * Run `fn` once, `delay` frames from now.\n * @param delay Frames from now (24 a second).\n * @param fn What to run; it runs to its end within the frame.\n * @returns The task: `cancel()` before then and it never runs.\n */\nexport const after = game((delay: number, fn: () => void): Task => start(later(delay, fn)));\n\n/**\n * The elements of `list`, `per` of them a frame: a loop spread over frames, for work that need not be done in one \u2014\n * a thousand bullets moved, a map's cells looked at. What a frame costs stays what `per` turns cost.\n *\n *   for await (const b of over(bullets, { per: 50 })) b.x += b.dx;\n *\n * It reads the list's length as it goes, as `for\u2026of` does: what is pushed meanwhile is reached too, and an element\n * removed before it is reached moves the rest up, so one is passed over, as with an index. Each element is the list's\n * own: what is written to it stays. The loop goes on to the next frame only between elements, never after the last.\n * @param list The array to walk.\n * @param options `per`: how many elements a frame (1 at least).\n */\nexport async function* over<T>(list: T[], options: { per: number }) {\n  const per = options.per < 1 ? 1 : options.per;\n  let n = 0;\n  for (let i = 0; i < list.length; i++) {\n    yield list[i];\n    n++;\n    if (n >= per && i + 1 < list.length) {\n      n = 0;\n      await nextFrame();\n    }\n  }\n}\n\n/**\n * 0, 1, \u2026 `count` \u2212 1, `per` of them a frame: `over` for a count rather than an array.\n *\n *   for await (const y of spread(96, { per: 8 })) drawRow(y);   // twelve frames for 96 rows\n * @param count How many numbers, from 0.\n * @param options `per`: how many a frame (1 at least).\n */\nexport async function* spread(count: number, options: { per: number }) {\n  const per = options.per < 1 ? 1 : options.per;\n  let n = 0;\n  for (let i = 0; i < count; i++) {\n    yield i;\n    n++;\n    if (n >= per && i + 1 < count) {\n      n = 0;\n      await nextFrame();\n    }\n  }\n}\n\n/**\n * Something that can be done once every so many frames: a weapon's reload, a spell's cooldown.\n *\n *   const blink = new Cooldown(5 * SECOND);\n *   if (keyPressed(P1, \"B\") && blink.use()) teleport();\n */\nexport class Cooldown {\n  period: number;\n  until = 0;\n\n  /** Ready at once, then once every `period` frames. */\n  constructor(period: number) {\n    this.period = period;\n  }\n\n  /** Whether it is ready now. */\n  ready(): boolean {\n    return now() >= this.until;\n  }\n\n  /** If it is ready, use it \u2014 it is ready again `period` frames from now \u2014 and say true; else false. */\n  use(): boolean {\n    if (now() < this.until) return false;\n    this.until = now() + this.period;\n    return true;\n  }\n\n  /** Frames until it is ready again: 0 when it is. */\n  left(): number {\n    return this.until > now() ? this.until - now() : 0;\n  }\n\n  /** Ready again at once. */\n  reset() {\n    this.until = 0;\n  }\n}\n\n/**\n * A length of time that runs down while the game runs: a round's clock, a bomb's fuse.\n *\n *   const round = new Countdown(90 * SECOND);\n *   ui.lines(P1, () => <line>{clock(round.left())}</line>);\n *   await until(() => round.done());\n */\nexport class Countdown {\n  end = 0;\n\n  /** Running, done `length` frames from now (0: done already). */\n  constructor(length: number = 0) {\n    this.end = now() + length;\n  }\n\n  /** Start again, done `length` frames from now. */\n  restart(length: number) {\n    this.end = now() + length;\n  }\n\n  /** Frames left: 0 once it is done. */\n  left(): number {\n    return this.end > now() ? this.end - now() : 0;\n  }\n\n  /** Whether it has run out. */\n  done(): boolean {\n    return now() >= this.end;\n  }\n\n  /** More time, or less (a number below zero). */\n  add(frames: number) {\n    this.end += frames;\n  }\n}\n\n/** How long since it was made, or last reset: a lap's time, a survival score. */\nexport class Stopwatch {\n  from = 0;\n\n  constructor() {\n    this.from = now();\n  }\n\n  /** Frames since it started. */\n  elapsed(): number {\n    return now() - this.from;\n  }\n\n  /** From 0 again. */\n  reset() {\n    this.from = now();\n  }\n}\n",
-  "ui": '/**\n * A kit for the game\'s text lines: the standard library\'s "trigscript/ui" (TrigScript 4).\n *\n *   import { Meter, Panel, MenuList, DialogBox, choose, say, clock } from "trigscript/ui";\n *\n *   const ITEMS = ["Marine (50)", "Medic (75)", "Leave"];\n *   const shop = { selected: 0, open: false };\n *   const talk = { speaker: "", text: "", open: false };\n *\n *   program(async () => {\n *     ui.lines(P1, () => (\n *       <>\n *         <Panel title={`Wave ${wave}  ${clock(elapsed)}`}>\n *           <Meter label="Base" value={baseHp} max={1500} />\n *         </Panel>\n *         {shop.open && <MenuList items={ITEMS} selected={shop.selected} />}\n *         <DialogBox box={talk} />\n *       </>\n *     ));\n *     await say(P1, talk, "Raynor", "Hold the bridge until dawn.");\n *     const pick = await choose(P1, ITEMS.length, shop);\n *   });\n *\n * The text lines are one player\'s: a view is shown to that player only, rebuilt when what it reads changes (a function\n * it calls included) and shown again once a second as it was, so a menu, a dialog and a meter cost nothing while nothing\n * changes. Give a player one `ui.lines` and\n * put everything in it, as the example does: the components are pieces of one view, and the state they show is a\n * record of yours (`shop`, `talk`) that the functions here change.\n *\n * What the text lines can show, played in StarCraft: Remastered (the UI spike, 2026-10-16): eleven lines; colour codes\n * take no width; \u25A0 \u25A1 \u25CF are one width; after grey on a line every later colour code is ignored, so grey goes last.\n */\nimport { keyPressed, nextFrame, sleep, frames, game, textColors, type Player, type TextColor } from "trigscript";\n\n/** Frames a second of game time on Fastest, the speed a map is played at. */\nconst PER_SECOND = 24;\n\n/** "1:05": frames of game time as minutes and seconds (24 frames a second, on Fastest). */\nexport function clock(frames: number): string {\n  const seconds = Math.floor(frames / PER_SECOND);\n  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;\n}\n\n/** "12,345": a whole number with its thousands marked. */\nexport function thousands(n: number): string {\n  let rest = n < 0 ? -n : n;\n  let out = "";\n  while (rest >= 1000) {\n    out = `,${String(rest % 1000).padStart(3, "0")}${out}`;\n    rest = Math.floor(rest / 1000);\n  }\n  return `${n < 0 ? "-" : ""}${rest}${out}`;\n}\n\n/**\n * A labelled bar on a line of its own \u2014 "Base \u25A0\u25A0\u25A0\u25A0\u25A0\u25A0\u25A1\u25A1\u25A1\u25A1 900/1500" \u2014 green above half, yellow above a quarter, red below.\n * @param label What the bar is of.\n * @param value How much there is.\n * @param max How much there can be.\n * @param width How many squares the bar is (10 unless it says).\n */\nexport function Meter({ label, value, max, width }: { label: string; value: number; max: number; width?: number }) {\n  return (\n    <line>\n      {label} <bar value={value} max={max} width={width ?? 10} color={value * 2 > max ? textColors.green : value * 4 > max ? textColors.yellow : textColors.red} /> {value}/{max}\n    </line>\n  );\n}\n\n/**\n * A title over what is inside it: "-- Wave 3 --" in its colour (yellow unless it says), then the lines inside.\n * @param title The title.\n * @param color The title\'s colour.\n */\nexport function Panel({ title, children, color }: { title: string; children?: Children; color?: TextColor }) {\n  return (\n    <>\n      <line color={color ?? "yellow"}>-- {title} --</line>\n      <line>{children}</line>\n    </>\n  );\n}\n\n/**\n * A menu\'s lines: each item on a line of its own, the one at `selected` marked "> " and in its colour (cyan unless it\n * says). `items` is a list the script has, or an array of texts of the program.\n */\nexport function MenuList({ items, selected, color }: { items: readonly string[]; selected: number; color?: TextColor }) {\n  return (\n    <>\n      {items.map((item, i) => (\n        <line color={i === selected ? (color ?? "cyan") : "white"}>\n          {i === selected ? "> " : "  "}\n          {item}\n        </line>\n      ))}\n    </>\n  );\n}\n\n/**\n * Let a player choose one of `count` things: the menu opens (`menu.open`), W and S (or Up and Down) move\n * `menu.selected` (round from the last to the first), and Space chooses \u2014 the place chosen, once it is. (Not Enter:\n * in a game of several players Enter opens the chat.) Show it with `MenuList`, in the\n * player\'s `ui.lines`: `{shop.open && <MenuList items={ITEMS} selected={shop.selected} />}`.\n * @param player Who chooses: P1 \u2026 P8, known when the script is built.\n * @param count How many things there are to choose from.\n * @param menu The record a view shows: which is marked, and whether the menu is open.\n */\nexport const choose = game(async (player: Player, count: number, menu: { selected: number; open: boolean }): Promise<number> => {\n  menu.open = true;\n  while (true) {\n    if (keyPressed(player, "W") || keyPressed(player, "Up")) menu.selected = (menu.selected + count - 1) % count;\n    if (keyPressed(player, "S") || keyPressed(player, "Down")) menu.selected = (menu.selected + 1) % count;\n    if (keyPressed(player, "Space")) break;\n    await nextFrame();\n  }\n  menu.open = false;\n  return menu.selected;\n});\n\n/**\n * A text put into `into.text` a character at a time, one every `every` frames (2 unless it says): a view that shows\n * `into.text` shows it being typed. Done when the whole text is there.\n */\nexport const typewriter = game(async (into: { text: string }, text: string, every: number = 2) => {\n  let n = 0;\n  while (n < text.length) {\n    n++;\n    into.text = text.slice(0, n);\n    await sleep(frames(every));\n  }\n});\n\n/**\n * Someone says something to a player: the dialog opens (`box.open`), the speaker\'s name and the words typed in, and it\n * closes when the player presses Space. Show it with `DialogBox`.\n * @param player Who reads it: P1 \u2026 P8, known when the script is built.\n * @param box The record a view shows.\n * @param speaker Who speaks.\n * @param text What they say.\n */\nexport const say = game(async (player: Player, box: { speaker: string; text: string; open: boolean }, speaker: string, text: string) => {\n  box.open = true;\n  box.speaker = speaker;\n  box.text = "";\n  await typewriter(box, text);\n  while (!keyPressed(player, "Space")) await nextFrame();\n  box.open = false;\n});\n\n/** A dialog\'s lines while it is open: the speaker in yellow, the words, and what to press (Space). Nothing while it is closed. */\nexport function DialogBox({ box }: { box: { speaker: string; text: string; open: boolean } }) {\n  return box.open ? (\n    <>\n      <line color="yellow">{box.speaker}</line>\n      <line>{box.text}</line>\n      <line color="grey">(Space)</line>\n    </>\n  ) : null;\n}\n\n/** A line at the end of a log that keeps the last `keep` (6 unless it says), the oldest taken off the front. */\nexport const log = game((lines: string[], text: string, keep: number = 6) => {\n  lines.push(text);\n  while (lines.length > keep) lines.shift();\n});\n\n/** A log\'s lines, oldest first, each in its colour (white unless it says). */\nexport function LogLines({ lines, color }: { lines: readonly string[]; color?: TextColor }) {\n  return <>{lines.map((text) => <line color={color ?? "white"}>{text}</line>)}</>;\n}\n'
+  "ui": '/**\n * A kit for the game\'s text lines: the standard library\'s "trigscript/ui" (TrigScript 4).\n *\n *   import { Meter, Panel, MenuList, DialogBox, choose, say, clock } from "trigscript/ui";\n *\n *   const ITEMS = ["Marine (50)", "Medic (75)", "Leave"];\n *   const shop = { selected: 0, open: false };\n *   const talk = { speaker: "", text: "", open: false };\n *\n *   program(async () => {\n *     ui.lines(P1, () => (\n *       <>\n *         <Panel title={`Wave ${wave}  ${clock(elapsed)}`}>\n *           <Meter label="Base" value={baseHp} max={1500} />\n *         </Panel>\n *         {shop.open && <MenuList items={ITEMS} selected={shop.selected} />}\n *         <DialogBox box={talk} />\n *       </>\n *     ));\n *     await say(P1, talk, "Raynor", "Hold the bridge until dawn.");\n *     const pick = await choose(P1, ITEMS.length, shop);\n *   });\n *\n * The text lines are one player\'s: a view is shown to that player only, rebuilt when what it reads changes (a function\n * it calls included) and shown again once a second as it was, so a menu, a dialog and a meter cost nothing while nothing\n * changes. Give a player one `ui.lines` and\n * put everything in it, as the example does: the components are pieces of one view, and the state they show is a\n * record of yours (`shop`, `talk`) that the functions here change.\n *\n * What the text lines can show, played in StarCraft: Remastered (the UI spike, 2026-10-16): eleven lines; colour codes\n * take no width; \u25A0 \u25A1 \u25CF are one width; after grey on a line every later colour code is ignored, so grey goes last.\n */\nimport { keyPressed, nextFrame, sleep, frames, game, textColors, type Player, type TextColor } from "trigscript";\n\n/** Frames a second of game time on Fastest, the speed a map is played at. */\nconst PER_SECOND = 24;\n\n/** "1:05": frames of game time as minutes and seconds (24 frames a second, on Fastest). */\nexport function clock(frames: number): string {\n  const seconds = Math.floor(frames / PER_SECOND);\n  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;\n}\n\n/** "12,345": a whole number with its thousands marked. */\nexport function thousands(n: number): string {\n  let rest = n < 0 ? -n : n;\n  let out = "";\n  while (rest >= 1000) {\n    out = `,${String(rest % 1000).padStart(3, "0")}${out}`;\n    rest = Math.floor(rest / 1000);\n  }\n  return `${n < 0 ? "-" : ""}${rest}${out}`;\n}\n\n/**\n * A labelled bar on a line of its own \u2014 "Base \u25A0\u25A0\u25A0\u25A0\u25A0\u25A0\u25A1\u25A1\u25A1\u25A1 900/1500" \u2014 green above half, yellow above a quarter, red below.\n * @param label What the bar is of.\n * @param value How much there is.\n * @param max How much there can be.\n * @param width How many squares the bar is (10 unless it says).\n */\nexport function Meter({ label, value, max, width }: { label: string; value: number; max: number; width?: number }) {\n  return (\n    <line>\n      {label} <bar value={value} max={max} width={width ?? 10} color={value * 2 > max ? textColors.green : value * 4 > max ? textColors.yellow : textColors.red} /> {value}/{max}\n    </line>\n  );\n}\n\n/**\n * A title over what is inside it: "-- Wave 3 --" in its colour (yellow unless it says), then the lines inside.\n * @param title The title.\n * @param color The title\'s colour.\n */\nexport function Panel({ title, children, color }: { title: string; children?: Children; color?: TextColor }) {\n  return (\n    <>\n      <line color={color ?? "yellow"}>-- {title} --</line>\n      <line>{children}</line>\n    </>\n  );\n}\n\n/**\n * A menu\'s lines: each item on a line of its own, the one at `selected` marked "> " and in its colour (cyan unless it\n * says). `items` is a list the script has, or an array of texts of the program.\n */\nexport function MenuList({ items, selected, color }: { items: readonly string[]; selected: number; color?: TextColor }) {\n  return (\n    <>\n      {items.map((item, i) => (\n        <line color={i === selected ? (color ?? "cyan") : "white"}>\n          {i === selected ? "> " : "  "}\n          {item}\n        </line>\n      ))}\n    </>\n  );\n}\n\n/**\n * Let a player choose one of `count` things: the menu opens (`menu.open`), W and S (or Up and Down) move\n * `menu.selected` (round from the last to the first), and Space chooses \u2014 the place chosen, once it is. (Not Enter:\n * in a game of several players Enter opens the chat.) Show it with `MenuList`, in the\n * player\'s `ui.lines`: `{shop.open && <MenuList items={ITEMS} selected={shop.selected} />}`.\n * @param player Who chooses: P1 \u2026 P8, known when the script is built.\n * @param count How many things there are to choose from.\n * @param menu The record a view shows: which is marked, and whether the menu is open.\n */\nexport const choose = game(async (player: Player, count: number, menu: { selected: number; open: boolean }): Promise<number> => {\n  menu.open = true;\n  while (true) {\n    if (keyPressed(player, "W") || keyPressed(player, "Up")) menu.selected = (menu.selected + count - 1) % count;\n    if (keyPressed(player, "S") || keyPressed(player, "Down")) menu.selected = (menu.selected + 1) % count;\n    if (keyPressed(player, "Space")) break;\n    await nextFrame();\n  }\n  menu.open = false;\n  return menu.selected;\n});\n\n/**\n * A text put into `into.text` a character at a time, one every `every` frames (2 unless it says): a view that shows\n * `into.text` shows it being typed. Done when the whole text is there.\n */\nexport const typewriter = game(async (into: { text: string }, text: string, every: number = 2) => {\n  let n = 0;\n  while (n < text.length) {\n    n++;\n    into.text = text.slice(0, n);\n    await sleep(frames(every));\n  }\n});\n\n/**\n * Someone says something to a player: the dialog opens (`box.open`), the speaker\'s name and the words typed in, and it\n * closes when the player presses Space. Show it with `DialogBox`.\n * @param player Who reads it: P1 \u2026 P8, known when the script is built.\n * @param box The record a view shows.\n * @param speaker Who speaks.\n * @param text What they say.\n */\nexport const say = game(async (player: Player, box: { speaker: string; text: string; open: boolean }, speaker: string, text: string) => {\n  box.open = true;\n  box.speaker = speaker;\n  box.text = "";\n  await typewriter(box, text);\n  while (!keyPressed(player, "Space")) await nextFrame();\n  box.open = false;\n});\n\n/** A dialog\'s lines while it is open: the speaker in yellow, the words, and what to press (Space). Nothing while it is closed. */\nexport function DialogBox({ box }: { box: { speaker: string; text: string; open: boolean } }) {\n  return box.open ? (\n    <>\n      <line color="yellow">{box.speaker}</line>\n      <line>{box.text}</line>\n      <line color="grey">(Space)</line>\n    </>\n  ) : null;\n}\n\n/** A line at the end of a log that keeps the last `keep` (6 unless it says), the oldest taken off the front. */\nexport const log = game((lines: string[], text: string, keep: number = 6) => {\n  lines.push(text);\n  while (lines.length > keep) lines.shift();\n});\n\n/** A log\'s lines, oldest first, each in its colour (white unless it says). */\nexport function LogLines({ lines, color }: { lines: readonly string[]; color?: TextColor }) {\n  return <>{lines.map((text) => <line color={color ?? "white"}>{text}</line>)}</>;\n}\n',
+  "workers": `/**
+ * Workers that go to work: the standard library's "trigscript/workers" (TrigScript 4).
+ *
+ *   import { buildAutoMiningProgram } from "trigscript/workers";
+ *
+ *   buildAutoMiningProgram();   // at the top of the script, once: on for the whole game
+ *
+ * With auto-mining on, a human player's new SCV, Probe or Drone whose producer's rally point is on a mineral patch
+ * starts mining that patch, instead of walking there and standing. One rallied to the player's own finished gas
+ * building (Refinery, Extractor, Assimilator) starts gathering gas from it. Anywhere else \u2014 the ground, a bare geyser,
+ * a gas building still being built or another player's, a patch mined out \u2014 it walks to the rally point as it always
+ * does. It acts once, as the worker comes out: an order the player gives afterwards stands. Computer players' workers
+ * and those a trigger makes (Create Unit) are left alone, and a busy patch or gas building is the game's to sort out,
+ * as when the player right-clicks it.
+ *
+ * Played in StarCraft: Remastered (2026-11-07 and 2026-11-08): SCVs, Probes and Drones rallied to minerals and to gas
+ * all went to work. How it sees a new worker, from \`map trace\` (2026-11-07): an SCV comes out of training with its
+ * order changing from Nothing, and a Drone from ZergBirth, on the frame the rally is applied (a Probe was not traced;
+ * in play it went to work as an SCV does). A rally on a patch gives the worker Move to the patch's exact centre with no target; one on a building gives
+ * Follow with the building as the target. \`gather()\` then gives the order a right-click would: MoveToMinerals or
+ * MoveToGas.
+ */
+import { program, on, isHuman, allUnits, units, orders, P1, P2, P3, P4, P5, P6, P7, P8, type Unit } from "trigscript";
+
+function ownerIsHuman(worker: Unit): boolean {
+  const owner = worker.owner;
+  if (owner == P1) return isHuman(P1);
+  if (owner == P2) return isHuman(P2);
+  if (owner == P3) return isHuman(P3);
+  if (owner == P4) return isHuman(P4);
+  if (owner == P5) return isHuman(P5);
+  if (owner == P6) return isHuman(P6);
+  if (owner == P7) return isHuman(P7);
+  if (owner == P8) return isHuman(P8);
+  return false;
+}
+
+function gatherFromRally(worker: Unit) {
+  if (!ownerIsHuman(worker)) return;
+  if (worker.orderId == orders.Follow) {
+    const gasBuilding = worker.orderTarget;
+    if (gasBuilding) if (gasBuilding.owner == worker.owner && gasBuilding.buildTime == 0) worker.gather(gasBuilding);
+    return;
+  }
+  if (worker.orderId != orders.Move || worker.hasTarget) return;
+  const x = worker.orderTargetX, y = worker.orderTargetY;
+  for (const patch of allUnits({ type: units.MineralFieldType1 })) if (patch.x == x && patch.y == y) { worker.gather(patch); return; }
+  for (const patch of allUnits({ type: units.MineralFieldType2 })) if (patch.x == x && patch.y == y) { worker.gather(patch); return; }
+  for (const patch of allUnits({ type: units.MineralFieldType3 })) if (patch.x == x && patch.y == y) { worker.gather(patch); return; }
+}
+
+let programBuilt = false;
+
+/**
+ * Build the program that turns auto-mining on for the whole game: every human player's new SCV, Probe or Drone rallied
+ * to a mineral patch or the player's own finished gas building starts gathering from it. Called at the top of a
+ * script, as programs are made when the map is built; a call after the first adds nothing.
+ */
+export function buildAutoMiningProgram() {
+  if (programBuilt) return;
+  programBuilt = true;
+  program(async () => {
+    on.order((worker, order, was) => {
+      if (worker.type == units.ZergDrone) {
+        if (was == orders.ZergBirth) gatherFromRally(worker);
+      } else if (was == orders.Nothing) {
+        if (worker.type == units.TerranSCV || worker.type == units.ProtossProbe) gatherFromRally(worker);
+      }
+    });
+  });
+}
+`
 };
-var STDLIB_EXTENSIONS = { "cutscene": ".ts", "fog": ".ts", "math": ".ts", "music": ".ts", "random": ".ts", "screen": ".tsx", "signals": ".ts", "timers": ".ts", "ui": ".tsx" };
+var STDLIB_EXTENSIONS = { "card": ".ts", "cutscene": ".ts", "fog": ".ts", "math": ".ts", "music": ".ts", "random": ".ts", "screen": ".tsx", "signals": ".ts", "spells": ".ts", "timers": ".ts", "ui": ".tsx", "workers": ".ts" };
 
 // compiler/stdlib.ts
 var STDLIB = STDLIB_SOURCES;
@@ -11569,7 +12001,7 @@ function expressions(body2, visit, pick) {
       expr(u3.ptr);
       expr(u3.epd);
       expr(u3.uid);
-    }
+    } else if (u3.kind === "unitOrderTarget") unit(u3.unit);
   };
   const any = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e);
   const looks = { num: (e) => {
@@ -11598,6 +12030,10 @@ function expressions(body2, visit, pick) {
       case "unitSame":
         unit(e.left);
         unit(e.right);
+        break;
+      case "unitDistance":
+        unit(e.from);
+        unit(e.to);
         break;
       case "unary":
       case "cast":
@@ -11699,6 +12135,7 @@ function expressions(body2, visit, pick) {
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target);
         break;
       case "select":
         s.units.forEach(unit);
@@ -12070,6 +12507,13 @@ function assigned(body2, functions2, into = /* @__PURE__ */ new Set()) {
 var THE_GAME = "(the game)";
 var WINDOWS = /* @__PURE__ */ new Map();
 var whole2 = (array) => WINDOWS.get(array) ?? array;
+function unitReads(u3, into) {
+  if (u3.kind === "unitVar") into.add(u3.id);
+  else if (u3.kind === "unitOrderTarget") {
+    into.add(THE_GAME);
+    unitReads(u3.unit, into);
+  }
+}
 function reads(e, into = /* @__PURE__ */ new Set()) {
   const texts = { num: (x) => {
     reads(x, into);
@@ -12110,10 +12554,14 @@ function reads(e, into = /* @__PURE__ */ new Set()) {
     case "unitAlive":
     case "unitFlag":
       into.add(THE_GAME);
-      if (e.unit.kind === "unitVar") into.add(e.unit.id);
+      unitReads(e.unit, into);
       break;
     case "unitSame":
-      for (const u3 of [e.left, e.right]) if (u3.kind === "unitVar") into.add(u3.id);
+      for (const u3 of [e.left, e.right]) unitReads(u3, into);
+      break;
+    case "unitDistance":
+      into.add(THE_GAME);
+      for (const u3 of [e.from, e.to]) unitReads(u3, into);
       break;
     case "randomInt":
       reads(e.bound, into);
@@ -12842,6 +13290,7 @@ function typeNumbers(program) {
         return true;
       case "read":
       case "unitField":
+      case "unitDistance":
       case "tableRead":
       case "input":
       case "randomInt":
@@ -12953,6 +13402,10 @@ function typeNumbers(program) {
         return [e, "i32"];
       case "unitField":
         unit(e.unit);
+        return [e, "i32"];
+      case "unitDistance":
+        unit(e.from);
+        unit(e.to);
         return [e, "i32"];
       // A part of a unit is bits to keep, never a number to reckon with: read from 0 up, so nothing clamps or biases it.
       case "unitPart":
@@ -13133,7 +13586,7 @@ function typeNumbers(program) {
       u3.ptr = num5(u3.ptr)[0];
       u3.epd = num5(u3.epd)[0];
       u3.uid = num5(u3.uid)[0];
-    }
+    } else if (u3.kind === "unitOrderTarget") unit(u3.unit);
   };
   const stored = (decl, value, at) => {
     if (decl?.bits) return floor(value, at, true);
@@ -13245,6 +13698,7 @@ function typeNumbers(program) {
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = floor(s.verb.amount, s.at);
+        if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target);
         break;
       case "tableWrite":
         s.value = isTextExpr(s.value) ? text(s.value) : s.boolean ? bool(s.value) : floor(s.value, s.at);
@@ -13401,7 +13855,10 @@ var UNIT_FIELD = {
   lockdown: [0, 65535],
   maelstrom: [0, 65535],
   irradiate: [0, 65535],
-  stasis: [0, 65535]
+  stasis: [0, 65535],
+  acidSpores: [0, 255],
+  orderState: [0, 255],
+  queuedOrders: [0, 255]
 };
 var STMT_KINDS = /* @__PURE__ */ new Set([
   "declare",
@@ -13697,6 +14154,10 @@ function rangeNumbers(program) {
       case "unitField":
         unit(e.unit, facts);
         return UNIT_FIELD[e.field] ?? ANY;
+      case "unitDistance":
+        unit(e.from, facts);
+        unit(e.to, facts);
+        return [0, 65535];
       case "tableRead":
         return ANY;
       case "input":
@@ -13883,6 +14344,7 @@ function rangeNumbers(program) {
       num5(u3.epd, facts);
       num5(u3.uid, facts);
     } else if (u3.kind === "call") call(u3.call, /* @__PURE__ */ new Map());
+    else if (u3.kind === "unitOrderTarget") unit(u3.unit, facts);
   }
   const verdicts = /* @__PURE__ */ new Map();
   const judge = (e, l, r) => {
@@ -14023,6 +14485,7 @@ function rangeNumbers(program) {
       case "unitDo":
         unit(s.unit, facts);
         if (s.verb.do === "damage" || s.verb.do === "heal") num5(s.verb.amount, facts);
+        if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target, facts);
         return;
       case "tableWrite":
         if (isTextExpr(s.value)) text(s.value, facts);
@@ -14251,6 +14714,8 @@ function pure(e) {
     case "unitField":
     case "unitPart":
       return e.unit.kind === "unitVar" || e.unit.kind === "unitNull";
+    case "unitDistance":
+      return [e.from, e.to].every((u3) => u3.kind === "unitVar" || u3.kind === "unitNull");
     case "element":
       return pure(e.index);
     case "unary":
@@ -14749,6 +15214,8 @@ function unlowered(s, decls, arrays) {
         return "whether a unit is alive";
       case "unitSame":
         return "two units compared";
+      case "unitDistance":
+        return "how far apart two units are";
       case "unitFlag":
         return `a unit's flag ${o.flag}`;
       case "unitNull":
@@ -14756,6 +15223,7 @@ function unlowered(s, decls, arrays) {
       case "pick":
       case "unitAt":
       case "selected":
+      case "unitOrderTarget":
         return "a unit";
       case "textLength":
         return "a text's length";
@@ -14883,7 +15351,7 @@ function unlowered(s, decls, arrays) {
   walk(s);
   return found;
 }
-var UNIT_READS = /* @__PURE__ */ new Set(["unitField", "unitFlag", "unitAlive", "unitSame", "unitPart", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "textSlice", "textPad", "textRepeat", "textTernary", "textCall"]);
+var UNIT_READS = /* @__PURE__ */ new Set(["unitField", "unitDistance", "unitFlag", "unitAlive", "unitSame", "unitPart", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "textSlice", "textPad", "textRepeat", "textTernary", "textCall"]);
 var TEXT_METHODS = /* @__PURE__ */ new Set(["toUpperCase", "toLowerCase", "toLocaleUpperCase", "toLocaleLowerCase", "trim", "trimStart", "trimEnd", "replace", "replaceAll", "split", "join", "at", "charAt", "concat", "parseInt", "Number"]);
 var SET_DEATHS_ACTION = 45;
 var LAST_GROUP = 26;
@@ -18985,7 +19453,7 @@ var Rewriter = class {
       const o = x;
       if (o.kind === "var" && typeof o.id === "string" && (h.written.has(o.id) || isTemp(o.id))) pure2 = false;
       if (o.kind === "element" && h.arrays.has(o.array)) pure2 = false;
-      if (o.kind === "call" || o.kind === "read" || o.kind === "randomInt" || o.kind === "input" || o.kind === "unitField" || o.kind === "tableRead" || o.kind === "pop") pure2 = false;
+      if (o.kind === "call" || o.kind === "read" || o.kind === "randomInt" || o.kind === "input" || o.kind === "unitField" || o.kind === "unitDistance" || o.kind === "tableRead" || o.kind === "pop") pure2 = false;
       Object.values(o).forEach(walk);
     };
     walk(e);
@@ -23111,6 +23579,7 @@ var MRGN3 = epd2(5823584);
 var MAX_HP = epd2(6693712);
 var MAX_SHIELDS = epd2(6688256);
 var GROUPS = epd2(6698912);
+var DIMENSIONS = epd2(UNIT_DIMENSIONS);
 var exactType = (type) => type < 228 || type > 232;
 var GROUP_BITS = { 230: 8, 231: 16, 232: 32 };
 var UNROLL_MOST = 16;
@@ -23135,6 +23604,7 @@ var UID = word(165, 1);
 var OWNER = word(76, 1);
 var ORDER = word(77, 1);
 var TYPE = word(100, 2);
+var ORDER_STATE = word(78, 1);
 var X = word(40, 2);
 var Y = word(42, 2);
 var FIELDS = {
@@ -23156,7 +23626,12 @@ var FIELDS = {
   buildTime: word(172, 2),
   rank: word(142, 1),
   matrix: word(276, 1),
-  speed: word(56, 4)
+  speed: word(56, 4),
+  orderTargetX: word(88, 2),
+  orderTargetY: word(90, 2),
+  acidSpores: word(294, 1),
+  orderState: ORDER_STATE,
+  queuedOrders: word(132, 1)
 };
 var HP = 8 >> 2;
 var SHIELDS = 96 >> 2;
@@ -23164,6 +23639,7 @@ var ENERGY = word(162, 2);
 var STATUS2 = 220 >> 2;
 var USER_ACTION = word(147, 1);
 var ATTACKED = word(135, 1);
+var FLARED = word(291, 1);
 var FLAG_BITS = { invincible: 67108864, hallucinated: 1073741824, burrowed: 16, cloaked: 768, speedUpgrade: 268435456, inTransport: 64 };
 var ORDER_TARGET2 = 92 >> 2;
 var MATRIX_HP = word(274, 2);
@@ -23618,6 +24094,16 @@ function unitValues(program, events, carrier) {
         return pick(e, pre);
       case "selected":
         return fix(e, pre);
+      case "unitOrderTarget": {
+        const holder = held(unit(e.unit, pre), pre);
+        if (isNone(holder)) return NONE;
+        const p = fresh("aim");
+        pre.push(dec(p, k3(0), 1073741823), ...when(alive(holder), [
+          ...through2(of(holder.e, ORDER_TARGET2), (h) => [set(p, h(POINTER, 2))]),
+          ...when(cmp2(">=", V2(p), k3(IN_TABLE)), [set(p, bin("-", V2(p), k3(DEATHS4 / 4)))], [set(p, k3(0))])
+        ]));
+        return { e: ranged(V2(p), 0, UNIT_TABLE2 + STRIDE2 * PLACES), k: null, none: true, killed: true };
+      }
       case "unitAt": {
         const ptr = plain2(fix(e.ptr, pre), pre);
         fix(e.epd, pre);
@@ -23680,9 +24166,47 @@ function unitValues(program, events, carrier) {
     u3 = held(u3, pre);
     if (f === "underAttack") return all([alive(u3), cmp2(">=", bits(u3.e, ATTACKED), k3(1))]);
     if (f === "hasTarget") return all([alive(u3), cmp2(">=", peek(of(u3.e, ORDER_TARGET2)), k3(1))]);
+    if (f === "opticalFlare") return all([alive(u3), cmp2(">=", bits(u3.e, FLARED), k3(1))]);
     const mask = FLAG_BITS[f];
     if (mask === void 0) throw new Leave();
     return all([alive(u3), cmp2("==", peek(of(u3.e, STATUS2), mask), k3(mask))]);
+  };
+  const distance = (a0, b0, pre) => {
+    if (isNone(a0) || isNone(b0)) return k3(0);
+    const a2 = held(a0, pre), b = held(b0, pre);
+    const t = fresh("d"), body3 = [];
+    const box = (u3) => {
+      const [x2, y2, ty, left, up, right, down] = ["x", "y", "ty", "l", "u", "r", "b"].map((what) => fresh(what));
+      body3.push(...[x2, y2, ty, left, up, right, down].map((id) => dec(id, k3(0), 65535)));
+      body3.push(...through2(of(u3.e, POSITION), (h) => [set(x2, h(X.mask, X.shift)), set(y2, h(Y.mask, Y.shift))]), ...readInto(ty, u3.e, TYPE));
+      const at_ = bin("+", k3(DIMENSIONS), bin("*", ranged(V2(ty), 0, 65535), k3(2)));
+      body3.push(...through2(at_, (h) => [set(left, h(65535)), set(up, h(4294901760, 16))]), ...through2(bin("+", at_, k3(1)), (h) => [set(right, h(65535)), set(down, h(4294901760, 16))]));
+      const w = (id) => ranged(V2(id), 0, 65535);
+      return { left: bin("-", bin("+", w(x2), k3(256)), w(left)), top: bin("-", bin("+", w(y2), k3(256)), w(up)), right: bin("+", bin("+", w(x2), w(right)), k3(257)), bottom: bin("+", bin("+", w(y2), w(down)), k3(257)) };
+    };
+    const p = box(a2), q = box(b);
+    const gap = (id, from1, to1, from2, to2) => {
+      const s = [fresh("s1"), fresh("e1"), fresh("s2"), fresh("e2")];
+      const [f1, t1, f2, t2] = s.map((v) => ranged(V2(v), 0, 131072));
+      return [
+        dec(s[0], from1, 131072),
+        dec(s[1], to1, 131072),
+        dec(s[2], from2, 131072),
+        dec(s[3], to2, 131072),
+        dec(id, k3(0), 131072),
+        ...when(cmp2(">", f1, t2), [set(id, bin("-", f1, t2))], when(cmp2(">", f2, t1), [set(id, bin("-", f2, t1))]))
+      ];
+    };
+    const longer = fresh("dl"), shorter = fresh("ds"), swap = fresh("dt");
+    body3.push(...gap(longer, p.left, p.right, q.left, q.right), ...gap(shorter, p.top, p.bottom, q.top, q.bottom));
+    const x = ranged(V2(longer), 0, 131072), y = ranged(V2(shorter), 0, 131072);
+    body3.push(...when(cmp2("<", x, y), [dec(swap, x, 131072), set(longer, y), set(shorter, ranged(V2(swap), 0, 131072))]));
+    const y3 = bin("*", y, k3(3));
+    body3.push(set(t, x), ...when(cmp2("<", bin(">>>", x, k3(2)), y), [
+      set(t, bin("+", bin("-", bin("+", bin("-", x, bin(">>>", x, k3(4))), bin(">>>", y3, k3(3))), bin(">>>", x, k3(6))), bin(">>>", y3, k3(8))))
+    ]));
+    pre.push(dec(t, k3(0), 131072), ...when(all([present(a2), present(b)]), body3));
+    return ranged(V2(t), 0, 131072);
   };
   const die = (e) => poke(of(e, ORDER.dword), k3(0), ORDER.mask);
   const write = (s, pre) => {
@@ -23737,13 +24261,19 @@ function unitValues(program, events, carrier) {
     const u0 = unit(s.unit, pre);
     const v = s.verb;
     const amount = v.do === "damage" || v.do === "heal" ? plain2(fix(v.amount, pre), pre) : null;
+    const target = v.do === "gather" || v.do === "cast" ? held(unit(v.target, pre), pre) : null;
     if (isNone(u0)) return;
     const u3 = held(u0, pre);
     const e = u3.e;
     const body3 = [];
+    const is = (id, types2) => any(types2.map((type) => cmp2("==", ranged(V2(id), 0, 65535), k3(type))));
     switch (v.do) {
       case "kill":
         body3.push(die(e));
+        break;
+      // (The order and its state share a dword: both written at once, the state back to the start.)
+      case "stop":
+        body3.push(poke(of(e, ORDER.dword), k3(STOP_ORDER * 2 ** ORDER.shift), (ORDER.mask | ORDER_STATE.mask) >>> 0));
         break;
       // (eudplib's `CUnit.remove()`: the unit leaves without dying.)
       case "remove":
@@ -23800,6 +24330,32 @@ function unitValues(program, events, carrier) {
           ], [poke(bin("+", k3(FIRST_UNIT2), to), ptrOf(e)), poke(of(e, NEXT_UNIT2), k3(0)), poke(of(e, PREV_UNIT), k3(0))]),
           { kind: "action", record: FORGET_COUNTS2, ...at() }
         );
+        break;
+      }
+      case "gather": {
+        if (!target || isNone(target)) break;
+        const worker = fresh("ty"), aimed = fresh("ty"), order = fresh("order");
+        body3.push(dec(worker, k3(0), 65535), dec(aimed, k3(0), 65535), dec(order, k3(0), 255), ...readInto(worker, e, TYPE));
+        body3.push(...when(all([is(worker, GATHER_WORKERS), alive(target)]), [
+          ...readInto(aimed, target.e, TYPE),
+          ...GATHER_ORDERS.flatMap((g) => when(is(aimed, g.targets), [set(order, k3(g.order))]))
+        ]));
+        body3.push(...when(cmp2(">=", ranged(V2(order), 0, 255), k3(1)), [
+          poke(of(e, ORDER_TARGET2), bin("+", bin("*", target.e, k3(4)), k3(DEATHS4))),
+          poke(of(e, ORDER_STATE.dword), k3(0), ORDER_STATE.mask),
+          poke(of(e, ORDER.dword), bin("*", ranged(V2(order), 0, 255), k3(256)), ORDER.mask)
+        ]));
+        break;
+      }
+      case "cast": {
+        const spell = CAST_ORDERS.find((c2) => c2.tech === v.tech);
+        if (!spell || !target || isNone(target)) break;
+        const caster = fresh("ty");
+        body3.push(dec(caster, k3(0), 65535), ...readInto(caster, e, TYPE));
+        body3.push(...when(all([is(caster, spell.casters), alive(target)]), [
+          poke(of(e, ORDER_TARGET2), bin("+", bin("*", target.e, k3(4)), k3(DEATHS4))),
+          poke(of(e, ORDER.dword), k3(spell.order * 2 ** ORDER.shift), (ORDER.mask | ORDER_STATE.mask) >>> 0)
+        ]));
         break;
       }
       case "damage":
@@ -23938,6 +24494,10 @@ function unitValues(program, events, carrier) {
       case "unitSame": {
         const e = o;
         return same3(unit(e.left, pre), unit(e.right, pre), pre);
+      }
+      case "unitDistance": {
+        const e = o;
+        return distance(unit(e.from, pre), unit(e.to, pre), pre);
       }
       case "selected": {
         const e = o;
@@ -24414,8 +24974,14 @@ function settleRecursion(program) {
           const [left, right] = operands([{ e: e.left, kind: "unit" }, { e: e.right, kind: "unit" }], pre, w);
           return { ...e, left, right };
         }
+        case "unitDistance": {
+          const [from, to] = operands([{ e: e.from, kind: "unit" }, { e: e.to, kind: "unit" }], pre, w);
+          return { ...e, from, to };
+        }
         case "intrinsic":
           return { ...e, args: operands(e.args.map((a2) => ({ e: a2, kind: "number" })), pre, w) };
+        case "unitOrderTarget":
+          return { ...e, unit: one(e.unit, "unit") };
         case "unitAt": {
           const [ptr, epd4, uid] = operands([e.ptr, e.epd, e.uid].map((x) => ({ e: x, kind: "number" })), pre, w);
           return { ...e, ptr, epd: epd4, uid };
@@ -24493,9 +25059,11 @@ function settleRecursion(program) {
           case "unitDo": {
             const items = [{ e: s.unit, kind: "unit" }];
             if (s.verb.do === "damage" || s.verb.do === "heal") items.push({ e: s.verb.amount, kind: "number" });
+            if (s.verb.do === "gather" || s.verb.do === "cast") items.push({ e: s.verb.target, kind: "unit" });
             const done = operands(items, pre, w);
             s.unit = done[0];
             if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = done[1];
+            if (s.verb.do === "gather" || s.verb.do === "cast") s.verb.target = done[1];
             break;
           }
           case "tableWrite":
@@ -24645,7 +25213,7 @@ function settleRecursion(program) {
 }
 
 // compiler/views.ts
-var GAME_READS = /* @__PURE__ */ new Set(["input", "randomInt", "random", "read", "tableRead", "unitField", "cond", "edge", "running", "unitAlive", "unitFlag", "pick", "pop"]);
+var GAME_READS = /* @__PURE__ */ new Set(["input", "randomInt", "random", "read", "tableRead", "unitField", "unitDistance", "cond", "edge", "running", "unitAlive", "unitFlag", "pick", "pop"]);
 var LISTS2 = ["body", "then", "else", "update"];
 function rootOf(arrays, id) {
   let a2 = arrays.get(id);
@@ -37850,6 +38418,15 @@ var Structured = class _Structured {
       this.task(e, { decl: v, kind: "number" });
       return varRef(v);
     }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "distanceTo" && this.isUnitTyped(e.expression.expression)) {
+      const other = e.arguments[0];
+      if (!other || e.arguments.length > 1 || !this.isUnitTyped(other)) {
+        this.c.error(e, "distanceTo() takes the other unit: a.distanceTo(b).");
+        return null;
+      }
+      const from = this.unitExpr(e.expression.expression), to = this.unitExpr(other);
+      return from && to ? this.mark({ kind: "unitDistance", from, to, at: this.at(e), label: this.label(e) }, e) : null;
+    }
     const h = this.evaluate(expr);
     if (h && (h.value === void 0 || h.value === null) && this.noFunction(expr)) return num4(0);
     if (!h) {
@@ -38441,6 +39018,10 @@ var Structured = class _Structured {
       }
       return got ? this.mark({ kind: "call", call: got }, e) : null;
     }
+    if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name) && e.name.text === "orderTarget" && this.isUnitTyped(e.expression)) {
+      const of = this.unitExpr(e.expression);
+      return of ? this.mark({ kind: "unitOrderTarget", unit: of, at: this.at(e) }, e) : null;
+    }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const kept3 = this.bindingOf(e);
       if (kept3?.kind === "unitAt") return this.unitAtPlaces(kept3, e);
@@ -38613,6 +39194,40 @@ var Structured = class _Structured {
         emit({ do: "locate", location: at });
         return;
       }
+      case "gather": {
+        const a2 = e.arguments[0];
+        if (!a2 || e.arguments.length > 1 || !this.isUnitTyped(a2)) {
+          this.c.error(e, "gather() takes the mineral field or gas building to gather from.");
+          return;
+        }
+        const target = this.unitExpr(a2);
+        if (target) emit({ do: "gather", target });
+        return;
+      }
+      case "cast": {
+        const tech = known(0, "the technology to cast and the unit to cast it at: medic.cast(techs.Restoration, marine)");
+        if (tech === void 0) return;
+        if (!CAST_ORDERS.some((c2) => c2.tech === tech)) {
+          const name = typeof tech === "number" ? TECH_NAMES[tech] ?? `technology ${tech}` : describe2(tech);
+          this.c.error(e.arguments[0], `cast() casts techs.Restoration only: ${name} has no cast yet.`);
+          return;
+        }
+        const a2 = e.arguments[1];
+        if (!a2 || e.arguments.length > 2 || !this.isUnitTyped(a2)) {
+          this.c.error(e, "cast() takes the technology and the unit to cast it at: medic.cast(techs.Restoration, marine).");
+          return;
+        }
+        const target = this.unitExpr(a2);
+        if (target) emit({ do: "cast", tech, target });
+        return;
+      }
+      case "stop":
+        if (e.arguments.length) {
+          this.c.error(e, "stop() takes no arguments.");
+          return;
+        }
+        emit({ do: "stop" });
+        return;
       case "damage":
       case "heal": {
         const a2 = e.arguments[0];

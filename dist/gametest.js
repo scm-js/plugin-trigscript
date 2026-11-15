@@ -484,6 +484,15 @@ function aiScriptByName(text) {
 
 // compiler/orders.ts
 var ORDER_OF_VERB = { move: 6, patrol: 152, attack: 14 };
+var GATHER_WORKERS = [7, 41, 64];
+var GATHER_ORDERS = [
+  { order: 85, targets: [176, 177, 178] },
+  { order: 81, targets: [110, 149, 157] }
+];
+var CAST_ORDERS = [
+  { tech: 24, casters: [34], order: 180 }
+];
+var STOP_ORDER = 1;
 
 // compiler/api.ts
 function keyOf(table, value) {
@@ -683,6 +692,11 @@ var World = class {
       rank: 0,
       matrix: 0,
       speed: 0,
+      orderTargetX: 0,
+      orderTargetY: 0,
+      acidSpores: 0,
+      orderState: 0,
+      queuedOrders: 0,
       hallucinated: false,
       cloaked: false,
       burrowed: false,
@@ -691,6 +705,7 @@ var World = class {
       speedUpgrade: false,
       hasTarget: false,
       inTransport: false,
+      opticalFlare: false,
       ...init,
       hp,
       maxHp: init.maxHp ?? hp,
@@ -1197,7 +1212,7 @@ var STACK_CELLS_MAX = 1 << 20;
 function stackDepth(value) {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(STACK_DEPTH_MAX, Math.max(STACK_DEPTH_MIN, Math.floor(value))) : STACK_DEPTH;
 }
-var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack", "speedUpgrade", "hasTarget", "inTransport"];
+var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack", "speedUpgrade", "hasTarget", "inTransport", "opticalFlare"];
 var TEXT_BYTES = 1023;
 var TEXT_FIELD_BYTES = 255;
 var TEXT_KINDS = /* @__PURE__ */ new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall", "built"]);
@@ -1267,7 +1282,7 @@ function eachStart(root, visit) {
   if (o.kind === "start" && typeof o.task === "number" && o.call && typeof o.call === "object") visit(o);
   for (const v of Object.values(o)) if (v && typeof v === "object") eachStart(v, visit);
 }
-var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
+var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "unitOrderTarget" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
   switch (e.kind) {
     case "textLength":
@@ -1293,6 +1308,7 @@ var isNumExpr = (e) => {
     case "read":
     case "randomInt":
     case "unitField":
+    case "unitDistance":
     case "tableRead":
     case "input":
     case "taskHandle":
@@ -1363,6 +1379,7 @@ function declarations(body) {
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target);
         break;
       case "select":
         s.units.forEach(unit);
@@ -1496,13 +1513,17 @@ function declarations(body) {
       expr(u.ptr);
       expr(u.epd);
       expr(u.uid);
-    }
+    } else if (u.kind === "unitOrderTarget") unit(u.unit);
   };
   const expr = (e) => {
     switch (e.kind) {
       case "unitField":
       case "unitPart":
         unit(e.unit);
+        break;
+      case "unitDistance":
+        unit(e.from);
+        unit(e.to);
         break;
       case "element":
         expr(e.index);
@@ -1655,10 +1676,12 @@ var TABLE_FIELDS = {
   ],
   player: [
     { name: "color", doc: `The colour the player's units and minimap dots are drawn in: one of colors.*, or "teal". Takes effect at once.`, base: 5774710, stride: 1, width: 1, writeOnly: true, special: "color", type: "PlayerColor | ColorName" },
-    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade" } },
-    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech" } }
+    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade", broodWar: { from: 46, base: 5829420, stride: 15 } } },
+    { name: "allied", doc: "Whether the player has set another player as an ally, as Set Alliance Status does: stats(P1).allied[P2]. It goes one way: P2 may not have P1. Read only.", base: 5822004, stride: 12, width: 1, boolean: true, readonly: true, keyed: { kind: "player", type: "Player" } },
+    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech", broodWar: { from: 24, base: 5828928, stride: 20 } } }
   ]
 };
+var UNIT_DIMENSIONS = 6690760;
 var PLAYER_COLORS = { red: 111, blue: 165, teal: 159, purple: 164, orange: 179, brown: 19, white: 255, yellow: 135, green: 117 };
 var MINIMAP_COLOR_OFFSET = 5774806 - 5774710;
 var TABLE_BRAND = { unit: "unit", weapon: "weapon", upgrade: "upgrade", tech: "tech", player: "player" };
@@ -1813,7 +1836,7 @@ function inputsOf(programs) {
       expr(u.ptr);
       expr(u.epd);
       expr(u.uid);
-    }
+    } else if (u.kind === "unitOrderTarget") unit(u.unit);
   };
   const any = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e);
   const looks = { num: (e) => {
@@ -1846,6 +1869,10 @@ function inputsOf(programs) {
       case "unitSame":
         unit(e.left);
         unit(e.right);
+        break;
+      case "unitDistance":
+        unit(e.from);
+        unit(e.to);
         break;
       case "unary":
       case "cast":
@@ -1943,6 +1970,7 @@ function inputsOf(programs) {
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        if (s.verb.do === "gather" || s.verb.do === "cast") unit(s.verb.target);
         break;
       case "select":
         s.units.forEach(unit);
@@ -2447,6 +2475,8 @@ var ProgramRun = class {
       }
       case "selected":
         return this.sim.selectedUnit(e.index);
+      case "unitOrderTarget":
+        return (yield* this.living(e.unit))?.orderTarget ?? null;
     }
   }
   /** The unit, when there is one and it is still on the map. */
@@ -2458,6 +2488,7 @@ var ProgramRun = class {
   *unitDo(e, verb, at) {
     const u = yield* this.living(e);
     const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
+    const target = verb.do === "gather" || verb.do === "cast" ? yield* this.living(verb.target) : null;
     if (!u) return;
     switch (verb.do) {
       case "kill":
@@ -2477,6 +2508,30 @@ var ProgramRun = class {
         break;
       case "locate":
         this.sim.centre(verb.location, u.x, u.y);
+        break;
+      // (The worker takes up the order and keeps it here: the simulator mines nothing.)
+      case "gather": {
+        if (!target || !GATHER_WORKERS.includes(u.type)) break;
+        const order = GATHER_ORDERS.find((g) => g.targets.includes(target.type))?.order;
+        if (order !== void 0) {
+          u.orderId = order;
+          u.orderTarget = target;
+        }
+        break;
+      }
+      // (The caster takes up the order and keeps it here: the simulator casts nothing.)
+      case "cast": {
+        const spell = CAST_ORDERS.find((c2) => c2.tech === verb.tech);
+        if (!target || !spell?.casters.includes(u.type)) break;
+        u.orderId = spell.order;
+        u.orderState = 0;
+        u.orderTarget = target;
+        break;
+      }
+      case "stop":
+        u.orderId = STOP_ORDER;
+        u.orderState = 0;
+        u.orderTarget = void 0;
         break;
       case "damage":
       case "heal": {
@@ -2553,6 +2608,20 @@ var ProgramRun = class {
       case "unitField": {
         const u = yield* this.living(e.unit);
         return u ? u[e.field] | 0 : 0;
+      }
+      case "unitDistance": {
+        const a2 = yield* this.living(e.from), b = yield* this.living(e.to);
+        if (!a2 || !b) return 0;
+        const box = (u) => {
+          const side = (key) => this.sim.tableRead({ name: "unit.dimensions", base: UNIT_DIMENSIONS, stride: 8, index: u.type, key, width: 2 });
+          return { left: u.x - side(0), top: u.y - side(2), right: u.x + side(4) + 1, bottom: u.y + side(6) + 1 };
+        };
+        const p = box(a2), q = box(b);
+        const gap = (from1, to1, from2, to2) => from1 > to2 ? from1 - to2 : from2 > to1 ? from2 - to1 : 0;
+        let x = gap(p.left, p.right, q.left, q.right), y = gap(p.top, p.bottom, q.top, q.bottom);
+        if (x < y) [x, y] = [y, x];
+        if (Math.floor(x / 4) < y) x = x - Math.floor(x / 16) + Math.floor(y * 3 / 8) - Math.floor(x / 64) + Math.floor(y * 3 / 256);
+        return x | 0;
       }
       case "unitPart": {
         const u = yield* this.unit(e.unit);
@@ -3696,6 +3765,16 @@ var ProgramSimulation = class {
         return mouse.x - camera.x;
       case "local.mouse.y":
         return mouse.y - camera.y;
+      // A click is a button down for the frame it arrives on.
+      case "local.mouse.buttons":
+        return (this.current.events.has(`click:${at}:left`) ? 2 : 0) + (this.current.events.has(`click:${at}:right`) ? 8 : 0);
+      case "local.card.buttonSet": {
+        const selected = (this.selections.get(at) ?? []).filter((u) => u.alive);
+        if (selected.length === 0) return 65535;
+        return selected.every((u) => u.type === selected[0].type) ? selected[0].type : 244;
+      }
+      case "local.screen.width":
+        return 640;
       default: {
         const slot = /^local\.selection\[(\d+)\]$/.exec(name);
         if (!slot) return void 0;
@@ -3775,7 +3854,7 @@ var ProgramSimulation = class {
     this.game.centre(location, x, y, size);
   }
   cellKey(c2) {
-    return `${c2.name}:${c2.player ? this.slotOf(c2.index) : c2.index}${c2.key !== void 0 ? `:${c2.key}` : ""}`;
+    return `${c2.name}:${c2.player ? this.slotOf(c2.index) : c2.index}${c2.key !== void 0 ? `:${c2.base.toString(16)}:${c2.key}` : ""}`;
   }
   /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
   tableRead(c2) {
@@ -3827,11 +3906,31 @@ var ProgramSimulation = class {
     for (const v of this.vision.values()) for (let i = 0; i < v.length; i++) if (v[i] === 2) v[i] = 1;
     for (const u of this.world.game.units) if (u.alive) this.reveal(u);
   }
+  /** The map's size in tiles: what `memory.map.width` and `memory.map.height` read, else 128 by 128. */
+  mapTiles() {
+    return {
+      width: this.tableOf?.({ name: "memory.map.width", base: 5763540, stride: 0, index: 0, width: 2 }) || 128,
+      height: this.tableOf?.({ name: "memory.map.height", base: 5763542, stride: 0, index: 0, width: 2 }) || 128
+    };
+  }
+  /**
+   * Center View: the player's 640 × 480 screen (Classic graphics) centered on the location, snapped down to 8 pixels and
+   * kept on the map. The mouse stays where it is on the screen.
+   */
+  centerCamera(player, location) {
+    const { x, y } = this.game.centreOf(location);
+    const map = this.mapTiles();
+    const kept2 = (value, most) => Math.max(0, Math.min(value, most)) & ~7;
+    const now = { x: kept2(x - 320, map.width * 32 - 648), y: kept2(y - 240, map.height * 32 - 488) };
+    const was = this.cameras.get(player) ?? { x: 0, y: 0 };
+    const mouse = this.mice.get(player);
+    if (mouse) this.mice.set(player, { x: mouse.x + now.x - was.x, y: mouse.y + now.y - was.y });
+    this.cameras.set(player, now);
+  }
   /** What a player sees of the fog, as GameSim.fog gives it from the game: "#" now, "+" before, "." never. */
   fog(player, area) {
-    const w = this.tableOf?.({ name: "memory.map.width", base: 5763540, stride: 0, index: 0, width: 2 }) || 128;
-    const h = this.tableOf?.({ name: "memory.map.height", base: 5763542, stride: 0, index: 0, width: 2 }) || 128;
-    const { x = 0, y = 0, width = w, height = h } = area ?? {};
+    const map = this.mapTiles();
+    const { x = 0, y = 0, width = map.width, height = map.height } = area ?? {};
     const v = this.visionOf(player), rows = [];
     for (let ty = y; ty < Math.min(y + height, FOG_SIZE); ty++) {
       let row = "";
@@ -3879,6 +3978,7 @@ var ProgramSimulation = class {
         if (a2.unitId === ResourceType.Gas || a2.unitId === ResourceType.OreAndGas) stock[1] = set(stock[1]);
       }
     }
+    if (a2.type === ActionType.CenterView) this.centerCamera(run.player, a2.location);
     switch (a2.type) {
       case ActionType.SetDeaths:
         this.world.changeDeath(a2.player, a2.unitId, a2.modifier, a2.target);
@@ -4244,7 +4344,16 @@ var TestSim = class {
       ...as !== void 0 ? { player: as } : options.players ? {} : { player: ir[0]?.owner !== void 0 && ir[0].owner < 12 ? ir[0].owner : void 0 }
     });
     const names = options.unitNames ?? {};
-    this.programs = new ProgramSimulation(ir, { world: this.world, strings, random, heapCells: options.heapCells, stackDepth: options.stackDepth, unitStats: (type) => stats[type], unitByName: (lower) => names[lower] });
+    this.programs = new ProgramSimulation(ir, {
+      world: this.world,
+      strings,
+      random,
+      heapCells: options.heapCells,
+      stackDepth: options.stackDepth,
+      unitStats: (type) => stats[type],
+      unitByName: (lower) => names[lower],
+      table: (cell) => cell.name === "memory.map.width" ? options.mapSize?.width : cell.name === "memory.map.height" ? options.mapSize?.height : void 0
+    });
   }
   /** How many frames have run: the game's frame number. */
   get frame() {
@@ -4747,6 +4856,30 @@ var LOCAL_FIELDS = [
     readonly: true,
     doc: "Where this computer's mouse is on the screen, from its top edge, in the game's pixels: 0 to 479.",
     remastered: "Remastered: its input record, read live. Played."
+  },
+  {
+    path: ["mouse", "buttons"],
+    base: 7134656,
+    width: 4,
+    readonly: true,
+    doc: `Which of this computer's mouse buttons are down now, as bits: 2 the left, 8 the right. clicked(p, "right") is the same press sent to every computer, frames later; this is where the mouse was when it went down.`,
+    remastered: "Remastered: its input record, read live (its own EUD emulator). Played."
+  },
+  {
+    path: ["card", "buttonSet"],
+    base: 6865228,
+    width: 2,
+    readonly: true,
+    doc: "Which buttons this computer's command card shows: the button set's number. One unit type, or several of one type, shows that type's own set (a Medic's is 34); units of several types show 244; 229 is the Cancel card a targeting cursor brings up.",
+    remastered: "Remastered: read allowed (its own EUD emulator), read live. Played: 34 for one Medic or several, 0 for a Marine, 244 for a Medic and a Marine, 229 while a targeting cursor is up."
+  },
+  {
+    path: ["screen", "width"],
+    base: 7139312,
+    width: 2,
+    readonly: true,
+    doc: "The width of this computer's game screen bitmap, in the game's pixels: in Remastered graphics, how wide the game is drawn, which follows the shape of the display (853 at 16:9, 640 at 4:3). Classic graphics always draws 640 wide and pillarboxes the rest, but this still reads the display's width, so it does not tell the two apart.",
+    remastered: "Remastered: read allowed (its own EUD emulator). Played: the same value in Classic and Remastered graphics on one display."
   }
 ];
 function localName(f) {
@@ -7389,13 +7522,15 @@ function createRuntime(names, collector, options = {}) {
     })));
   };
   const tableValue = (kind, field, index, ident, key) => {
+    const broodWar = field.keyed?.broodWar;
+    const row = broodWar && key !== void 0 && key >= broodWar.from ? { base: broodWar.base, stride: broodWar.stride, key: key - broodWar.from } : { base: field.base, stride: field.stride, key };
     const cell = {
       name: `${kind}.${field.name}`,
-      base: field.base,
-      stride: field.stride,
+      base: row.base,
+      stride: row.stride,
       index,
       width: field.width,
-      ...key !== void 0 ? { key } : {},
+      ...row.key !== void 0 ? { key: row.key } : {},
       ...field.bit !== void 0 ? { bit: field.bit } : {},
       ...field.scale ? { scale: field.scale } : {},
       ...kind === "player" ? { player: true } : {},
@@ -7818,6 +7953,7 @@ var MRGN2 = epd2(5823584);
 var MAX_HP = epd2(6693712);
 var MAX_SHIELDS = epd2(6688256);
 var GROUPS = epd2(6698912);
+var DIMENSIONS = epd2(UNIT_DIMENSIONS);
 var word = (byte, bytes2) => {
   const dword = byte >> 2, shift = 8 * (byte & 3);
   return { dword, mask: bytes2 === 4 ? 4294967295 : (2 ** (8 * bytes2) - 1) * 2 ** shift >>> 0, shift };
@@ -7828,6 +7964,7 @@ var UID = word(165, 1);
 var OWNER = word(76, 1);
 var ORDER = word(77, 1);
 var TYPE = word(100, 2);
+var ORDER_STATE = word(78, 1);
 var X = word(40, 2);
 var Y = word(42, 2);
 var FIELDS = {
@@ -7849,7 +7986,12 @@ var FIELDS = {
   buildTime: word(172, 2),
   rank: word(142, 1),
   matrix: word(276, 1),
-  speed: word(56, 4)
+  speed: word(56, 4),
+  orderTargetX: word(88, 2),
+  orderTargetY: word(90, 2),
+  acidSpores: word(294, 1),
+  orderState: ORDER_STATE,
+  queuedOrders: word(132, 1)
 };
 var HP = 8 >> 2;
 var SHIELDS = 96 >> 2;
@@ -7857,6 +7999,7 @@ var ENERGY = word(162, 2);
 var STATUS2 = 220 >> 2;
 var USER_ACTION = word(147, 1);
 var ATTACKED = word(135, 1);
+var FLARED = word(291, 1);
 var ORDER_TARGET2 = 92 >> 2;
 var MATRIX_HP = word(274, 2);
 var MATRIX_POINTS = 250 * 256;
@@ -8193,6 +8336,24 @@ var GameUnit = class {
   }
   get inTransport() {
     return this.read("inTransport", () => this.flag(64));
+  }
+  get orderTargetX() {
+    return this.read("orderTargetX", () => this.m.getUint16(this.at + 88, true));
+  }
+  get orderTargetY() {
+    return this.read("orderTargetY", () => this.m.getUint16(this.at + 90, true));
+  }
+  get orderState() {
+    return this.read("orderState", () => this.game.u8[this.at + 78]);
+  }
+  get queuedOrders() {
+    return this.read("queuedOrders", () => this.game.u8[this.at + 132]);
+  }
+  get opticalFlare() {
+    return this.read("opticalFlare", () => this.game.u8[this.at + 291] !== 0);
+  }
+  get acidSpores() {
+    return this.read("acidSpores", () => this.game.u8[this.at + 294]);
   }
   // Not read from the game yet: the spell timers and whether the unit is under attack.
   stim = 0;
