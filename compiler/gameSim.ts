@@ -164,8 +164,10 @@ class GameUnit implements SimUnit {
   private readonly at: number;
   private last: Partial<SimUnit> = {};
   private readonly game: GameHandle;
-  constructor(game: GameHandle, slot: number) {
+  private readonly unitOf: (slot: number) => SimUnit;
+  constructor(game: GameHandle, slot: number, unitOf: (slot: number) => SimUnit) {
     this.game = game;
+    this.unitOf = unitOf;
     this.slot = slot;
     this.at = UNITS + UNIT_BYTES * slot;
     this.uid = game.u8[this.at + 0xa5];
@@ -205,6 +207,14 @@ class GameUnit implements SimUnit {
   get speedUpgrade() { return this.read("speedUpgrade", () => this.flag(0x10000000)); }
   get hasTarget() { return this.read("hasTarget", () => this.m.getUint32(this.at + 0x5c, true) !== 0); }
   get inTransport() { return this.read("inTransport", () => this.flag(0x00000040)); }
+  /** The unit the order is aimed at: the pointer `hasTarget` reads, to a slot of the unit table. None once this unit is gone. */
+  get orderTarget(): SimUnit | undefined {
+    if (!this.alive) return undefined;
+    const slot = (this.m.getUint32(this.at + 0x5c, true) - UNITS) / UNIT_BYTES;
+    if (!Number.isInteger(slot) || slot < 0 || slot >= UNIT_COUNT) return undefined;
+    const target = this.unitOf(slot);
+    return target.alive ? target : undefined;
+  }
   get orderTargetX() { return this.read("orderTargetX", () => this.m.getUint16(this.at + 0x58, true)); }
   get orderTargetY() { return this.read("orderTargetY", () => this.m.getUint16(this.at + 0x5a, true)); }
   get orderState() { return this.read("orderState", () => this.game.u8[this.at + 0x4e]); }
@@ -302,7 +312,7 @@ export class GameSim implements TestWorldLike {
     const u8 = this.game.u8, uid = u8[UNITS + UNIT_BYTES * slot + 0xa5];
     const was = this.units_.get(slot);
     if (was && was.uid === uid) return was;
-    const u = new GameUnit(this.game, slot);
+    const u = new GameUnit(this.game, slot, (other) => this.unit(other));
     this.units_.set(slot, u);
     return u;
   }

@@ -108,3 +108,30 @@ describe("the build's map of triggers", () => {
     expect(readTriggerMap(["hello"])).toBeNull();
   });
 });
+
+describe("a unit's order target, read from the game", () => {
+  it("is the unit the order's pointer names, and none when the order is aimed at nothing or the unit is gone", () => {
+    const c = copyOf([0, 1], 0), { m, u8 } = c.game;
+    const UNITS = 0x59cca8, UNIT_BYTES = 336, FIRST_UNIT = 0x628430;
+    /** A unit in a slot of the game's table, as the test world takes one to be alive: a sprite, an order, its uniqueness byte. */
+    const put = (slot: number, type: number, order: number) => {
+      const at = UNITS + UNIT_BYTES * slot;
+      m.setUint32(at + 0x0c, 1, true);
+      u8[at + 0x4d] = order;
+      m.setUint16(at + 0x64, type, true);
+      u8[at + 0xa5] = 1;
+      return at;
+    };
+    // A mineral field, and an SCV on its way to mine it (MoveToMinerals).
+    const field = put(0, 176, 3), scv = put(1, 7, 85);
+    m.setUint32(FIRST_UNIT, scv, true);
+    m.setUint32(scv + 0x04, field, true);
+    m.setUint32(scv + 0x5c, field, true);
+    const [theField, theScv] = new GameSim(c.game).units();
+    expect([theField.type, theScv.type]).toEqual([176, 7]);
+    expect(theScv.orderTarget).toBe(theField);
+    expect(theField.orderTarget).toBeUndefined();
+    u8[field + 0x4d] = 0;
+    expect(theScv.orderTarget).toBeUndefined();
+  });
+});
