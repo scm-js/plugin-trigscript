@@ -2511,7 +2511,7 @@ var ProgramRun = class {
         break;
       // (The worker takes up the order and keeps it here: the simulator mines nothing.)
       case "gather": {
-        if (!target || !GATHER_WORKERS.includes(u.type)) break;
+        if (!target || !GATHER_WORKERS.includes(u.type) || u.burrowed || u.inTransport) break;
         const order = GATHER_ORDERS.find((g) => g.targets.includes(target.type))?.order;
         if (order !== void 0) {
           u.orderId = order;
@@ -2522,13 +2522,14 @@ var ProgramRun = class {
       // (The caster takes up the order and keeps it here: the simulator casts nothing.)
       case "cast": {
         const spell = CAST_ORDERS.find((c2) => c2.tech === verb.tech);
-        if (!target || !spell?.casters.includes(u.type)) break;
+        if (!target || !spell?.casters.includes(u.type) || u.burrowed || u.inTransport) break;
         u.orderId = spell.order;
         u.orderState = 0;
         u.orderTarget = target;
         break;
       }
       case "stop":
+        if (u.burrowed || u.inTransport) break;
         u.orderId = STOP_ORDER;
         u.orderState = 0;
         u.orderTarget = void 0;
@@ -8000,6 +8001,7 @@ var STATUS2 = 220 >> 2;
 var USER_ACTION = word(147, 1);
 var ATTACKED = word(135, 1);
 var FLARED = word(291, 1);
+var TAKES_NO_ORDER = 16 | 64;
 var ORDER_TARGET2 = 92 >> 2;
 var MATRIX_HP = word(274, 2);
 var MATRIX_POINTS = 250 * 256;
@@ -8239,8 +8241,10 @@ var GameUnit = class {
   at;
   last = {};
   game;
-  constructor(game, slot) {
+  unitOf;
+  constructor(game, slot, unitOf) {
     this.game = game;
+    this.unitOf = unitOf;
     this.slot = slot;
     this.at = UNITS + UNIT_BYTES * slot;
     this.uid = game.u8[this.at + 165];
@@ -8336,6 +8340,14 @@ var GameUnit = class {
   }
   get inTransport() {
     return this.read("inTransport", () => this.flag(64));
+  }
+  /** The unit the order is aimed at: the pointer `hasTarget` reads, to a slot of the unit table. None once this unit is gone. */
+  get orderTarget() {
+    if (!this.alive) return void 0;
+    const slot = (this.m.getUint32(this.at + 92, true) - UNITS) / UNIT_BYTES;
+    if (!Number.isInteger(slot) || slot < 0 || slot >= UNIT_COUNT) return void 0;
+    const target = this.unitOf(slot);
+    return target.alive ? target : void 0;
   }
   get orderTargetX() {
     return this.read("orderTargetX", () => this.m.getUint16(this.at + 88, true));
@@ -8462,7 +8474,7 @@ var GameSim = class {
     const u8 = this.game.u8, uid = u8[UNITS + UNIT_BYTES * slot + 165];
     const was = this.units_.get(slot);
     if (was && was.uid === uid) return was;
-    const u = new GameUnit(this.game, slot);
+    const u = new GameUnit(this.game, slot, (other) => this.unit(other));
     this.units_.set(slot, u);
     return u;
   }
