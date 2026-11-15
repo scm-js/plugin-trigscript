@@ -11,7 +11,8 @@
  * Irradiate, Plague, Ensnare, Maelstrom, Acid Spores or Optical Flare. It is a real cast: the owner must have researched
  * Restoration, the Medic must have its energy (and `keepEnergy` more), and the cast shows and costs as a player's
  * does. The nearest Medic goes to the nearest afflicted unit, one Medic to a unit; one that is moving, attack-moving,
- * holding, patrolling or casting for the player is never used, and a Medic never walks to reach a unit. Parasite
+ * holding, patrolling or casting for the player is never used, nor one that could not cast for the player: in stasis,
+ * under Maelstrom, or loaded in a transport or a Bunker. A Medic never walks to reach a unit. Parasite
  * alone, a unit in stasis or invincible, a hallucination (Restoration kills it) and the Medic itself are left alone.
  * Computer players' Medics are left to the computer, which casts Restoration itself.
  *
@@ -81,6 +82,11 @@ function isIdleOrHealingFromIdle(medic: Unit): boolean {
   return (order == orders.MedicHeal || order == orders.MedicHealToIdle) && medic.queuedOrders == 0;
 }
 
+/** Whether the Medic could cast for its player now: not in stasis or under Maelstrom, and not loaded in a transport or a Bunker. */
+function canCast(medic: Unit): boolean {
+  return medic.stasis == 0 && medic.maelstrom == 0 && !medic.inTransport;
+}
+
 function hasRestorableEffect(target: Unit): boolean {
   return target.lockdown > 0 || target.irradiate > 0 || target.plague > 0 || target.ensnare > 0 || target.maelstrom > 0 || target.acidSpores > 0 || target.opticalFlare;
 }
@@ -129,7 +135,7 @@ export function autoRestore(options: { switch?: keyof typeof switches; keepEnerg
         if (medic.orderId == orders.CastRestoration) {
           const target = medic.orderTarget;
           if (target) castAt.push(target);
-        } else if (isIdleOrHealingFromIdle(medic) && medic.energy >= energy && ownerIsHuman(medic) && ownerHasRestoration(medic)) {
+        } else if (isIdleOrHealingFromIdle(medic) && canCast(medic) && medic.energy >= energy && ownerIsHuman(medic) && ownerHasRestoration(medic)) {
           medics.push(medic);
         }
       }

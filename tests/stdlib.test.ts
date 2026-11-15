@@ -337,6 +337,23 @@ describe("trigscript/spells", () => {
     expect(statements.some((s) => s.kind === "unitDo" && s.verb.do === "stop")).toBe(true);
   });
 
+  it("a Medic in stasis, under Maelstrom or loaded is passed over: the next nearest that can cast goes", () => {
+    const r = ok(`${IMPORTED}autoRestore();`);
+    const table = (c: { name: string }) => (c.name === "player.researched" ? 1 : c.name === "weapon.range" ? 400 : undefined);
+    // An ensnared Marine; three Medics that cannot cast, the first of them the nearest to it; and a fourth that can.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, players: [0], table, units: [
+      { type: 0, owner: 0, x: 100, y: 100, hp: 40, ensnare: 50 },
+      { type: 34, owner: 0, x: 110, y: 100, hp: 60, energy: 200, orderId: 176, stasis: 50 },
+      { type: 34, owner: 0, x: 160, y: 100, hp: 60, energy: 200, orderId: 176, maelstrom: 50 },
+      { type: 34, owner: 0, x: 120, y: 100, hp: 60, energy: 200, orderId: 176, inTransport: true },
+      { type: 34, owner: 0, x: 60, y: 100, hp: 60, energy: 200, orderId: 176 },
+    ] });
+    sim.run(4);
+    const [marine, ...medics] = sim.game.listed(undefined);
+    expect(medics.map((m) => m.orderId)).toEqual([176, 176, 176, 180]);
+    expect(medics[3].orderTarget).toBe(marine);
+  });
+
   it("takes a switch of the map by its name, and the energy to keep", () => {
     const r = ok(`${IMPORTED}autoRestore({ switch: "Switch3", keepEnergy: 25 });`);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
