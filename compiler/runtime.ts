@@ -665,9 +665,11 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
 
   /* ── The game's tables ── */
   const tableValue = (kind: TableKind, field: TableField, index: number, ident: string, key?: number): TableValue => {
+    const broodWar = field.keyed?.broodWar;
+    const row = broodWar && key !== undefined && key >= broodWar.from ? { base: broodWar.base, stride: broodWar.stride, key: key - broodWar.from } : { base: field.base, stride: field.stride, key };
     const cell: TableCell = {
-      name: `${kind}.${field.name}`, base: field.base, stride: field.stride, index, width: field.width,
-      ...(key !== undefined ? { key } : {}), ...(field.bit !== undefined ? { bit: field.bit } : {}), ...(field.scale ? { scale: field.scale } : {}),
+      name: `${kind}.${field.name}`, base: row.base, stride: row.stride, index, width: field.width,
+      ...(row.key !== undefined ? { key: row.key } : {}), ...(field.bit !== undefined ? { bit: field.bit } : {}), ...(field.scale ? { scale: field.scale } : {}),
       ...(kind === "player" ? { player: true } : {}), ...(field.special ? { special: field.special } : {}),
     };
     const fail = (): never => { throw new ScriptError(`${ident} is a value the game holds: it has no value when the script is built. Inside program(), assign to it, assign it to a let, or use it in the program's own arithmetic and comparisons.`); };

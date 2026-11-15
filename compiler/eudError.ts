@@ -108,6 +108,10 @@ export function placeOfAddress(address: number, list?: Allowlist): string {
       const i = Math.floor(off / f.stride);
       if (i < (f.keyed ? 12 : TABLE_SIZE_OF[kind])) return `stats(): the ${kind} table's ${f.name}, entry ${i}`;
     }
+    for (const f of fields) {
+      const rows = f.keyed?.broodWar, off = rows ? address - rows.base : -1;
+      if (rows && off >= 0 && off < 12 * rows.stride) return `stats(): the ${kind} table's ${f.name}, entry ${Math.floor(off / rows.stride)}`;
+    }
   }
   const named = list?.entries.find((e) => !/^0x[0-9a-f]+$/i.test(e.name) && covers(e, address));
   return named ? named.name : "no table TrigScript knows";

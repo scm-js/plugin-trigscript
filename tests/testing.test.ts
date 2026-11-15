@@ -242,3 +242,28 @@ test("rolls", (sim) => { ${seed} sim.frames(5); expect(sim.program("dice").sum).
     expect(got(run(script("sim.seed(9);")))).not.toBe(got(run(script(""))));
   });
 });
+
+describe("the camera", () => {
+  it("moves on Center View, centered on the location and kept on the map, the mouse staying on the screen", () => {
+    const r = run(`import { test, expect, program, centerLocation, centerView, print, local, type Location } from "trigscript";
+const VIEW = 1 as Location;
+program(() => {
+  centerLocation(VIEW, 1024, 1024);
+  centerView(VIEW);
+  print(\`middle \${local.camera.x}, \${local.camera.y}; mouse \${local.mouse.x}, \${local.mouse.y}\`);
+  centerLocation(VIEW, 2048, 2048);
+  centerView(VIEW);
+  print(\`corner \${local.camera.x}, \${local.camera.y}\`);
+  centerLocation(VIEW, 0, 0);
+  centerView(VIEW);
+  print(\`origin \${local.camera.x}, \${local.camera.y}\`);
+});
+test("Center View", (sim) => {
+  sim.moveMouse(100, 50);
+  sim.frames(2);
+});`, { world: { ...WORLD, mapSize: { width: 64, height: 64 } } });
+    expect(r.diagnostics.map((d) => d.message)).toEqual([]);
+    // Played on a 64 × 64 map in Classic graphics.
+    expect(r.tests!.results[0].printed).toEqual(["middle 704, 784; mouse 100, 50", "corner 1400, 1560", "origin 0, 0"]);
+  });
+});

@@ -30,8 +30,12 @@ export interface SimUnit {
   hp: number; maxHp: number; shields: number; maxShields: number; energy: number;
   kills: number; orderId: number; cooldown: number; resources: number;
   stim: number; ensnare: number; plague: number; lockdown: number; maelstrom: number; irradiate: number; stasis: number;
-  buildTime: number; rank: number; matrix: number; speed: number;
+  buildTime: number; rank: number; matrix: number; speed: number; orderTargetX: number; orderTargetY: number;
+  acidSpores: number; orderState: number; queuedOrders: number;
+  /** The unit its order is aimed at, if any. */
+  orderTarget?: SimUnit;
   hallucinated: boolean; cloaked: boolean; burrowed: boolean; invincible: boolean; underAttack: boolean; speedUpgrade: boolean; hasTarget: boolean; inTransport: boolean;
+  opticalFlare: boolean;
   /** Still on the map. */
   alive: boolean;
   /** Its place in the unit table, from 0; another unit's once this one is gone. */
@@ -162,8 +166,9 @@ export class World {
     const shields = init.shields ?? init.maxShields ?? 0;
     const unit: SimUnit = {
       x: 0, y: 0, energy: 0, kills: 0, orderId: 3, cooldown: 0, resources: 0,
-      stim: 0, ensnare: 0, plague: 0, lockdown: 0, maelstrom: 0, irradiate: 0, stasis: 0, buildTime: 0, rank: 0, matrix: 0, speed: 0,
-      hallucinated: false, cloaked: false, burrowed: false, invincible: false, underAttack: false, speedUpgrade: false, hasTarget: false, inTransport: false,
+      stim: 0, ensnare: 0, plague: 0, lockdown: 0, maelstrom: 0, irradiate: 0, stasis: 0, buildTime: 0, rank: 0, matrix: 0, speed: 0, orderTargetX: 0, orderTargetY: 0,
+      acidSpores: 0, orderState: 0, queuedOrders: 0,
+      hallucinated: false, cloaked: false, burrowed: false, invincible: false, underAttack: false, speedUpgrade: false, hasTarget: false, inTransport: false, opticalFlare: false,
       ...init, hp, maxHp: init.maxHp ?? hp, shields, maxShields: init.maxShields ?? shields, alive: true, slot, uid,
     };
     this.table[slot] = unit;

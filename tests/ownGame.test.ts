@@ -167,6 +167,18 @@ describe("a map of our own, the game's tables", () => {
     expect(w.target).toBe(3 * (w.location / 0xff));
   });
 
+  it("writes Brood War's techs and upgrades into Brood War's own rows", () => {
+    const address = (statement: string) => {
+      const [w] = actions(own(statement).graph);
+      return (0x58a364 + 4 * w.player + [0xff, 0xff00, 0xff0000, 0xff000000].indexOf(w.location)) >>> 0;
+    };
+    expect(address(`stats(P2).researched[techs.StimPacks] = true;`)).toBe(0x58cf44 + 24);
+    expect(address(`stats(P1).researched[techs.Restoration] = true;`)).toBe(0x58f140);
+    expect(address(`stats(P12).researched[techs.Restoration] = true;`)).toBe(0x58f140 + 20 * 11);
+    expect(address(`stats(P1).upgrades[upgrades.ProtossGroundArmor] = 1;`)).toBe(0x58d2b0 + 5);
+    expect(address(`stats(P3).upgrades[upgrades.CaduceusReactor] = 1;`)).toBe(0x58f32c + 15 * 2 + 5);
+  });
+
   it("writes a flag as its bit, and reads a scaled field divided by its scale", () => {
     const [w] = actions(own(`stats(units.TerranMarine).detector = true;`).graph);
     expect(w.location.toString(2).replace(/0/g, "")).toBe("1");

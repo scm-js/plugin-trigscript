@@ -38,9 +38,12 @@ export interface TableField {
   special?: "speed" | "color" | "name";
   /** The TypeScript type of the property, when it is not `number` / `boolean`. */
   type?: string;
-  /** A second index: `stats(P1).upgrades[upgrades.U238Shells]`. The cell is `base + index × stride + key`. */
-  keyed?: { kind: TableKind; type: string };
+  /** A second index: `stats(P1).upgrades[upgrades.U238Shells]`. The cell is `base + index × stride + key`, from `broodWar`'s base and stride for its keys. */
+  keyed?: { kind: TableKind; type: string; broodWar?: BroodWarRows };
 }
+
+/** Brood War's techs and upgrades are rows of their own table: a key from `from` up is `key - from` in it. */
+interface BroodWarRows { from: number; base: number; stride: number }
 
 const UNIT_FLAGS = 0x664080;
 const flag = (name: string, bit: number, doc: string): TableField => ({ name, doc, base: UNIT_FLAGS, stride: 4, width: "bit", bit, boolean: true });
@@ -94,10 +97,14 @@ export const TABLE_FIELDS: Record<TableKind, TableField[]> = {
   ],
   player: [
     { name: "color", doc: "The colour the player's units and minimap dots are drawn in: one of colors.*, or \"teal\". Takes effect at once.", base: 0x581d76, stride: 1, width: 1, writeOnly: true, special: "color", type: "PlayerColor | ColorName" },
-    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 0x58d2b0, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade" } },
-    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 0x58cf44, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech" } },
+    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 0x58d2b0, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade", broodWar: { from: 46, base: 0x58f32c, stride: 15 } } },
+    { name: "allied", doc: "Whether the player has set another player as an ally, as Set Alliance Status does: stats(P1).allied[P2]. It goes one way: P2 may not have P1. Read only.", base: 0x58d634, stride: 12, width: 1, boolean: true, readonly: true, keyed: { kind: "player", type: "Player" } },
+    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 0x58cf44, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech", broodWar: { from: 24, base: 0x58f140, stride: 20 } } },
   ],
 };
+
+/** units.dat's dimensions: four words a type, how far its box reaches left, up, right and down of its centre. What the game measures a range between. */
+export const UNIT_DIMENSIONS = 0x6617c8;
 
 /** The palette entries the game's player colours are, by the word a script may write. */
 export const PLAYER_COLORS: Record<string, number> = { red: 111, blue: 165, teal: 159, purple: 164, orange: 179, brown: 19, white: 255, yellow: 135, green: 117 };

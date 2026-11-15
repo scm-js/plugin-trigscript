@@ -145,6 +145,19 @@ ${kw}interface Unit {
   kills: number;
   /** What the unit is doing: \`if (u.orderId == orders.Move)\`. orders.PlayerGuard is standing guard, orders.AttackUnit attacking. */
   readonly orderId: Order;
+  /** The unit the order is aimed at (the one followed, attacked, mined …), or null when it is aimed at a place or at nothing. */
+  readonly orderTarget: Unit | null;
+  /** Where the order is aimed, in pixels: where a Move goes, or the target unit's centre. */
+  readonly orderTargetX: number;
+  readonly orderTargetY: number;
+  /** How far the unit has got with its order, 0 … 255: 0 as an order starts. What each number means is the order's own. */
+  readonly orderState: number;
+  /**
+   * How many orders wait behind the one it is doing: what a shift-click adds, and what the game queues for itself (an
+   * attack-moving or patrolling Medic that stops to heal has its attack-move or patrol waiting). Orders the game shows no
+   * button for are not counted.
+   */
+  readonly queuedOrders: number;
   /** Frames until the unit can attack or cast again, 0 … 255; writing it holds the unit's fire that long (the ground weapon's, the air weapon's and the spells' alike). */
   cooldown: number;
   /**
@@ -169,6 +182,10 @@ ${kw}interface Unit {
   maelstrom: number;
   irradiate: number;
   stasis: number;
+  /** Acid spores on the unit, 0 … 9: each Devourer hit adds one, and they wear off one by one. Read only. */
+  readonly acidSpores: number;
+  /** Whether the unit is blinded by Optical Flare, which only a Medic's Restoration cures. Read only. */
+  readonly opticalFlare: boolean;
   /** Whether the unit cannot be hurt. */
   invincible: boolean;
   /** Whether the unit is a hallucination: made so, it takes double damage and dies after a while, as a Templar's do. */
@@ -199,6 +216,24 @@ ${kw}interface Unit {
   heal(amount: number | { percent: number }): void;
   /** Centre a location on the unit, its size kept: then createUnit(), moveUnit() and the rest can happen where the unit is. */
   locate(location: Location): void;
+  /**
+   * Send an SCV, Probe or Drone to mine a mineral field or harvest a Refinery, Extractor or Assimilator, as a right-click
+   * on it does. Anything else, either way round, is left as it is.
+   */
+  gather(target: Unit): void;
+  /**
+   * Cast a spell at a unit, as a player's command does: \`medic.cast(techs.Restoration, marine)\`. Restoration is the one
+   * spell so far, cast by a Medic; any other technology is an error when the script is built. Nothing checks the
+   * research or the energy: the game drops a cast it has no energy for, and walks the caster into range.
+   */
+  cast(tech: Tech, target: Unit): void;
+  /** Stop, as the Stop button does: the unit gives up its order where it stands and takes up the next one it has queued, or stands idle. */
+  stop(): void;
+  /**
+   * How far apart two units are, in pixels, as the game measures a weapon's or a spell's range: from the edge of one's
+   * box to the edge of the other's (0 when they touch). 0 when either is gone.
+   */
+  distanceTo(other: Unit): number;
 }
 /** Which units a loop or a pick looks at; a part left out matches all. units.Men, units.Buildings and units.Factories work as a type. */
 ${kw}interface UnitFilter {
@@ -1182,7 +1217,7 @@ export interface Sim {
   /** A line of chat, for the next frame: what chatted() finds. */
   type(line: string, player?: Player): this;
   moveMouse(x: number, y: number, player?: Player): this;
-  /** The player's screen to a place on the map, its top left corner in pixels: what local.camera reads. The mouse stays where it is on the map. */
+  /** The player's screen to a place on the map, its top left corner in pixels: what local.camera reads. The mouse stays where it is on the map. centerView() moves it too. */
   moveCamera(x: number, y: number, player?: Player): this;
   /** The player selects these units (up to twelve), as a drag would at their computer: what local.selected reads. */
   selectUnits(units: readonly SimUnit[], player?: Player): this;

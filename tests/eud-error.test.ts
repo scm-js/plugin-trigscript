@@ -47,6 +47,7 @@ describe("where an address lies", () => {
     expect(placeOfAddress(0x640b60 + 218 * 2 + 5)).toBe("text lines, line 3 (+5)");
     expect(placeOfAddress(0x6509b0)).toBe("current player");
     expect(placeOfAddress(0x663888 + 2 * 5)).toBe("stats(): the unit table's minerals, entry 5");
+    expect(placeOfAddress(0x58f140 + 20 * 2 + 3)).toBe("stats(): the player table's researched, entry 2");
     const list: Allowlist = { version: 1, entries: [
       { name: "0x700000", base: 0x700000, width: 16, read: "allowed", write: "allowed", evidence: [], from: "dump" },
       { name: "the game's clock", base: 0x700000, width: 4, read: "allowed", write: "ends", evidence: ["probe 9"] },

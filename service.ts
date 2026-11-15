@@ -619,7 +619,7 @@ export class ScriptService {
     });
     const computers = scn.playerTypes.slice(0, 8).flatMap((type, slot) => (type === OWNER_COMPUTER ? [slot] : []));
     const settings = this.settings();
-    return { units, locations, ...(players.length ? { players, forces, computers } : {}), unitStats, properties, heapCells: settings.heapCells, stackDepth: settings.stackDepth };
+    return { units, locations, ...(players.length ? { players, forces, computers } : {}), unitStats, properties, heapCells: settings.heapCells, stackDepth: settings.stackDepth, mapSize: { width: scn.width, height: scn.height } };
   }
 
   /** With the map's setting on, a failing test refuses the build: said as the first of them, and how many. */

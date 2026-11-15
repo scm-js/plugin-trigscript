@@ -29,3 +29,18 @@ export const ORDER_NAMES: readonly string[] = [
 
 /** The orders a unit is given by `u.order(…)` and the Order action: move, patrol, attack (an attack-move). */
 export const ORDER_OF_VERB: Readonly<Record<"move" | "patrol" | "attack", number>> = { move: 6, patrol: 152, attack: 14 };
+
+/** The workers `u.gather(…)` sends: SCV, Drone, Probe. */
+export const GATHER_WORKERS: readonly number[] = [7, 41, 64];
+/** What `u.gather(…)` makes a worker's order, by its target's type, as a right-click on it does: MoveToMinerals for a mineral field, MoveToGas for a gas building. */
+export const GATHER_ORDERS: readonly { order: number; targets: readonly number[] }[] = [
+  { order: 85, targets: [176, 177, 178] },
+  { order: 81, targets: [110, 149, 157] },
+];
+
+/** The spells `u.cast(tech, target)` gives, by technology: the units that cast it and the order a cast at a unit is. Restoration: a Medic's CastRestoration. */
+export const CAST_ORDERS: readonly { tech: number; casters: readonly number[]; order: number }[] = [
+  { tech: 24, casters: [34], order: 180 },
+];
+/** The order `u.stop()` gives, as the Stop button does. */
+export const STOP_ORDER = 1;

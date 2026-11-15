@@ -61,7 +61,8 @@ import { ActionFlag, ActionType, ConditionFlag, PlayerGroup } from "../vendor/tr
 import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
 import { clockCall, declarationOf, isOnCall, isScriptClass, isScriptFunction, keepsState, libraryCallName, ON_EVENTS, scriptArrow } from "./hoist";
-import { ORDER_NAMES } from "./orders";
+import { CAST_ORDERS, ORDER_NAMES } from "./orders";
+import { TECH_NAMES } from "../vendor/gameNames";
 import { DEAF_KEYS, KEY_NAMES, keyName, parseChatPattern, type ChatPattern, type InputSource } from "./input";
 import { scriptParams } from "./api";
 import { brandOfType, wholeArithmetic, wholeQuotient } from "./hoist";
@@ -11129,6 +11130,13 @@ export class Structured {
       this.task(e, { decl: v, kind: "number" });
       return varRef(v);
     }
+    // `a.distanceTo(b)`: how far apart two units are, as the game measures a range.
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "distanceTo" && this.isUnitTyped(e.expression.expression)) {
+      const other = e.arguments[0];
+      if (!other || e.arguments.length > 1 || !this.isUnitTyped(other)) { this.c.error(e, "distanceTo() takes the other unit: a.distanceTo(b)."); return null; }
+      const from = this.unitExpr(e.expression.expression), to = this.unitExpr(other);
+      return from && to ? this.mark<NumExpr>({ kind: "unitDistance", from, to, at: this.at(e), label: this.label(e) }, e) : null;
+    }
     const h = this.evaluate(expr);
     // No function: `let f: (() => void) | undefined = undefined`; no instance (B9): `let next: Node | null = null`.
     if (h && (h.value === undefined || h.value === null) && this.noFunction(expr)) return num(0);
@@ -11643,6 +11651,10 @@ export class Structured {
       if (got && got.result?.kind !== "unit") { this.c.error(e, `${got.name ?? "This"} does not give a unit.`); return null; }
       return got ? this.mark<UnitExpr>({ kind: "call", call: got }, e) : null;
     }
+    if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name) && e.name.text === "orderTarget" && this.isUnitTyped(e.expression)) {
+      const of = this.unitExpr(e.expression);
+      return of ? this.mark<UnitExpr>({ kind: "unitOrderTarget", unit: of, at: this.at(e) }, e) : null;
+    }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const kept = this.bindingOf(e);
       if (kept?.kind === "unitAt") return this.unitAtPlaces(kept, e);
@@ -11772,6 +11784,31 @@ export class Structured {
         emit({ do: "locate", location: at });
         return;
       }
+      case "gather": {
+        const a = e.arguments[0];
+        if (!a || e.arguments.length > 1 || !this.isUnitTyped(a)) { this.c.error(e, "gather() takes the mineral field or gas building to gather from."); return; }
+        const target = this.unitExpr(a);
+        if (target) emit({ do: "gather", target });
+        return;
+      }
+      case "cast": {
+        const tech = known(0, "the technology to cast and the unit to cast it at: medic.cast(techs.Restoration, marine)");
+        if (tech === undefined) return;
+        if (!CAST_ORDERS.some((c) => c.tech === tech)) {
+          const name = typeof tech === "number" ? TECH_NAMES[tech] ?? `technology ${tech}` : describe(tech);
+          this.c.error(e.arguments[0], `cast() casts techs.Restoration only: ${name} has no cast yet.`);
+          return;
+        }
+        const a = e.arguments[1];
+        if (!a || e.arguments.length > 2 || !this.isUnitTyped(a)) { this.c.error(e, "cast() takes the technology and the unit to cast it at: medic.cast(techs.Restoration, marine)."); return; }
+        const target = this.unitExpr(a);
+        if (target) emit({ do: "cast", tech: tech as number, target });
+        return;
+      }
+      case "stop":
+        if (e.arguments.length) { this.c.error(e, "stop() takes no arguments."); return; }
+        emit({ do: "stop" });
+        return;
       case "damage": case "heal": {
         const a = e.arguments[0];
         if (!a || e.arguments.length > 1) { this.c.error(e, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`); return; }
