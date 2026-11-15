@@ -50,7 +50,7 @@ Manage Plugins…** and press **Add**:
 https://github.com/scm-js/plugin-trigscript
 ```
 
-To pin a version, add a tag: `github:scm-js/plugin-trigscript@v4.4.0`.
+To pin a version, add a tag: `github:scm-js/plugin-trigscript@v4.5.0`.
 
 The first time the TrigScript window opens, it downloads the code editor (Monaco),
 TypeScript and the standard library's declarations from jsDelivr. So it needs an internet
@@ -367,7 +367,7 @@ Some notes for working on it:
   TrigScript compiled into the editor loads `dist/compiler.js` for its compile worker.
 - `dist/testing.js` is for other repositories' tests. It parses and runs trigger text, and
   compiles a script. Add a devDependency on a tag's tarball
-  (`https://github.com/scm-js/plugin-trigscript/archive/refs/tags/v4.4.0.tar.gz`), then
+  (`https://github.com/scm-js/plugin-trigscript/archive/refs/tags/v4.5.0.tar.gz`), then
   `import { parseTriggers, Simulation } from "scmjs-plugin-trigscript/testing"`.
 - Copies of Blizzard's maps in `fixtures/maps/` (gitignored) let the tests check that every
   trigger turns into script and back into the same record.
