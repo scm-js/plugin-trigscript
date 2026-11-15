@@ -9041,7 +9041,7 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark, onBre
 }
 
 // version.ts
-var VERSION5 = "4.4.0";
+var VERSION5 = "4.5.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
