@@ -7049,6 +7049,44 @@ case, never `trigscript`). A script imports `"<id>/<module>"`, or `"<id>"` for `
 - *Libraries without a plugin* (a GitHub folder of `.ts` files read the same way as the map's copy): not started.
 - *scm-js*: the guide's TrigScript page and `docs/plugins.md` say nothing of libraries until a release pins this.
 
+## Workers, spells and a unit's orders (built 2026-11-11 to 14)
+
+A contributor's work (mstephenhunt, PR #96, with issues #91 and #94), merged as it was and then changed in a
+follow-up on `library-names-and-guards`.
+
+- *Language:* `u.orderTarget` (a unit or null), `u.orderTargetX` / `orderTargetY`, `u.orderState`, `u.queuedOrders`,
+  `u.acidSpores`, `u.opticalFlare`, `a.distanceTo(b)` (the game's `units_distance`: the gap between the two boxes,
+  made one length by `xy_length`), `stats(P).allied[Q]`; the verbs `u.gather(target)` (MoveToMinerals / MoveToGas),
+  `u.cast(techs.Restoration, target)` and `u.stop()`. The three verbs write the order, its state and its target into
+  the unit; no command is sent. They leave a burrowed or loaded unit as it is (status bits 0x10 and 0x40).
+- *Libraries:* `trigscript/workers` `autoMining()` (a new worker rallied to a mineral field or its player's finished gas
+  building gathers from it) and `trigscript/spells` `autoRestore({ switch, keepEnergy })` (an idle Medic casts
+  Restoration on the nearest afflicted friendly unit in range). Each makes a program, so each is called at the top of a
+  script; inside a program it is the error #90 added.
+- *Fixes:* `stats(P).researched` and `.upgrades` read Brood War's own rows (`0x58F140` by 20 from tech 24, `0x58F32C`
+  by 15 from upgrade 46); before, `stats(P1).researched[techs.Restoration]` was Player 2's Stim Packs. The simulator's
+  camera moves on Center View; `TestWorld.mapSize`.
+- *Local reads:* `local.mouse.buttons`, `local.card.buttonSet`, `local.screen.width`.
+
+**Open:**
+- *`trigscript/card` and auto-restore's right-click toggle* are on the `card-right-click` branch, not on main. The
+  card library finds which graphics are on by sending the view to the map's middle and back at the start, and its
+  button positions were measured on one Mac. Before it comes back: play it on Windows, on a 4:3 and an ultrawide
+  display, and on a map that is not square (the minimap check is for square maps only); with two people playing,
+  each player's copy of the program handles every human's Medics, so one player's "off" does not hold; importing
+  `trigscript/spells` reserved the card's location even with the toggle off.
+- *Not played in Remastered yet:* `autoMining()` as the library (the same logic was played as a map's own script);
+  the Brood War rows of `researched` and `upgrades`, read and written in a game; the auto-restore test map; the three
+  verbs on a burrowed or loaded unit (the guard has emitter tests only).
+- *A unit in stasis, under Lockdown or Maelstrom* is still written to by the three verbs. Expected, not traced: the
+  game runs no orders for it, so the order waits until the unit wakes. `autoRestore()` passes over such a Medic.
+- *Workers and casters are fixed types:* SCV, Drone, Probe; Medic. The game takes a worker from its units.dat flag, so
+  a mod's own worker gets nothing from `gather()` or `autoMining()`. Proposed: read the flag.
+- *`cast()` is Restoration only:* every other technology is an error when the script is built.
+- *The simulator's `local.card.buttonSet`* is the selection's type, which is the game's number for most units, not all.
+- *scm-js:* the guides (PR #233 there) wait on a release with this; the command line's build does not pass `mapSize`
+  to the test world yet, so its simulator takes a map to be 128 by 128.
+
 ## Work outside this repository
 
 - **scm-sim:** the EUD-permitting module build (A0); the trigger hooks (A1); `run(…)` with

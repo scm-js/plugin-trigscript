@@ -557,7 +557,7 @@ class ProgramRun {
       case "locate": this.sim.centre(verb.location, u.x, u.y); break;
       // (The worker takes up the order and keeps it here: the simulator mines nothing.)
       case "gather": {
-        if (!target || !GATHER_WORKERS.includes(u.type)) break;
+        if (!target || !GATHER_WORKERS.includes(u.type) || u.burrowed || u.inTransport) break;
         const order = GATHER_ORDERS.find((g) => g.targets.includes(target.type))?.order;
         if (order !== undefined) { u.orderId = order; u.orderTarget = target; }
         break;
@@ -565,11 +565,11 @@ class ProgramRun {
       // (The caster takes up the order and keeps it here: the simulator casts nothing.)
       case "cast": {
         const spell = CAST_ORDERS.find((c) => c.tech === verb.tech);
-        if (!target || !spell?.casters.includes(u.type)) break;
+        if (!target || !spell?.casters.includes(u.type) || u.burrowed || u.inTransport) break;
         u.orderId = spell.order; u.orderState = 0; u.orderTarget = target;
         break;
       }
-      case "stop": u.orderId = STOP_ORDER; u.orderState = 0; u.orderTarget = undefined; break;
+      case "stop": if (u.burrowed || u.inTransport) break; u.orderId = STOP_ORDER; u.orderState = 0; u.orderTarget = undefined; break;
       case "damage": case "heal": {
         // In the game's own units, 256 to a point, as the lowering computes it.
         const step = verb.percent ? Math.floor((u.maxHp * 256 * amount) / 100) : amount * 256;

@@ -1661,6 +1661,24 @@ describe("a map of our own, units", () => {
       expect([dword(1696, 0x4c), dword(1696, 0x5c)]).toEqual([marineWord, 0]);
     });
 
+    it("leaves a burrowed Drone and an SCV loaded in a transport as they are, by gather() and by stop()", () => {
+      // Places 0, 1 699, 1 698, 1 697: a mineral field, a Drone burrowed, an SCV in a Dropship, a Probe standing.
+      const r = both([
+        "  const field = first({ type: units.MineralFieldType1 })!;",
+        "  for (const u of allUnits({ owner: P1 })) u.gather(field);",
+        "  for (const u of allUnits({ owner: P1 })) print(`${u.type} ${u.orderId} ${u.orderTarget == field}`);",
+        "  for (const u of allUnits({ owner: P1 })) u.stop();",
+        "  for (const u of allUnits({ owner: P1 })) print(`${u.type} ${u.orderId}`);",
+      ].join("\n"), [
+        { type: 176, owner: 11, x: 200, y: 100, hp: 100000, maxHp: 100000 },
+        { type: 41, owner: 0, x: 100, y: 100, hp: 40, maxHp: 40, orderId: 117, burrowed: true },
+        { type: 7, owner: 0, x: 300, y: 100, hp: 60, maxHp: 60, inTransport: true },
+        { type: 64, owner: 0, x: 400, y: 100, hp: 20, maxHp: 20 },
+      ]);
+      expect(r.got).toEqual(r.want);
+      expect(r.got).toEqual(["41 117 false", "7 3 false", "64 85 true", "41 117", "7 3", "64 1"].map((text) => shown([...new TextEncoder().encode(text)])));
+    });
+
     it("reads the unit a Follow is aimed at", () => {
       const r = compileScript(ts, { "main.ts": "program(() => {\n  const probe = first({ type: units.ProtossProbe })!;\n  const t = probe.orderTarget;\n  if (t && t.type == units.TerranRefinery && t.owner == probe.owner && t.buildTime == 0) print(`aimed at ${t.x}`);\n  if (!first({ type: units.TerranSCV })!.orderTarget) print(\"none\");\n});\n" }, defaultScriptNames(), { lib: defaultLib() });
       expect(r.diagnostics).toEqual([]);
@@ -1714,6 +1732,19 @@ describe("a map of our own, units", () => {
       expect([(dword(0, 0x4c) >>> 8) & 0xff, (dword(0, 0x4c) >>> 16) & 0xff, dword(0, 0x5c)]).toEqual([180, 0, place(1699)]);
       expect([dword(1699, 0x4c), dword(1699, 0x5c)]).toEqual([marineWord, 0]);
       expect([(dword(1698, 0x4c) >>> 8) & 0xff, (dword(1698, 0x4c) >>> 16) & 0xff]).toEqual([1, 0]);
+    });
+
+    it("leaves a Medic loaded in a transport as it is", () => {
+      const r = both([
+        "  const medic = first({ type: units.TerranMedic })!;",
+        "  medic.cast(techs.Restoration, first({ type: units.TerranMarine })!);",
+        "  print(`${medic.orderId} ${medic.hasTarget}`);",
+      ].join("\n"), [
+        { type: 34, owner: 0, x: 100, y: 100, energy: 100, orderId: 176, inTransport: true },
+        { type: 0, owner: 0, x: 120, y: 100 },
+      ]);
+      expect(r.got).toEqual(r.want);
+      expect(r.got).toEqual(["176 false"].map((text) => shown([...new TextEncoder().encode(text)])));
     });
 
     it("with any other technology is an error that names it", () => {
