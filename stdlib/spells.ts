@@ -1,11 +1,11 @@
 /**
  * Spells that cast themselves: the standard library's "trigscript/spells" (TrigScript 4).
  *
- *   import { buildAutoRestoreProgram } from "trigscript/spells";
+ *   import { autoRestore } from "trigscript/spells";
  *
- *   buildAutoRestoreProgram();                                            // at the top of the script, once
- *   buildAutoRestoreProgram({ switch: "Medics trained", keepEnergy: 25 }); // or tied to a switch, keeping 25 energy
- *   buildAutoRestoreProgram({ allowPlayersToTurnOffAutoCast: true });     // a single-player map: right-click Restore to turn it off
+ *   autoRestore();                                             // at the top of the script, once
+ *   autoRestore({ switch: "Medics trained", keepEnergy: 25 }); // or tied to a switch, keeping 25 energy
+ *   autoRestore({ allowPlayersToTurnOffAutoCast: true });      // a single-player map: right-click Restore to turn it off
  *
  * With auto-restore on, a human player's Medic that is idle, or healing on its own from idle, casts Restoration on a
  * unit of its owner's, or of a player its owner has allied, that is within the spell's range and carries Lockdown,
@@ -99,13 +99,14 @@ function includes(list: Unit[], unit: Unit): boolean {
 let programBuilt = false;
 
 /**
- * Build the program that turns auto-restore on: every human player's idle or self-healing Medic casts Restoration on
- * the nearest afflicted unit of its owner's or an ally's within range. `switch`: a switch of the map, by its name;
+ * Turn auto-restore on: every human player's idle or self-healing Medic casts Restoration on the nearest afflicted
+ * unit of its owner's or an ally's within range. `switch`: a switch of the map, by its name;
  * auto-restore runs only while it is set. `keepEnergy`: the energy a Medic keeps after the cast (default 0).
  * `allowPlayersToTurnOffAutoCast`: a single-player map's player turns it off and on by right-clicking Restore. Called at
- * the top of a script, as programs are made when the map is built; a call after the first adds nothing.
+ * the top of a script: it makes a program, and programs are made when the map is built, so a call inside a program is
+ * an error. A call after the first adds nothing.
  */
-export function buildAutoRestoreProgram(options: { switch?: keyof typeof switches; keepEnergy?: number; allowPlayersToTurnOffAutoCast?: boolean } = {}) {
+export function autoRestore(options: { switch?: keyof typeof switches; keepEnergy?: number; allowPlayersToTurnOffAutoCast?: boolean } = {}) {
   if (programBuilt) return;
   programBuilt = true;
   const keepEnergy = options.keepEnergy ?? 0;

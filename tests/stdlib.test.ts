@@ -2,7 +2,7 @@
  * The standard library (TrigScript 4): modules of TrigScript shipped with the compiler and imported as
  * "trigscript/<name>" — fog first. What joins a script's files and when, the location a library reserves, and what the
  * fog's functions compile to: a picture's brushes, read back out of the IR, light the picture's tiles. Workers'
- * buildAutoMiningProgram(), spells' buildAutoRestoreProgram(), and card's right-click on a button.
+ * autoMining(), spells' autoRestore(), and card's right-click on a button.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -288,10 +288,10 @@ program(async () => { const hs: number[] = [80]; const sh: number[] = [1]; while
 });
 
 describe("trigscript/workers", () => {
-  const IMPORTED = `import { buildAutoMiningProgram } from "trigscript/workers";\n`;
+  const IMPORTED = `import { autoMining } from "trigscript/workers";\n`;
 
-  it("buildAutoMiningProgram() at the top of a script is the library's program: a listener for new orders that gives the gather order", () => {
-    const r = ok(`${IMPORTED}buildAutoMiningProgram();`);
+  it("autoMining() at the top of a script is the library's program: a listener for new orders that gives the gather order", () => {
+    const r = ok(`${IMPORTED}autoMining();`);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
     const statements = bodiesOf(r.ir[0]).flatMap((body) => walk(body));
     expect(statements.some((s) => s.kind === "unitLoop" && s.source === "ordered")).toBe(true);
@@ -303,29 +303,34 @@ describe("trigscript/workers", () => {
   });
 
   it("stands beside the script's own on.order() listeners", () => {
-    const r = ok(`${IMPORTED}buildAutoMiningProgram();\non.order((u, order) => { if (order == orders.Move) print("moved"); });\nprogram(async () => { on.order((u) => { print("ordered"); }); });`);
+    const r = ok(`${IMPORTED}autoMining();\non.order((u, order) => { if (order == orders.Move) print("moved"); });\nprogram(async () => { on.order((u) => { print("ordered"); }); });`);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts", "main.ts", "main.ts"]);
   });
 
   it("called again, in the same file or another, it adds nothing", () => {
-    expect(ok(`${IMPORTED}buildAutoMiningProgram();\nbuildAutoMiningProgram();`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
-    const r = compileScript(ts, { "main.ts": `${IMPORTED}import "./more";\nbuildAutoMiningProgram();`, "more.ts": `${IMPORTED}buildAutoMiningProgram();` }, NAMES, { lib: LIB });
+    expect(ok(`${IMPORTED}autoMining();\nautoMining();`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
+    const r = compileScript(ts, { "main.ts": `${IMPORTED}import "./more";\nautoMining();`, "more.ts": `${IMPORTED}autoMining();` }, NAMES, { lib: LIB });
     expect(r.diagnostics).toEqual([]);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
   });
 
+  it("inside a program it is an error at the call, as a program made in a program is", () => {
+    const r = compile(`${IMPORTED}program(async () => {\n  await sleep(seconds(5));\n  autoMining();\n});`);
+    expect(r.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`)).toEqual(["main.ts:4: autoMining() calls program(), which defines triggers of its own and cannot be used inside program(); call autoMining() at the top of the file instead."]);
+  });
+
   it("is on again in the next build", () => {
-    ok(`${IMPORTED}buildAutoMiningProgram();`);
-    expect(ok(`${IMPORTED}buildAutoMiningProgram();`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
+    ok(`${IMPORTED}autoMining();`);
+    expect(ok(`${IMPORTED}autoMining();`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
   });
 });
 
 describe("trigscript/spells", () => {
-  const IMPORTED = `import { buildAutoRestoreProgram } from "trigscript/spells";\n`;
+  const IMPORTED = `import { autoRestore } from "trigscript/spells";\n`;
   const statementsOf = (r: CompileResult) => bodiesOf(r.ir[0]).flatMap((body) => walk(body));
 
-  it("buildAutoRestoreProgram() at the top of a script is the library's program: a loop that casts Restoration and stops a Medic", () => {
-    const r = ok(`${IMPORTED}buildAutoRestoreProgram();`);
+  it("autoRestore() at the top of a script is the library's program: a loop that casts Restoration and stops a Medic", () => {
+    const r = ok(`${IMPORTED}autoRestore();`);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
     const statements = statementsOf(r);
     expect(statements.some((s) => s.kind === "unitDo" && s.verb.do === "cast" && s.verb.tech === 24)).toBe(true);
@@ -333,23 +338,28 @@ describe("trigscript/spells", () => {
   });
 
   it("takes a switch of the map by its name, and the energy to keep", () => {
-    const r = ok(`${IMPORTED}buildAutoRestoreProgram({ switch: "Switch3", keepEnergy: 25 });`);
+    const r = ok(`${IMPORTED}autoRestore({ switch: "Switch3", keepEnergy: 25 });`);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
     // (The condition Switch, "set": Switch3 is switch 2, counted from 0.)
     expect(JSON.stringify(r.ir[0])).toContain('"comparison":2,"type":11,"resource":2,');
   });
 
   it("refuses a switch the map does not have", () => {
-    expect(compile(`${IMPORTED}buildAutoRestoreProgram({ switch: "Medics trained" });`).diagnostics.map((d) => d.message).join("\n")).toContain('"Medics trained"');
+    expect(compile(`${IMPORTED}autoRestore({ switch: "Medics trained" });`).diagnostics.map((d) => d.message).join("\n")).toContain('"Medics trained"');
   });
 
   it("imported and not called, it adds nothing", () => {
     expect(ok(`${IMPORTED}program(() => {});`).ir.map((p) => p.at?.file)).toEqual(["main.ts"]);
   });
 
+  it("inside a program it is an error at the call, as a program made in a program is", () => {
+    const r = compile(`${IMPORTED}program(async () => {\n  await sleep(seconds(5));\n  autoRestore({ keepEnergy: 25 });\n});`);
+    expect(r.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`)).toEqual(["main.ts:4: autoRestore() calls program(), which defines triggers of its own and cannot be used inside program(); call autoRestore() at the top of the file instead."]);
+  });
+
   it("called again, in the same file or another, it adds nothing", () => {
-    expect(ok(`${IMPORTED}buildAutoRestoreProgram();\nbuildAutoRestoreProgram({ keepEnergy: 10 });`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
-    const r = compileScript(ts, { "main.ts": `${IMPORTED}import "./more";\nbuildAutoRestoreProgram();`, "more.ts": `${IMPORTED}buildAutoRestoreProgram();` }, NAMES, { lib: LIB });
+    expect(ok(`${IMPORTED}autoRestore();\nautoRestore({ keepEnergy: 10 });`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
+    const r = compileScript(ts, { "main.ts": `${IMPORTED}import "./more";\nautoRestore();`, "more.ts": `${IMPORTED}autoRestore();` }, NAMES, { lib: LIB });
     expect(r.diagnostics).toEqual([]);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
   });
@@ -409,8 +419,8 @@ test("after", (sim) => {
 
 describe("trigscript/spells: allowPlayersToTurnOffAutoCast", () => {
   const SCRIPT = (options: string, body: string) => `import { test, expect, P1, units, switches, type Location } from "trigscript";
-import { buildAutoRestoreProgram } from "trigscript/spells";
-buildAutoRestoreProgram(${options});
+import { autoRestore } from "trigscript/spells";
+autoRestore(${options});
 test("toggle", (sim) => {
   const medics = sim.place(P1, units.TerranMedic, 1 as Location);
   sim.frames(5).selectUnits(medics);
@@ -431,7 +441,7 @@ ${body}
   it("without the option, a right-click on Restore does nothing, and the program is Player 1's as before", () => {
     expect(tested(SCRIPT("{}", `  ${RESTORE}.click("right").frames(10);
   expect(sim.printed(P1)).toEqual([]);`))).toEqual({ toggle: "passed" });
-    const plain = JSON.stringify(ok(`import { buildAutoRestoreProgram } from "trigscript/spells";\nbuildAutoRestoreProgram();`).ir[0]);
+    const plain = JSON.stringify(ok(`import { autoRestore } from "trigscript/spells";\nautoRestore();`).ir[0]);
     expect(plain).not.toContain(String(0x68c14c));
   });
 });
