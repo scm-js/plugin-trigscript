@@ -5,6 +5,7 @@
  *
  *   autoRestore();                                             // at the top of the script, once
  *   autoRestore({ switch: "Medics trained", keepEnergy: 25 }); // or tied to a switch, keeping 25 energy
+ *   autoRestore({ allowPlayersToTurnOffAutoCast: true });      // a single-player map: right-click Restore to turn it off
  *
  * With auto-restore on, a human player's Medic that is idle, or healing on its own from idle, casts Restoration on a
  * unit of its owner's, or of a player its owner has allied, that is within the spell's range and carries Lockdown,
@@ -16,12 +17,17 @@
  * alone, a unit in stasis or invincible, a hallucination (Restoration kills it) and the Medic itself are left alone.
  * Computer players' Medics are left to the computer, which casts Restoration itself.
  *
+ * With `allowPlayersToTurnOffAutoCast`, for single-player maps, the player turns auto-restore off and on again by
+ * right-clicking the Restore button on a Medic's command card ("trigscript/card"), and is told "Auto-restore off" or
+ * "Auto-restore on". It starts on. While the map's switch is cleared, the right-click does nothing and the setting is kept.
+ *
  * Played in StarCraft: Remastered (2026-11-11): the order written to the Medic (CastRestoration at the unit) is cast,
  * mid-heal too, and the Medic heals on afterwards. How it tells a Medic healing from idle from one the player sent,
  * from `map trace` (2026-11-11): either way the order is MedicHeal, but an attack-move or a patrol waits behind it in
  * the Medic's queue (`queuedOrders` 1 or 2), and the queue of one healing from idle holds nothing the game counts.
  */
-import { program, nextFrame, isHuman, switchIs, switches, allUnits, stats, units, orders, techs, weapons, P1, P2, P3, P4, P5, P6, P7, P8, type Player, type Unit } from "trigscript";
+import { program, nextFrame, isHuman, switchIs, switches, allUnits, stats, units, orders, techs, weapons, print, AllPlayers, CurrentPlayer, P1, P2, P3, P4, P5, P6, P7, P8, type Player, type Unit } from "trigscript";
+import { CardButton, cardSlots } from "trigscript/card";
 
 function ownerIsHuman(medic: Unit): boolean {
   const owner = medic.owner;
@@ -101,18 +107,29 @@ let programBuilt = false;
 /**
  * Turn auto-restore on: every human player's idle or self-healing Medic casts Restoration on the nearest afflicted
  * unit of its owner's or an ally's within range. `switch`: a switch of the map, by its name;
- * auto-restore runs only while it is set. `keepEnergy`: the energy a Medic keeps after the cast (default 0). Called at
+ * auto-restore runs only while it is set. `keepEnergy`: the energy a Medic keeps after the cast (default 0).
+ * `allowPlayersToTurnOffAutoCast`: a single-player map's player turns it off and on by right-clicking Restore. Called at
  * the top of a script: it makes a program, and programs are made when the map is built, so a call inside a program is
  * an error. A call after the first adds nothing.
  */
-export function autoRestore(options: { switch?: keyof typeof switches; keepEnergy?: number } = {}) {
+export function autoRestore(options: { switch?: keyof typeof switches; keepEnergy?: number; allowPlayersToTurnOffAutoCast?: boolean } = {}) {
   if (programBuilt) return;
   programBuilt = true;
   const keepEnergy = options.keepEnergy ?? 0;
+  const toggled = options.allowPlayersToTurnOffAutoCast === true;
   program(async () => {
+    // Run for every player, so the card's watcher and its view moves are the human's: the others' copies end here.
+    if (toggled && !isHuman(CurrentPlayer)) return;
+    let autoRestoreOn = true;
+    const restoreButton = new CardButton(techs.Restoration, cardSlots.Restoration);
+    if (toggled) await restoreButton.begin();
     const sentMedics: Unit[] = [];
     const sentTargets: Unit[] = [];
     while (true) {
+      if (toggled && (await restoreButton.rightClicked()) && (options.switch === undefined || switchIs(switches[options.switch], "set"))) {
+        autoRestoreOn = !autoRestoreOn;
+        print(autoRestoreOn ? "Auto-restore on" : "Auto-restore off", { to: CurrentPlayer });
+      }
       const range = stats(weapons.Restoration).range;
       for (let i = sentMedics.length - 1; i >= 0; i--) {
         const medic = sentMedics[i], target = sentTargets[i];
@@ -124,7 +141,7 @@ export function autoRestore(options: { switch?: keyof typeof switches; keepEnerg
         sentMedics.splice(i, 1);
         sentTargets.splice(i, 1);
       }
-      if (options.switch !== undefined && !switchIs(switches[options.switch], "set")) {
+      if ((options.switch !== undefined && !switchIs(switches[options.switch], "set")) || !autoRestoreOn) {
         await nextFrame();
         continue;
       }
@@ -172,5 +189,5 @@ export function autoRestore(options: { switch?: keyof typeof switches; keepEnerg
       }
       await nextFrame();
     }
-  });
+  }, toggled ? { owner: AllPlayers } : {});
 }
