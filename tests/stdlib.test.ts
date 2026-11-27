@@ -378,6 +378,37 @@ describe("trigscript/spells", () => {
     expect(medics[3].orderTarget).toBe(marine);
   });
 
+  it("casts for players in any slot, Player 1's empty: each player's Medic goes", () => {
+    const r = ok(`${IMPORTED}autoRestore();`);
+    const table = (c: { name: string }) => (c.name === "player.researched" ? 1 : c.name === "weapon.range" ? 400 : undefined);
+    // Players 4 and 6 in the game: an ensnared Marine of each, a Medic of each beside its own Marine.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, players: [3, 5], table, units: [
+      { type: 0, owner: 3, x: 100, y: 100, hp: 40, ensnare: 50 },
+      { type: 0, owner: 5, x: 300, y: 100, hp: 40, ensnare: 50 },
+      { type: 34, owner: 3, x: 120, y: 100, hp: 60, energy: 200, orderId: 176 },
+      { type: 34, owner: 5, x: 320, y: 100, hp: 60, energy: 200, orderId: 176 },
+    ] });
+    sim.run(4);
+    const [marineOfPlayer4, marineOfPlayer6, medicOfPlayer4, medicOfPlayer6] = sim.game.listed(undefined);
+    expect([medicOfPlayer4.orderId, medicOfPlayer6.orderId]).toEqual([180, 180]);
+    expect(medicOfPlayer4.orderTarget).toBe(marineOfPlayer4);
+    expect(medicOfPlayer6.orderTarget).toBe(marineOfPlayer6);
+  });
+
+  it("two allies' Medics in reach of one afflicted unit: only one of them goes", () => {
+    const r = ok(`${IMPORTED}autoRestore();`);
+    const table = (c: { name: string }) => (c.name === "player.researched" || c.name === "player.allied" ? 1 : c.name === "weapon.range" ? 400 : undefined);
+    // Players 4 and 6, allied: Player 6's ensnared Marine, with a Medic of each player beside it.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, players: [3, 5], table, units: [
+      { type: 0, owner: 5, x: 100, y: 100, hp: 40, ensnare: 50 },
+      { type: 34, owner: 3, x: 120, y: 100, hp: 60, energy: 200, orderId: 176 },
+      { type: 34, owner: 5, x: 130, y: 100, hp: 60, energy: 200, orderId: 176 },
+    ] });
+    sim.run(4);
+    const [, ...medics] = sim.game.listed(undefined);
+    expect(medics.filter((m) => m.orderId == 180)).toHaveLength(1);
+  });
+
   it("takes a switch of the map by its name, and the energy to keep", () => {
     const r = ok(`${IMPORTED}autoRestore({ switch: "Switch3", keepEnergy: 25 });`);
     expect(r.ir.map((p) => p.at?.file)).toEqual(["__trigscript__/spells.ts"]);
