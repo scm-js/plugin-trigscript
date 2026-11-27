@@ -21,33 +21,7 @@
  * from `map trace` (2026-11-11): either way the order is MedicHeal, but an attack-move or a patrol waits behind it in
  * the Medic's queue (`queuedOrders` 1 or 2), and the queue of one healing from idle holds nothing the game counts.
  */
-import { program, nextFrame, isHuman, switchIs, switches, allUnits, stats, units, orders, techs, weapons, P1, P2, P3, P4, P5, P6, P7, P8, type Player, type Unit } from "trigscript";
-
-function ownerIsHuman(medic: Unit): boolean {
-  const owner = medic.owner;
-  if (owner == P1) return isHuman(P1);
-  if (owner == P2) return isHuman(P2);
-  if (owner == P3) return isHuman(P3);
-  if (owner == P4) return isHuman(P4);
-  if (owner == P5) return isHuman(P5);
-  if (owner == P6) return isHuman(P6);
-  if (owner == P7) return isHuman(P7);
-  if (owner == P8) return isHuman(P8);
-  return false;
-}
-
-function ownerHasRestoration(medic: Unit): boolean {
-  const owner = medic.owner;
-  if (owner == P1) return stats(P1).researched[techs.Restoration];
-  if (owner == P2) return stats(P2).researched[techs.Restoration];
-  if (owner == P3) return stats(P3).researched[techs.Restoration];
-  if (owner == P4) return stats(P4).researched[techs.Restoration];
-  if (owner == P5) return stats(P5).researched[techs.Restoration];
-  if (owner == P6) return stats(P6).researched[techs.Restoration];
-  if (owner == P7) return stats(P7).researched[techs.Restoration];
-  if (owner == P8) return stats(P8).researched[techs.Restoration];
-  return false;
-}
+import { program, nextFrame, isHuman, switchIs, CurrentPlayer, AllPlayers, switches, allUnits, unitsOf, stats, units, orders, techs, weapons, P1, P2, P3, P4, P5, P6, P7, P8, type Player, type Unit } from "trigscript";
 
 function playerHasAllied(player: Player, target: Unit): boolean {
   const owner = target.owner;
@@ -59,20 +33,6 @@ function playerHasAllied(player: Player, target: Unit): boolean {
   if (owner == P6) return stats(player).allied[P6];
   if (owner == P7) return stats(player).allied[P7];
   if (owner == P8) return stats(player).allied[P8];
-  return false;
-}
-
-function isFriendly(medic: Unit, target: Unit): boolean {
-  const owner = medic.owner;
-  if (target.owner == owner) return true;
-  if (owner == P1) return playerHasAllied(P1, target);
-  if (owner == P2) return playerHasAllied(P2, target);
-  if (owner == P3) return playerHasAllied(P3, target);
-  if (owner == P4) return playerHasAllied(P4, target);
-  if (owner == P5) return playerHasAllied(P5, target);
-  if (owner == P6) return playerHasAllied(P6, target);
-  if (owner == P7) return playerHasAllied(P7, target);
-  if (owner == P8) return playerHasAllied(P8, target);
   return false;
 }
 
@@ -110,6 +70,10 @@ export function autoRestore(options: { switch?: keyof typeof switches; keepEnerg
   programBuilt = true;
   const keepEnergy = options.keepEnergy ?? 0;
   program(async () => {
+    if (!isHuman(CurrentPlayer)) {
+      return;
+    }
+
     const sentMedics: Unit[] = [];
     const sentTargets: Unit[] = [];
     while (true) {
@@ -130,23 +94,35 @@ export function autoRestore(options: { switch?: keyof typeof switches; keepEnerg
       }
       const energy = stats(techs.Restoration).energy + keepEnergy;
       const medics: Unit[] = [];
-      const castAt: Unit[] = [];
-      for (const medic of allUnits({ type: units.TerranMedic })) {
-        if (medic.orderId == orders.CastRestoration) {
-          const target = medic.orderTarget;
-          if (target) castAt.push(target);
-        } else if (isIdleOrHealingFromIdle(medic) && canCast(medic) && medic.energy >= energy && ownerIsHuman(medic) && ownerHasRestoration(medic)) {
-          medics.push(medic);
+      if (stats(CurrentPlayer).researched[techs.Restoration]) {
+        for (const medic of unitsOf(CurrentPlayer, { type: units.TerranMedic })) {
+          if (isIdleOrHealingFromIdle(medic) && canCast(medic) && medic.energy >= energy) {
+            medics.push(medic);
+          }
         }
       }
       if (medics.length > 0) {
+        // Every player's Medic casting counts, so that two allies' copies do not send a Medic each to one unit.
+        const castAt: Unit[] = [];
+        for (const medic of allUnits({ type: units.TerranMedic })) {
+          if (medic.orderId == orders.CastRestoration) {
+            const target = medic.orderTarget;
+            if (target) {
+              castAt.push(target);
+            }
+          }
+        }
         const pairMedics: Unit[] = [];
         const pairTargets: Unit[] = [];
         const pairDistances: number[] = [];
         for (const target of allUnits({ type: units.Men })) {
           if (!hasRestorableEffect(target) || target.stasis > 0 || target.hallucinated || target.invincible || includes(castAt, target)) continue;
+          const isAllied = playerHasAllied(CurrentPlayer, target);
           for (const medic of medics) {
-            if (medic == target || !isFriendly(medic, target)) continue;
+            const isFriendly = target.owner == medic.owner || isAllied;
+            if (medic == target || !isFriendly) {
+              continue;
+            }
             const distance = medic.distanceTo(target);
             if (distance > range) continue;
             pairMedics.push(medic);
@@ -172,5 +148,5 @@ export function autoRestore(options: { switch?: keyof typeof switches; keepEnerg
       }
       await nextFrame();
     }
-  });
+  }, { owner: AllPlayers });
 }
