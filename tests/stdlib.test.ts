@@ -15,6 +15,7 @@ import { STDLIB_SOURCES } from "../compiler/generated/stdlib";
 import { stdlibImports } from "../compiler/stdlib";
 import { bodiesOf, type Program, type Stmt } from "../compiler/ir";
 import { ProgramSimulation } from "../compiler/simulateIr";
+import { ORDER_NAMES } from "../compiler/orders";
 
 const LIB = defaultLib();
 const NAMES = defaultScriptNames();
@@ -317,6 +318,29 @@ describe("trigscript/workers", () => {
   it("inside a program it is an error at the call, as a program made in a program is", () => {
     const r = compile(`${IMPORTED}program(async () => {\n  await sleep(seconds(5));\n  autoMining();\n});`);
     expect(r.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`)).toEqual(["main.ts:4: autoMining() calls program(), which defines triggers of its own and cannot be used inside program(); call autoMining() at the top of the file instead."]);
+  });
+
+  it("works for whichever players are in the game, Player 1 or not, each player's worker sent to its patch once", () => {
+    const r = ok(`${IMPORTED}autoMining();`);
+    const order = (name: string) => ORDER_NAMES.indexOf(name);
+    // Player 4 and Player 6 in the game, Player 1's slot empty: an SCV each, just trained, and a patch each to mine.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, players: [3, 5], units: [
+      { type: 176, owner: 11, x: 400, y: 400 },
+      { type: 176, owner: 11, x: 800, y: 800 },
+      { type: 7, owner: 3, x: 300, y: 300, orderId: order("Nothing") },
+      { type: 7, owner: 5, x: 700, y: 700, orderId: order("Nothing") },
+    ] });
+    sim.run(2);
+    const [firstPatch, secondPatch, firstScv, secondScv] = sim.game.listed(undefined);
+    // The rally applied: Move to the patch's centre, with no target.
+    Object.assign(firstScv, { orderId: order("Move"), orderTargetX: 400, orderTargetY: 400 });
+    Object.assign(secondScv, { orderId: order("Move"), orderTargetX: 800, orderTargetY: 800 });
+    const gathered: string[] = [];
+    sim.run(4);
+    for (const scv of [firstScv, secondScv]) {
+      gathered.push(`${ORDER_NAMES[scv.orderId]} ${scv.orderTarget === firstPatch ? "first" : scv.orderTarget === secondPatch ? "second" : "none"}`);
+    }
+    expect(gathered).toEqual(["MoveToMinerals first", "MoveToMinerals second"]);
   });
 
   it("is on again in the next build", () => {

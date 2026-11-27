@@ -21,38 +21,7 @@
  * Follow with the building as the target. `gather()` then gives the order a right-click would: MoveToMinerals or
  * MoveToGas.
  */
-import { program, on, nextFrame, isHuman, allUnits, units, orders, P1, P2, P3, P4, P5, P6, P7, P8, type Unit } from "trigscript";
-
-function ownerIsHuman(worker: Unit): boolean {
-  const owner = worker.owner;
-
-  if (owner == P1) {
-    return isHuman(P1);
-  }
-  if (owner == P2) {
-    return isHuman(P2);
-  }
-  if (owner == P3) {
-    return isHuman(P3);
-  }
-  if (owner == P4) {
-    return isHuman(P4);
-  }
-  if (owner == P5) {
-    return isHuman(P5);
-  }
-  if (owner == P6) {
-    return isHuman(P6);
-  }
-  if (owner == P7) {
-    return isHuman(P7);
-  }
-  if (owner == P8) {
-    return isHuman(P8);
-  }
-
-  return false;
-}
+import { program, on, nextFrame, isHuman, allUnits, units, orders, CurrentPlayer, AllPlayers, type Unit } from "trigscript";
 
 function isWorker(unit: Unit): boolean {
   return unit.type == units.TerranSCV || unit.type == units.ProtossProbe || unit.type == units.ZergDrone;
@@ -81,10 +50,6 @@ function isWaitingAt(worker: Unit, gasBuilding: Unit): boolean {
 }
 
 function gatherFromRally(worker: Unit) {
-  if (!ownerIsHuman(worker)) {
-    return;
-  }
-
   if (worker.orderId == orders.Follow) {
     const gasBuilding = worker.orderTarget;
     if (gasBuilding) {
@@ -139,15 +104,21 @@ export function autoMining() {
   programBuilt = true;
 
   program(async () => {
+    if (!isHuman(CurrentPlayer)) {
+      return;
+    }
+
     const waitingWorkers: Unit[] = [];
+    const waitingWorkerOwners: number[] = [];
     const awaitedGasBuildings: Unit[] = [];
 
-    on.order((unit, currentOrder, previousOrder) => {
-      if (currentOrder == orders.Follow && isWorker(unit) && ownerIsHuman(unit)) {
+    on.order({ owner: CurrentPlayer }, (unit, currentOrder, previousOrder) => {
+      if (currentOrder == orders.Follow && isWorker(unit)) {
         const followed = unit.orderTarget;
         if (followed) {
           if (isUnfinishedGasBuildingOf(unit, followed)) {
             waitingWorkers.push(unit);
+            waitingWorkerOwners.push(unit.owner);
             awaitedGasBuildings.push(followed);
           }
         }
@@ -168,10 +139,11 @@ export function autoMining() {
     while (true) {
       for (let i = waitingWorkers.length - 1; i >= 0; i--) {
         const worker = waitingWorkers[i];
+        const owner = waitingWorkerOwners[i];
         const gasBuilding = awaitedGasBuildings[i];
 
         // A unit kept in a list is a place in the game's unit table, which another unit can take after it dies.
-        const isSameWorker = isWorker(worker) && ownerIsHuman(worker);
+        const isSameWorker = isWorker(worker) && worker.owner == owner;
         const isSameGasBuilding = isGasBuilding(gasBuilding) && gasBuilding.owner == worker.owner;
         if (isSameWorker && isSameGasBuilding && isWaitingAt(worker, gasBuilding)) {
           if (!isFinished(gasBuilding)) {
@@ -181,9 +153,10 @@ export function autoMining() {
         }
 
         waitingWorkers.splice(i, 1);
+        waitingWorkerOwners.splice(i, 1);
         awaitedGasBuildings.splice(i, 1);
       }
       await nextFrame();
     }
-  });
+  }, { owner: AllPlayers });
 }
