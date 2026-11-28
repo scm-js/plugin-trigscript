@@ -15,6 +15,7 @@ import { STDLIB_SOURCES } from "../compiler/generated/stdlib";
 import { stdlibImports } from "../compiler/stdlib";
 import { bodiesOf, type Program, type Stmt } from "../compiler/ir";
 import { ProgramSimulation } from "../compiler/simulateIr";
+import { ORDER_NAMES } from "../compiler/orders";
 
 const LIB = defaultLib();
 const NAMES = defaultScriptNames();
@@ -319,6 +320,29 @@ describe("trigscript/workers", () => {
     expect(r.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`)).toEqual(["main.ts:4: autoMining() calls program(), which defines triggers of its own and cannot be used inside program(); call autoMining() at the top of the file instead."]);
   });
 
+  it("works for whichever players are in the game, Player 1 or not, each player's worker sent to its patch once", () => {
+    const r = ok(`${IMPORTED}autoMining();`);
+    const order = (name: string) => ORDER_NAMES.indexOf(name);
+    // Player 4 and Player 6 in the game, Player 1's slot empty: an SCV each, just trained, and a patch each to mine.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, players: [3, 5], units: [
+      { type: 176, owner: 11, x: 400, y: 400 },
+      { type: 176, owner: 11, x: 800, y: 800 },
+      { type: 7, owner: 3, x: 300, y: 300, orderId: order("Nothing") },
+      { type: 7, owner: 5, x: 700, y: 700, orderId: order("Nothing") },
+    ] });
+    sim.run(2);
+    const [firstPatch, secondPatch, firstScv, secondScv] = sim.game.listed(undefined);
+    // The rally applied: Move to the patch's centre, with no target.
+    Object.assign(firstScv, { orderId: order("Move"), orderTargetX: 400, orderTargetY: 400 });
+    Object.assign(secondScv, { orderId: order("Move"), orderTargetX: 800, orderTargetY: 800 });
+    const gathered: string[] = [];
+    sim.run(4);
+    for (const scv of [firstScv, secondScv]) {
+      gathered.push(`${ORDER_NAMES[scv.orderId]} ${scv.orderTarget === firstPatch ? "first" : scv.orderTarget === secondPatch ? "second" : "none"}`);
+    }
+    expect(gathered).toEqual(["MoveToMinerals first", "MoveToMinerals second"]);
+  });
+
   it("is on again in the next build", () => {
     ok(`${IMPORTED}autoMining();`);
     expect(ok(`${IMPORTED}autoMining();`).ir.map((p) => p.at?.file)).toEqual(["__trigscript__/workers.ts"]);
@@ -352,6 +376,37 @@ describe("trigscript/spells", () => {
     const [marine, ...medics] = sim.game.listed(undefined);
     expect(medics.map((m) => m.orderId)).toEqual([176, 176, 176, 180]);
     expect(medics[3].orderTarget).toBe(marine);
+  });
+
+  it("casts for players in any slot, Player 1's empty: each player's Medic goes", () => {
+    const r = ok(`${IMPORTED}autoRestore();`);
+    const table = (c: { name: string }) => (c.name === "player.researched" ? 1 : c.name === "weapon.range" ? 400 : undefined);
+    // Players 4 and 6 in the game: an ensnared Marine of each, a Medic of each beside its own Marine.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, players: [3, 5], table, units: [
+      { type: 0, owner: 3, x: 100, y: 100, hp: 40, ensnare: 50 },
+      { type: 0, owner: 5, x: 300, y: 100, hp: 40, ensnare: 50 },
+      { type: 34, owner: 3, x: 120, y: 100, hp: 60, energy: 200, orderId: 176 },
+      { type: 34, owner: 5, x: 320, y: 100, hp: 60, energy: 200, orderId: 176 },
+    ] });
+    sim.run(4);
+    const [marineOfPlayer4, marineOfPlayer6, medicOfPlayer4, medicOfPlayer6] = sim.game.listed(undefined);
+    expect([medicOfPlayer4.orderId, medicOfPlayer6.orderId]).toEqual([180, 180]);
+    expect(medicOfPlayer4.orderTarget).toBe(marineOfPlayer4);
+    expect(medicOfPlayer6.orderTarget).toBe(marineOfPlayer6);
+  });
+
+  it("two allies' Medics in reach of one afflicted unit: only one of them goes", () => {
+    const r = ok(`${IMPORTED}autoRestore();`);
+    const table = (c: { name: string }) => (c.name === "player.researched" || c.name === "player.allied" ? 1 : c.name === "weapon.range" ? 400 : undefined);
+    // Players 4 and 6, allied: Player 6's ensnared Marine, with a Medic of each player beside it.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, players: [3, 5], table, units: [
+      { type: 0, owner: 5, x: 100, y: 100, hp: 40, ensnare: 50 },
+      { type: 34, owner: 3, x: 120, y: 100, hp: 60, energy: 200, orderId: 176 },
+      { type: 34, owner: 5, x: 130, y: 100, hp: 60, energy: 200, orderId: 176 },
+    ] });
+    sim.run(4);
+    const [, ...medics] = sim.game.listed(undefined);
+    expect(medics.filter((m) => m.orderId == 180)).toHaveLength(1);
   });
 
   it("takes a switch of the map by its name, and the energy to keep", () => {
